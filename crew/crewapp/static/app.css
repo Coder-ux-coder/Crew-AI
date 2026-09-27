@@ -811,10 +811,10 @@ input[type=range] { width: 170px; accent-color: var(--accent); }
 .ctx-pct { font-size: 11.5px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
 .plan-card .pc-head .grow { flex: 1; }
 /* explicit grid places: a hidden or fixed sidebar must never push the main area into its column */
-.sidebar { grid-column: 1; grid-row: 1; }
-.main { grid-column: 2; grid-row: 1; }
-.resizer { grid-column: 3; grid-row: 1; }
-.panel { grid-column: 4; grid-row: 1; }
+.app > .sidebar { grid-column: 1; grid-row: 1; }
+.app > .main { grid-column: 2; grid-row: 1; }
+.app > .resizer { grid-column: 3; grid-row: 1; }
+.app > .panel { grid-column: 4; grid-row: 1; }
 .app { grid-template-rows: minmax(0, 1fr); }
 .composer .c-end { margin-left: auto; display: flex; align-items: center; gap: 4px; }
 @container view (max-width: 640px) {

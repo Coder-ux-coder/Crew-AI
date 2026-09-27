@@ -161,25 +161,29 @@ class RunManager:
         for run_dir in runs_dir().iterdir():
             if not (run_dir / "team.db").is_file():
                 continue
-            st = self.store(run_dir.name)
-            if st is None:
-                continue
-            brief = st.get("brief", {}) or {}
-            tasks = st.tasks()
-            phase = st.get("phase", "refine")
-            out.append({
-                "id": run_dir.name,
-                "title": brief.get("title") or (st.get("goal", "") or run_dir.name)[:80],
-                "phase": PHASES.get(phase, phase), "raw_phase": phase,
-                "running": self.running(run_dir.name) or (phase in ACTIVE and self._recent(st)),
-                "done": phase == "done",
-                "progress": [sum(1 for t in tasks if t["status"] == "merged"),
-                             sum(1 for t in tasks if t["status"] != "cancelled")],
-                "started": st.get("started_at") or run_dir.stat().st_mtime,
-                "mode": st.get("mode") or "",
-                "preview": self.preview(run_dir.name),
-            })
+            try:
+                out.append(self._summary(run_dir))
+            except Exception as exc:  # a project that is still being created must not hide the others
+                print(f"run {run_dir.name}: {exc}")
         return sorted(out, key=lambda r: r["started"] or 0, reverse=True)
+
+    def _summary(self, run_dir: Path) -> dict:
+        st = self.store(run_dir.name)
+        brief = st.get("brief", {}) or {}
+        tasks = st.tasks()
+        phase = st.get("phase", "refine")
+        return {
+            "id": run_dir.name,
+            "title": brief.get("title") or (st.get("goal", "") or run_dir.name)[:80],
+            "phase": PHASES.get(phase, phase), "raw_phase": phase,
+            "running": self.running(run_dir.name) or (phase in ACTIVE and self._recent(st)),
+            "done": phase == "done",
+            "progress": [sum(1 for t in tasks if t["status"] == "merged"),
+                         sum(1 for t in tasks if t["status"] != "cancelled")],
+            "started": st.get("started_at") or run_dir.stat().st_mtime,
+            "mode": st.get("mode") or "",
+            "preview": self.preview(run_dir.name),
+        }
 
 
 # ------------------------------------------------------------------ agents panel and estimates
