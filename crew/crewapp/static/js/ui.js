@@ -406,3 +406,135 @@ export function speakable(md) {
     .replace(/\.{2,}/g, '.')
     .trim();
 }
+
+// ------------------------------------------------------------------ pop-up menus (pickers, "…" menus, the slash menu)
+
+let openMenu = null;
+
+export function closeMenu() {
+  if (openMenu) { const m = openMenu; openMenu = null; m.close(); }
+}
+
+// items: [{label, hint, ic, value, checked, danger, disabled, cmd}] | 'sep' | {section: 'Title'}
+// Returns a controller {el, close, move(delta), pick()} — the slash menu drives it from the keyboard.
+export function menu(anchor, items, { onPick = null, above = null, align = 'start', minWidth = 0, keepFocus = false } = {}) {
+  closeMenu();
+  const el = h('div', { class: 'menu', role: 'menu' });
+  const buttons = [];
+  for (const it of items) {
+    if (it === 'sep') { el.append(h('div', { class: 'm-sep' })); continue; }
+    if (it.section) { el.append(h('div', { class: 'm-label' }, it.section)); continue; }
+    const b = h(it.href ? 'a' : 'button', {
+      class: 'm-item' + (it.danger ? ' danger' : ''), type: it.href ? null : 'button', role: 'menuitem', href: it.href || null,
+      disabled: it.disabled || null, tabindex: -1,
+      onmousedown: (e) => { if (keepFocus) e.preventDefault(); },
+      onclick: (e) => { if (it.disabled) return; if (!it.href) e.preventDefault(); ctl.close(); onPick && onPick(it.value !== undefined ? it.value : it, it); it.onclick && it.onclick(); },
+    },
+    it.ic ? icon(it.ic) : null,
+    h('span', { class: 'txt' }, it.cmd ? h('span', { class: 'cmd' }, it.cmd) : null, it.label ? h('span', null, it.label) : null, it.hint ? h('small', null, it.hint) : null),
+    it.checked ? icon('check', 'tick') : null);
+    buttons.push(b);
+    el.append(b);
+  }
+  document.body.append(el);
+  if (minWidth) el.style.minWidth = minWidth + 'px';
+  const r = anchor.getBoundingClientRect();
+  const mw = el.offsetWidth, mh = el.offsetHeight;
+  const spaceBelow = window.innerHeight - r.bottom, spaceAbove = r.top;
+  const up = above === null ? spaceBelow < mh + 12 && spaceAbove > spaceBelow : above;
+  el.style.top = (up ? Math.max(8, r.top - mh - 6) : Math.min(window.innerHeight - mh - 8, r.bottom + 6)) + 'px';
+  let left = align === 'end' ? r.right - mw : r.left;
+  left = Math.max(8, Math.min(left, window.innerWidth - mw - 8));
+  el.style.left = left + 'px';
+  let hi = -1;
+  const highlight = (i) => {
+    buttons.forEach((b, k) => b.classList.toggle('hi', k === i));
+    hi = i;
+    if (buttons[i]) buttons[i].scrollIntoView({ block: 'nearest' });
+  };
+  const onDoc = (e) => { if (!el.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) ctl.close(); };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { ctl.close(); anchor.focus && anchor.focus(); }
+    else if (!keepFocus && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); ctl.move(e.key === 'ArrowDown' ? 1 : -1); }
+    else if (!keepFocus && e.key === 'Enter' && hi >= 0) { e.preventDefault(); buttons[hi].click(); }
+  };
+  const ctl = {
+    el,
+    closed: false,
+    close() {
+      if (ctl.closed) return;
+      ctl.closed = true;
+      el.remove();
+      document.removeEventListener('mousedown', onDoc, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', ctl.close);
+      if (openMenu === ctl) openMenu = null;
+    },
+    move(d) { if (buttons.length) highlight((hi + d + buttons.length) % buttons.length); },
+    pick() { if (hi >= 0 && buttons[hi]) { buttons[hi].click(); return true; } return false; },
+    get size() { return buttons.length; },
+  };
+  setTimeout(() => {
+    document.addEventListener('mousedown', onDoc, true);
+    document.addEventListener('keydown', onKey, true);
+    window.addEventListener('resize', ctl.close);
+  }, 0);
+  if (keepFocus) highlight(0);
+  else if (buttons.length) setTimeout(() => { const on = buttons.findIndex((b) => b.querySelector('.tick')); highlight(on >= 0 ? on : 0); buttons[hi] && buttons[hi].focus(); }, 0);
+  openMenu = ctl;
+  return ctl;
+}
+
+// ------------------------------------------------------------------ numbers and times
+
+export function tokens(n) {
+  n = Number(n || 0);
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1e6) return (n < 10000 ? (n / 1000).toFixed(1) : Math.round(n / 1000)) + 'k';
+  return (n / 1e6).toFixed(n < 1e7 ? 2 : 1).replace(/\.?0+$/, '') + 'M';
+}
+
+export function pct(x) {
+  return x == null ? '—' : `${Math.round(Number(x) * 100)}%`;
+}
+
+// "in 2 h 10 min" / "in 5 min" — until a Unix time
+export function inTime(ts) {
+  if (!ts) return '';
+  const s = ts - Date.now() / 1000;
+  if (s <= 60) return 'in a moment';
+  const m = Math.round(s / 60);
+  if (m < 60) return `in ${m} min`;
+  const hh = Math.floor(m / 60), mm = m % 60;
+  if (hh < 24) return `in ${hh} h${mm ? ` ${mm} min` : ''}`;
+  const d = Math.round(hh / 24);
+  return `in ${d} day${d === 1 ? '' : 's'}`;
+}
+
+export function whenAt(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000), now = new Date();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (d.toDateString() === now.toDateString()) return `today at ${time}`;
+  const tomorrow = new Date(now.getTime() + 86400000);
+  if (d.toDateString() === tomorrow.toDateString()) return `tomorrow at ${time}`;
+  return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ` at ${time}`;
+}
+
+export function minutes(m) {
+  if (Number(m || 0) < 1) return 'under a minute';
+  m = Math.round(Number(m || 0));
+  if (m < 60) return `${m} min`;
+  return `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+}
+
+export const PRODUCTS = {
+  claude: { name: 'Claude', ic: 'spark' },
+  codex: { name: 'ChatGPT', ic: 'gpt' },
+  team: { name: 'Team', ic: 'users' },
+};
+
+export function productBadge(p, text = null) {
+  const info = PRODUCTS[p] || PRODUCTS.claude;
+  return h('span', { class: 'badge-product ' + p }, icon(info.ic), text || info.name);
+}

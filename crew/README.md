@@ -1,19 +1,21 @@
 # Crew — your AI team, on your own computer
 
 Crew turns your subscriptions (several Claude accounts and a ChatGPT account)
-into one team. You type — or say — what you want. For a question, the
-Assistant answers. For something to build, a team plans the work, splits it,
-builds the parts at the same time, checks every piece with fresh eyes, and
-hands you the finished result. You never see code or technical screens unless
+into one workspace that looks and works like Claude. Chat with **Claude** or
+**ChatGPT** on their own, or hand a bigger job to the **Team**: a CEO model plans
+and approves, builders work in parallel, every piece is checked with fresh eyes,
+and you get the finished result. You never see code or technical screens unless
 you ask.
 
-- **Top-model quality:** every piece of work is done by Claude Opus 5.5,
-  checked by an agent that did not write it, and approved at the end by the
-  most capable model (Claude Fable 5.1). Haiku and Sonnet are never used.
-- **Faster:** independent parts are built in parallel.
+- **Top-model quality:** Claude Opus 5.5 does the work; the CEO (Claude Fable
+  5.1) always thinks at maximum effort, sets everyone else's effort per job and
+  learns which effort suits which work. Haiku and Sonnet are never used.
+- **No clock watching:** no default time limit — set a timer per project only
+  if you want one.
 - **Usage spread out:** work goes to whichever subscription has the most room;
-  if one runs out, another carries on.
-- **Learns:** every project leaves lessons that the next team reads.
+  if one reaches its limit, another carries on — also in the middle of a chat.
+- **Keeps itself current:** Claude Code is updated automatically, and Crew
+  updates itself with one click, keeping all your data.
 
 ## Install on Windows (once, about 10 minutes)
 
@@ -25,26 +27,32 @@ you ask.
 3. Answer two questions (whether you use ChatGPT too, and whether Crew should
    start with Windows). If Windows asks for permission to install Python or
    Git, choose **Yes**.
-4. Crew opens by itself and puts a **Crew** icon on your desktop. On its Home
-   page press **Sign in** and sign in to your Claude account in the browser.
-   Add your other subscriptions in **Settings → Subscriptions** — each one signs
-   in once.
+4. Crew opens by itself and puts a **Crew** icon on your desktop. Sign in to
+   your Claude account in **Settings → Subscriptions**; add your other
+   subscriptions there too — each one signs in once.
 
-To update, download the newer ZIP and run **Install Crew.cmd** again (your
-projects and settings are kept). To remove Crew, run **Uninstall Crew.cmd**.
+**Already have an older Crew?** Run the new **Install Crew.cmd** once, the same
+way. It installs over the old version and keeps everything: chats, projects,
+sign-ins, API keys, workflows and settings. **From then on Crew updates itself:**
+when a new version is ready, a banner says so — press **Update now** (or
+**Settings → Updates & check-up**). Nothing to download, reinstall or re-enter.
+
+To remove Crew, run **Uninstall Crew.cmd**.
 
 ## What you can do
 
 | Screen | What it does |
 |---|---|
-| **Home** | One box for everything: **Ask the assistant**, or **Build with the team**. The microphone types for you; the sound-wave button starts a spoken conversation. |
-| **Assistant** | Answers appear word by word. Attach files or pictures (paperclip, drag and drop, or paste). Pages and documents it makes open in the side panel. The speaker button reads an answer aloud. **Build this with the team** turns the conversation into a project. |
-| **Projects** | Follow a team at work: who is doing what, the plan, their group chat (you can write to them), how much of each subscription is used, and the final result with a **Preview** button. Stop and continue any time. |
-| **Browser** | A real browser that you and the assistant share, also in a side panel next to a conversation. Click and type on it, switch to phone size, take screenshots (visible part or whole page) and record it. Sign in to websites here once and the assistant can use them for you. |
-| **Phone** | See and control your Samsung from the computer — tap, swipe, type, open apps, screenshots and recordings. The assistant can use it too when you ask. The app walks you through connecting (Wireless debugging). |
-| **Captures** | Screenshots and recordings of your screen, the browser or your phone. Draw on them (pen, highlighter, box, arrow, label), copy, download, or ask the assistant about one. |
-| **Skills** | The ways of working the team follows automatically. Switch any off, write your own, or ask the assistant to help you write one. |
-| **Settings** | Drop-downs and switches for everything: models and effort (for the Assistant and for the team), how the team works, subscriptions, team rules and assistant instructions, API keys, voice (including Urdu), look and colour, phone pairing, lessons learned, and a check-up of what is installed. |
+| **New chat** | One box, like Claude. Choose **Claude**, **ChatGPT** or the **Team**; pick the model and the effort (named exactly as Anthropic and OpenAI name them: Claude *auto, low, medium, high, xhigh, max*; ChatGPT *auto, minimal, low, medium, high, xhigh*). **Plan** mode: it plans first and changes nothing until you press **Approve**. Type **/** for commands (/compact, /context, /usage, /plan, skills such as /docx or /xlsx). The ring shows how full the conversation's context is. |
+| **Chats** | Answers stream in with everything Claude Code shows: thinking, each step it takes, its to-do list, the helpers (sub-agents) it starts, files it makes (they open beside the chat), tokens and time. Attach files or pictures; the microphone types for you; the sound-wave button starts a spoken conversation. |
+| **Projects** | The team at work: the team chat (you can write to them), and a panel with every agent and helper — product, model, effort, what it is doing, tokens — plus estimates of time and tokens left, the plan, and your subscriptions. Optional timer. Stop and continue any time. |
+| **Workflows** | Jobs you repeat — a morning briefing, a weekly investor round-up, a letter in your style — run with one click or on a schedule, by Claude, ChatGPT or the team. |
+| **Library** | Files made for you in chats, and your screenshots and recordings (draw on them, or ask Claude about one). |
+| **Skills** | Anthropic's official skills (Word, Excel, PowerPoint, PDF, design, writing — installed automatically), Claude Code's built-in ones, and Crew's and your own. |
+| **Connections** | Any API key (Hunter.io, Google, OpenAI, …) and connected services (MCP servers), with one-click import from the Claude desktop app. Keys stay on your computer and are hidden from every chat, log and report. |
+| **Usage** | Each subscription's 5-hour and weekly limits with reset times, tokens per day, and the Claude Code version. |
+| **Browser · Phone · Computer** | A real browser you and Claude share, your Samsung, and your Windows screen — side by side with your work, in a panel you can widen by dragging. |
+| **Settings** | The few choices that matter, with technical ones under **Advanced**: subscriptions, models and effort, how the team works, instructions, voice (including Urdu), look (light/dark, colour, book or plain type), phone pairing, lessons learned (the team's, and the CEO's own record of which effort works for what), updates and check-up. |
 
 ## Use it on your Samsung
 
@@ -67,6 +75,8 @@ both devices.
   simulated phone. If a step fails, the installer says which one and how to
   fix it.
 - ChatGPT through Codex has not been tried with a real ChatGPT sign-in yet.
+- Scheduled workflows run while Crew is running (Settings → General → Start
+  Crew with Windows keeps it available).
 - Google may refuse sign-in inside automated browsers ("this browser may not be
   secure"). Sign in to Google in your normal browser instead, or use sites
   that do not need it.

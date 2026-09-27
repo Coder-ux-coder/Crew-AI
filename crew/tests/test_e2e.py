@@ -114,6 +114,13 @@ class E2E(unittest.TestCase):
         accounts = {a["name"]: a for a in orch.store.accounts()}
         self.assertIsNotNone(accounts["claude-1"]["util_5h"])  # usage read from rate events
         self.assertIsNotNone(accounts["codex-1"]["util_5h"])  # usage read from Codex session files
+        # effort: the CEO set one for every task at plan review, and builders ran at it
+        efforts = {t["id"]: t["effort"] for t in orch.store.tasks()}
+        self.assertTrue(all(efforts.values()), efforts)
+        self.assertIn("xhigh", efforts.values())
+        self.assertIn("Effort per task:", chat)
+        from crewlib import lessons
+        self.assertTrue(lessons.effort_stats())  # the CEO's effort record grows with every merged task
 
     def test_rejections_concerns_and_plan_revision(self):
         cfg, run_dir, repo, rid = make_run({"tasks": 2, "reject_task": [2], "plan_changes": True, "concern": True},

@@ -18,6 +18,7 @@ from . import lessons as lessons_mod
 from .store import KINDS, SIZES, Store, StoreError
 from .util import clip, hhmm, now
 
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 CHAT_KINDS = ("update", "question", "answer", "blocker", "concern")
 ROLES_ALL = ("lead", "member", "reviewer", "ceo")
 
@@ -393,9 +394,20 @@ def verdict(ctx: Ctx, a: dict) -> str:
         raise ToolError("verdict must be 'approve' or 'changes'.")
     if value == "changes" and len(notes) < 20:
         raise ToolError("List the must-fix items, numbered and concrete.")
+    set_efforts = []
+    if kind == "plan":
+        for item in a.get("efforts") or []:
+            try:
+                tid, effort = int(item.get("task_id")), str(item.get("effort", "")).lower()
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if effort in EFFORT_LEVELS and ctx.store.task(tid):
+                ctx.store.update_task(tid, effort=effort)
+                set_efforts.append(f"#{tid} {effort}")
     ctx.store.set(f"verdict:{kind}", {"verdict": value, "notes": notes, "by": ctx.seat, "at": now()})
     label = {"plan": "Plan review", "final": "Final review"}[kind]
-    ctx.store.post(ctx.seat, "decision", f"{label}: {value.upper()}. {notes}".strip(), urgent=True)
+    extra = f" Effort per task: {', '.join(set_efforts)}." if set_efforts else ""
+    ctx.store.post(ctx.seat, "decision", f"{label}: {value.upper()}. {notes}{extra}".strip(), urgent=True)
     return "Verdict recorded and posted. End your turn."
 
 
@@ -495,9 +507,14 @@ TOOLS: list[Tool] = [
          _obj({"task_id": I, "verdict": {"type": "string", "enum": ["approve", "changes"]}, "notes": S},
               ["task_id", "verdict", "notes"]),
          review_submit, roles=("reviewer", "ceo")),
-    Tool("team_verdict", "CEO ONLY. Record your plan or final review verdict (posted to the chat).",
+    Tool("team_verdict", "CEO ONLY. Record your plan or final review verdict (posted to the chat). With a plan "
+         "verdict, also set how hard each task's builder should think: efforts=[{task_id, effort}], effort one of "
+         "low, medium, high, xhigh, max.",
          _obj({"kind": {"type": "string", "enum": ["plan", "final"]},
-               "verdict": {"type": "string", "enum": ["approve", "changes"]}, "notes": S},
+               "verdict": {"type": "string", "enum": ["approve", "changes"]}, "notes": S,
+               "efforts": {"type": "array", "items": {"type": "object", "properties": {
+                   "task_id": I, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]}},
+                   "required": ["task_id", "effort"], "additionalProperties": False}}},
               ["kind", "verdict", "notes"]),
          verdict, roles=("ceo",)),
     Tool("team_escalate",

@@ -1,23 +1,21 @@
-// Settings: every choice in plain words, with drop-downs and switches.
+// Settings: the few choices that matter up front, in plain words; everything technical under "Advanced".
 // Changes save immediately.
 
 import { h, icon, btn, api, toast, fail, ask, confirmBox, store, bus, humanize, clear } from '../ui.js';
 import { speech, canSpeak, canDictate } from '../voice.js';
-import { modelOptions, EFFORT_LABELS } from './chat.js';
-import { TEAM_MODES } from './home.js';
+import { modelOptions, efforts, EFFORT_HINTS, TEAM_MODES } from './chat.js';
 import qrcode from '../../vendor/qrcode.mjs';
 
 const SECTIONS = [
-  ['general', 'Look & feel', 'sun'],
-  ['models', 'Models & effort', 'zap'],
-  ['team', 'How the team works', 'users'],
+  ['general', 'General', 'sun'],
   ['subscriptions', 'Subscriptions', 'key'],
+  ['models', 'Models & effort', 'brain'],
+  ['team', 'The team', 'users'],
   ['instructions', 'Instructions', 'book'],
-  ['keys', 'API keys', 'shield'],
   ['voice', 'Voice', 'mic'],
   ['phone', 'Use on your phone', 'phone'],
   ['lessons', 'Lessons learned', 'bulb'],
-  ['about', 'About & check-up', 'info'],
+  ['updates', 'Updates & check-up', 'cloud'],
 ];
 
 const LANGS = [
@@ -34,10 +32,7 @@ function row(label, hint, control) {
 
 function seg(options, value, onchange) {
   const btns = options.map(([v, label]) => h('button', {
-    type: 'button', class: v === value ? 'on' : '', onclick: (e) => {
-      btns.forEach((b) => b.classList.toggle('on', b === e.currentTarget));
-      onchange(v);
-    },
+    type: 'button', class: v === value ? 'on' : '', onclick: (e) => { btns.forEach((b) => b.classList.toggle('on', b === e.currentTarget)); onchange(v); },
   }, label));
   return h('div', { class: 'seg' }, btns);
 }
@@ -47,8 +42,7 @@ function toggle(checked, onchange, label = '') {
 }
 
 function select(options, value, onchange) {
-  return h('select', { style: { width: 'auto', minWidth: '200px' }, onchange: (e) => onchange(e.target.value) },
-    options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
+  return h('select', { onchange: (e) => onchange(e.target.value) }, options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
 }
 
 function number(value, { min = 0, max = 1000, step = 1 } = {}, onchange) {
@@ -57,6 +51,10 @@ function number(value, { min = 0, max = 1000, step = 1 } = {}, onchange) {
     type: 'number', value: String(value), min, max, step, style: { width: '110px' },
     oninput: (e) => { clearTimeout(t); t = setTimeout(() => { const v = parseFloat(e.target.value); if (!Number.isNaN(v) && v >= min && v <= max) onchange(v); }, 600); },
   });
+}
+
+function advanced(...kids) {
+  return h('details', { class: 'advanced' }, h('summary', null, icon('chev'), 'Advanced'), ...kids);
 }
 
 async function save(partial, quiet = false) {
@@ -73,24 +71,30 @@ async function save(partial, quiet = false) {
 export function applyLook(app) {
   const root = document.documentElement;
   if (!app.theme || app.theme === 'system') delete root.dataset.theme; else root.dataset.theme = app.theme;
-  if (!app.accent || app.accent === 'green') delete root.dataset.accent; else root.dataset.accent = app.accent;
-  try { localStorage.setItem('crew.theme', app.theme || 'system'); localStorage.setItem('crew.accent', app.accent || 'green'); } catch (e) { /* private mode */ }
+  if (!app.accent || app.accent === 'clay') delete root.dataset.accent; else root.dataset.accent = app.accent;
+  if (app.font === 'sans') root.dataset.font = 'sans'; else delete root.dataset.font;
+  try {
+    localStorage.setItem('crew.theme', app.theme || 'system');
+    localStorage.setItem('crew.accent', app.accent || 'clay');
+    localStorage.setItem('crew.font', app.font || 'serif');
+  } catch (e) { /* private mode */ }
   const meta = document.querySelector('meta[name=theme-color]');
-  if (meta) meta.content = getComputedStyle(root).getPropertyValue('--accent').trim() || '#0C7A55';
+  if (meta) meta.content = getComputedStyle(root).getPropertyValue('--bg').trim() || '#FAF9F5';
 }
 
 // ------------------------------------------------------------------ page
 
 export function settingsPage(view, params) {
   const section = SECTIONS.some((s) => s[0] === params[0]) ? params[0] : 'general';
-  const body = h('div', { class: 'stack', style: { gap: '18px' } }, h('div', { class: 'empty' }, 'Loading…'));
-  const nav = h('nav', { class: 'subnav' }, SECTIONS.map(([k, label]) => h('a', { href: '#/settings/' + k, class: k === section ? 'on' : '' }, label)));
-  view.append(h('div', { class: 'page wide' }, h('h1', null, 'Settings'), h('div', { class: 'settings' }, nav, body)));
+  const body = h('div', { class: 'stack', style: { gap: '16px' } }, h('div', { class: 'muted' }, 'Loading…'));
+  const nav = h('nav', { class: 'subnav' }, SECTIONS.map(([k, label, ic]) => h('a', { href: '#/settings/' + k, class: k === section ? 'on' : '' }, icon(ic), label)));
+  store.setTop(null, []);
+  view.append(h('div', { class: 'page' }, h('div', { class: 'page-head' }, h('div', { class: 't' }, h('h1', null, 'Settings'))), h('div', { class: 'settings' }, nav, body)));
   let alive = true;
   api('/api/settings').then((s) => {
     if (!alive) return;
     store.settings = s;
-    body.replaceChildren(...[].concat(RENDER[section](s)));
+    clear(body, ...[].concat(RENDER[section](s)));
   }).catch(fail);
   return () => { alive = false; };
 }
@@ -100,32 +104,87 @@ const card = (title, intro, ...kids) => h('section', { class: 'card set-card' },
 const RENDER = {
   general(s) {
     const app = s.app;
-    const accents = [['green', '#0C7A55'], ['blue', '#2F5FD0'], ['plum', '#8A3FB8'], ['amber', '#B86A00']];
-    const sw = h('div', { class: 'swatches' }, accents.map(([k, c]) => h('button', {
-      type: 'button', class: app.accent === k ? 'on' : '', style: { background: c }, title: humanize(k), 'aria-label': humanize(k),
+    const accents = [['clay', '#C6613F', 'Clay'], ['blue', '#3767C4', 'Blue'], ['green', '#2E7D5B', 'Green'], ['plum', '#8A4BB0', 'Plum']];
+    const sw = h('div', { class: 'swatches' }, accents.map(([k, c, label]) => h('button', {
+      type: 'button', class: (app.accent || 'clay') === k ? 'on' : '', style: { background: c }, title: label, 'aria-label': label,
       onclick: async (e) => {
         sw.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b === e.currentTarget));
         app.accent = k; applyLook(app); await save({ app: { accent: k } }, true);
       },
     })));
+    const name = h('input', { type: 'text', value: app.owner_name || '', placeholder: 'Your name', style: { width: '220px' } });
+    name.addEventListener('change', async () => { await save({ app: { owner_name: name.value.trim() } }); bus.emit('chats'); });
     return [
-      card('Look & feel', '',
-        row('Theme', 'Light, dark, or follow Windows', seg([['system', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']], app.theme,
+      card('You', '', row('Your name', 'Used to greet you', name)),
+      card('Look', '',
+        row('Theme', 'Light, dark, or follow Windows', seg([['system', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']], app.theme || 'system',
           async (v) => { app.theme = v; applyLook(app); await save({ app: { theme: v } }, true); })),
-        row('Colour', 'The accent used for buttons and highlights', sw)),
-      store.isLocal ? card('Crew’s folder', 'Everything Crew keeps — projects, captures, settings, lessons — lives in one folder on this computer.',
-        row('Open the folder', '', btn('Open', () => api('/api/open-home', { method: 'POST', body: {} }).catch(fail), { ic: 'folder' }))) : null,
+        row('Colour', 'For buttons and highlights', sw),
+        row('Answers in', 'Claude’s answers are set in a book face by default', seg([['serif', 'Book (serif)'], ['sans', 'Plain (sans)']], app.font || 'serif',
+          async (v) => { app.font = v; applyLook(app); await save({ app: { font: v } }, true); }))),
+      store.isLocal ? card('This computer', '',
+        row('Start Crew with Windows', 'Keeps Crew ready — and scheduled workflows running — without opening it yourself', toggle(!!app.start_with_windows, async (v) => {
+          try { const r = await api('/api/startup', { method: 'POST', body: { enabled: v } }); toast(r.message); app.start_with_windows = v; } catch (e) { fail(e); }
+        })),
+        row('Crew’s folder', 'Your chats, projects, captures, settings and keys live here', btn('Open', () => api('/api/open-home', { method: 'POST', body: {} }).catch(fail), { ic: 'folder', cls: 'sm' }))) : null,
     ].filter(Boolean);
+  },
+
+  subscriptions(s) {
+    const list = h('div');
+    const vendorName = (v) => (v === 'claude' ? 'Claude (Pro or Max)' : 'ChatGPT (Plus or Pro), through Codex');
+    async function load(refresh = false) {
+      clear(list, h('div', { class: 'muted', style: { padding: '10px 0' } }, 'Checking your subscriptions…'));
+      try {
+        const r = await api('/api/accounts/status' + (refresh ? '?refresh=1' : ''));
+        clear(list, ...r.accounts.map((a) => h('div', { class: 'acct' },
+          h('span', { class: 'logo-b ' + a.vendor }, icon(a.vendor === 'claude' ? 'spark' : 'gpt')),
+          h('div', { class: 'grow' }, h('b', null, a.name), h('div', { class: 'muted small' }, vendorName(a.vendor) + (a.detail ? ' · ' + a.detail : ''))),
+          h('span', { class: 'pill ' + (a.signed_in ? 'ok' : a.signed_in === false ? 'bad' : '') }, a.signed_in ? 'Signed in' : a.signed_in === false ? 'Not signed in' : 'Unknown'),
+          store.isLocal ? btn(a.signed_in ? 'Sign in again' : 'Sign in', async () => {
+            try { const m = await api(`/api/accounts/${encodeURIComponent(a.name)}/login`, { method: 'POST', body: {} }); toast(m.message, { ms: 9000 }); } catch (e) { fail(e); }
+          }, { cls: 'sm' + (a.signed_in ? ' ghost' : ' accent') }) : null,
+          btn('', async () => {
+            if (!(await confirmBox(`Remove ${a.name}?`, 'Crew stops using this subscription. Its sign-in stays on this computer.', { ok: 'Remove', danger: true }))) return;
+            const rest = s.accounts.filter((x) => x.name !== a.name);
+            if (!rest.some((x) => x.vendor === 'claude')) { toast('At least one Claude subscription is needed: the team lead runs on Claude.', { bad: true }); return; }
+            try { const n = await save({ accounts: rest }); s.accounts = n.accounts; load(); } catch (e) { /* shown */ }
+          }, { cls: 'sm icon ghost', ic: 'trash', title: 'Remove' }))));
+      } catch (e) { fail(e); }
+    }
+    async function add() {
+      const v = await ask('Add a subscription', [
+        { name: 'vendor', label: 'Which service', type: 'select', value: 'claude', options: [{ value: 'claude', label: 'Claude (Pro or Max)' }, { value: 'codex', label: 'ChatGPT (Plus or Pro) — through Codex' }] },
+        { name: 'name', label: 'A short name for it', placeholder: 'e.g. claude-2, work-max, chatgpt', required: true },
+      ], { ok: 'Add', intro: 'Each subscription signs in once, separately. Crew spreads the work across all of them and moves on when one reaches its limit.' });
+      if (!v) return;
+      const name = v.name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
+      if (s.accounts.some((a) => a.name === name)) { toast('That name is already used.', { bad: true }); return; }
+      try {
+        const n = await save({ accounts: [...s.accounts, { name, vendor: v.vendor, profile: '' }] });
+        s.accounts = n.accounts;
+        await load();
+        if (store.isLocal) {
+          const m = await api(`/api/accounts/${encodeURIComponent(name)}/login`, { method: 'POST', body: {} });
+          toast(m.message, { ms: 9000 });
+        }
+      } catch (e) { /* shown */ }
+    }
+    load();
+    return [card('Subscriptions', 'Your Claude and ChatGPT subscriptions. Work is shared across them, and when one reaches its limit Crew carries on with another.',
+      list,
+      h('div', { class: 'row wrap', style: { marginTop: '10px' } }, btn('Add a subscription', add, { cls: 'accent', ic: 'plus' }), btn('Check again', () => load(true), { ic: 'reload' })),
+      h('p', { class: 'muted small', style: { margin: '10px 0 0' } }, 'Use only your own subscriptions, for your own work, and never share a sign-in.'))];
   },
 
   models(s) {
     const m = s.models, app = s.app;
-    const models = modelOptions().map((o) => [o.value, o.label]);
-    const efforts = (s.efforts || Object.keys(EFFORT_LABELS)).map((e) => [e, EFFORT_LABELS[e] || e]);
-    const claude = s.accounts.filter((a) => a.vendor === 'claude');
+    const claudeModels = modelOptions('claude').map((o) => [o.value, o.label]);
+    const effortOpts = (p) => efforts(p).map((e) => [e, `${e} — ${(EFFORT_HINTS[p] || {})[e] || ''}`]);
+    const claudeAccounts = s.accounts.filter((a) => a.vendor === 'claude');
     const chips = (list, key, warn) => {
       const box = h('div', { class: 'chiplist' });
-      const draw = () => box.replaceChildren(...list.map((x) => h('span', { class: 'pill' }, x, h('button', {
+      const draw = () => clear(box, ...list.map((x) => h('span', { class: 'pill' }, x, h('button', {
         type: 'button', title: 'Remove', 'aria-label': 'Remove ' + x, onclick: async () => {
           if (warn && !(await warn(x))) return;
           list.splice(list.indexOf(x), 1); draw(); await save({ models: { [key]: list } });
@@ -141,25 +200,30 @@ const RENDER = {
       draw();
       return box;
     };
+    const codexModel = h('input', { type: 'text', value: app.codex_model || '', placeholder: 'Its best model', style: { width: '200px' } });
+    codexModel.addEventListener('change', () => save({ app: { codex_model: codexModel.value.trim() } }));
     return [
-      card('The Assistant', 'The model that answers you in conversations.',
-        row('Model', '', select(models, app.chat_model, (v) => save({ app: { chat_model: v } }))),
-        row('Effort', 'Higher effort thinks longer and uses more of your limits', select(efforts, app.chat_effort, (v) => save({ app: { chat_effort: v } }))),
-        claude.length > 1 ? row('Subscription', 'Which Claude subscription the Assistant uses', select([['', 'The first one'], ...claude.map((a) => [a.name, a.name])], app.chat_account || '', (v) => save({ app: { chat_account: v } }))) : null),
-      card('The team', 'Models for team projects. Quality comes first: every builder uses the main model.',
-        row('Main model', 'Does the planning, building and checking', select(models, m.work, (v) => save({ models: { work: v } }))),
-        row('Final approval (the “CEO”)', 'Looks over the whole result once, at the end', select([...models, ['', 'No separate final model']], m.ceo, (v) => save({ models: { ceo: v } }))),
-        row('Effort for the work', '', select(efforts, m.effort_work, (v) => save({ models: { effort_work: v } }))),
-        row('Effort for light jobs', 'Checking, notes and research', select(efforts, m.effort_light, (v) => save({ models: { effort_light: v } }))),
-        row('Effort for final approval', '', select(efforts, m.effort_ceo, (v) => save({ models: { effort_ceo: v } }))),
-        row('ChatGPT (Codex) model', 'Leave empty to use its best model', (() => {
-          const inp = h('input', { type: 'text', value: m.codex || '', placeholder: 'Its best model', style: { width: '220px' } });
-          inp.addEventListener('change', () => save({ models: { codex: inp.value.trim() } }));
-          return inp;
-        })())),
-      card('Allowed and banned models', 'Only allowed Claude models may run. Any model whose name contains a banned word is refused everywhere.',
-        row('Allowed', '', chips([...m.allowed], 'allowed')),
-        row('Banned', '', chips([...m.banned], 'banned', (x) => confirmBox(`Lift the ban on “${x}”?`, 'Your rule was to never use it. Lift the ban anyway?', { ok: 'Lift the ban', danger: true })))),
+      card('Claude', 'The defaults for new chats with Claude. You can change them in any chat from the composer.',
+        row('Model', '', select(claudeModels, app.chat_model, (v) => save({ app: { chat_model: v } }))),
+        row('Effort', 'Anthropic’s own levels. auto lets Claude decide.', select(effortOpts('claude'), app.chat_effort || 'auto', (v) => save({ app: { chat_effort: v } }))),
+        claudeAccounts.length > 1 ? row('Subscription', 'Which one chats use first (Crew switches when it runs low)', select([['', 'Whichever has the most room'], ...claudeAccounts.map((a) => [a.name, a.name])], app.chat_account || '', (v) => save({ app: { chat_account: v } }))) : null),
+      card('ChatGPT', 'The defaults for new chats with ChatGPT (through Codex).',
+        row('Model', 'Leave empty for its best model', codexModel),
+        row('Effort', 'OpenAI’s own levels. auto lets ChatGPT decide.', select(effortOpts('codex'), app.codex_effort || 'auto', (v) => save({ app: { codex_effort: v } })))),
+      card('The team', 'The CEO always thinks at maximum effort, and decides the effort for every other agent and job — and learns from each project which effort works best.',
+        row('Main model', 'Plans, builds and checks', select(claudeModels, m.work, (v) => save({ models: { work: v } }))),
+        row('The CEO', 'Approves the plan, sets efforts, gives the final approval', select([...claudeModels, ['', 'Same as the main model']], m.ceo, (v) => save({ models: { ceo: v } }))),
+        advanced(
+          row('CEO’s effort', 'Recommended: max', select(effortOpts('claude'), m.effort_ceo, (v) => save({ models: { effort_ceo: v } }))),
+          row('Effort for building', 'auto: the CEO decides per job (recommended)', select(effortOpts('claude'), m.effort_work, (v) => save({ models: { effort_work: v } }))),
+          row('Effort for light jobs', 'Checking, notes, research. auto: the CEO decides', select(effortOpts('claude'), m.effort_light, (v) => save({ models: { effort_light: v } }))),
+          row('ChatGPT model for the team', 'Leave empty for its best model', (() => {
+            const inp = h('input', { type: 'text', value: m.codex || '', placeholder: 'Its best model', style: { width: '200px' } });
+            inp.addEventListener('change', () => save({ models: { codex: inp.value.trim() } }));
+            return inp;
+          })()),
+          row('Allowed Claude models', 'Only these may run', chips([...m.allowed], 'allowed')),
+          row('Banned', 'Any model whose name contains one of these is refused everywhere', chips([...m.banned], 'banned', (x) => confirmBox(`Lift the ban on “${x}”?`, 'Your rule was to never use it. Lift the ban anyway?', { ok: 'Lift the ban', danger: true }))))),
     ];
   },
 
@@ -168,112 +232,44 @@ const RENDER = {
     return [
       card('How the team works', '',
         row('Who builds', TEAM_MODES.find((x) => x.value === t.mode)?.hint || '', select(TEAM_MODES.map((x) => [x.value, x.label]), t.mode, (v) => save({ team: { mode: v } }))),
-        row('Checking each piece', 'Every piece of work is checked by someone who did not build it',
-          select([['cross', 'A member on another subscription checks'], ['same', 'Any other member checks'], ['off', 'No checks (not recommended)']], t.review, (v) => save({ team: { review: v } }))),
-        row('Final approval by the CEO model', 'One last look at the whole result before it is handed over', toggle(t.ceo_reviews, (v) => save({ team: { ceo_reviews: v } }))),
+        row('Final approval by the CEO', 'One last look at the whole result before it is handed over', toggle(t.ceo_reviews, (v) => save({ team: { ceo_reviews: v } }))),
         row('When the work is finished', '', select([['merge', 'Put it in the project folder'], ['branch', 'Keep it as a separate version for me to check'], ['push', 'Put it in the folder and upload it online']], t.deliver, (v) => save({ team: { deliver: v } }))),
-        row('Let agents do anything without asking', 'On: fully automatic (your choice). Off: a safety check approves each action.',
-          toggle(t.permission_mode === 'bypassPermissions', (v) => save({ team: { permission_mode: v ? 'bypassPermissions' : 'auto' } })))),
-      card('Limits and pacing', 'Sensible defaults; change them only if you need to.',
-        row('Time limit (hours)', 'The team wraps up and reports when this is reached', number(t.max_hours, { min: 0.25, max: 48, step: 0.25 }, (v) => save({ team: { max_hours: v } }))),
-        row('Spending limit (US$)', '0 means no limit (subscriptions are flat-rate)', number(t.max_cost_usd, { min: 0, max: 10000, step: 1 }, (v) => save({ team: { max_cost_usd: v } }))),
-        row('Nudge a quiet member after (minutes)', '', number(t.stall_minutes, { min: 2, max: 60 }, (v) => save({ team: { stall_minutes: v } }))),
-        row('Progress review every (minutes)', 'The lead re-plans when progress stalls', number(t.ledger_minutes, { min: 3, max: 120 }, (v) => save({ team: { ledger_minutes: v } }))),
-        row('Team-chat messages per member per step', 'Keeps discussion short and useful', number(t.chat_budget, { min: 2, max: 50 }, (v) => save({ team: { chat_budget: Math.round(v) } }))),
-        row('Rounds of corrections before the lead decides', '', number(t.max_review_rounds, { min: 1, max: 10 }, (v) => save({ team: { max_review_rounds: Math.round(v) } }))),
-        row('Time allowed for automatic tests (minutes)', '', number(t.checks_timeout_minutes, { min: 1, max: 120 }, (v) => save({ team: { checks_timeout_minutes: v } })))),
+        row('Let agents act without asking', 'On: fully automatic. Off: a safety check approves each action.',
+          toggle(t.permission_mode === 'bypassPermissions', (v) => save({ team: { permission_mode: v ? 'bypassPermissions' : 'auto' } }))),
+        advanced(
+          row('Checking each piece', 'Every piece is checked by someone who did not build it',
+            select([['cross', 'A member on another subscription checks'], ['same', 'Any other member checks'], ['off', 'No checks (not recommended)']], t.review, (v) => save({ team: { review: v } }))),
+          row('Default time limit (hours)', '0 = no limit (you can still set a timer per project)', number(t.max_hours, { min: 0, max: 168, step: 0.5 }, (v) => save({ team: { max_hours: v } }))),
+          row('Spending limit (US$)', '0 = no limit (subscriptions are flat-rate)', number(t.max_cost_usd, { min: 0, max: 10000, step: 1 }, (v) => save({ team: { max_cost_usd: v } }))),
+          row('Nudge a quiet member after (minutes)', '', number(t.stall_minutes, { min: 2, max: 60 }, (v) => save({ team: { stall_minutes: v } }))),
+          row('Progress review every (minutes)', 'The lead re-plans when progress stalls', number(t.ledger_minutes, { min: 3, max: 120 }, (v) => save({ team: { ledger_minutes: v } }))),
+          row('Team-chat messages per member per step', '', number(t.chat_budget, { min: 2, max: 50 }, (v) => save({ team: { chat_budget: Math.round(v) } }))),
+          row('Rounds of corrections before the lead decides', '', number(t.max_review_rounds, { min: 1, max: 10 }, (v) => save({ team: { max_review_rounds: Math.round(v) } }))),
+          row('Time allowed for automatic tests (minutes)', '', number(t.checks_timeout_minutes, { min: 1, max: 120 }, (v) => save({ team: { checks_timeout_minutes: v } }))))),
     ];
-  },
-
-  subscriptions(s) {
-    const list = h('div');
-    const vendorName = (v) => (v === 'claude' ? 'Claude' : 'ChatGPT (Codex)');
-    async function load(refresh = false) {
-      list.replaceChildren(h('div', { class: 'muted', style: { padding: '10px 0' } }, 'Checking your subscriptions…'));
-      try {
-        const r = await api('/api/accounts/status' + (refresh ? '?refresh=1' : ''));
-        list.replaceChildren(...r.accounts.map((a) => h('div', { class: 'acct' },
-          h('span', { class: 'avatar', style: { background: a.vendor === 'claude' ? '#C15F3C' : '#10A37F' } }, a.vendor === 'claude' ? 'C' : 'G'),
-          h('div', { class: 'grow' }, h('b', null, a.name), h('div', { class: 'muted small' }, vendorName(a.vendor) + (a.detail ? ' · ' + a.detail : ''))),
-          h('span', { class: 'pill ' + (a.signed_in ? 'ok' : a.signed_in === false ? 'bad' : '') }, a.signed_in ? 'Signed in' : a.signed_in === false ? 'Not signed in' : 'Unknown'),
-          store.isLocal ? btn(a.signed_in ? 'Sign in again' : 'Sign in', async () => {
-            try { const m = await api(`/api/accounts/${encodeURIComponent(a.name)}/login`, { method: 'POST', body: {} }); toast(m.message, { ms: 9000 }); } catch (e) { fail(e); }
-          }, { cls: 'sm' + (a.signed_in ? ' ghost' : ' primary') }) : null,
-          btn('', async () => {
-            if (!(await confirmBox(`Remove ${a.name}?`, 'Crew stops using this subscription. Its sign-in stays on this computer.', { ok: 'Remove', danger: true }))) return;
-            const rest = s.accounts.filter((x) => x.name !== a.name);
-            if (!rest.some((x) => x.vendor === 'claude')) { toast('At least one Claude subscription is needed: the team lead runs on Claude.', { bad: true }); return; }
-            try { const n = await save({ accounts: rest }); s.accounts = n.accounts; load(); } catch (e) { /* shown */ }
-          }, { cls: 'sm icon ghost', ic: 'trash', title: 'Remove' }))));
-      } catch (e) { fail(e); }
-    }
-    async function add() {
-      const v = await ask('Add a subscription', [
-        { name: 'vendor', label: 'Which service', type: 'select', value: 'claude', options: [{ value: 'claude', label: 'Claude (Pro or Max)' }, { value: 'codex', label: 'ChatGPT (Plus or Pro) — through Codex' }] },
-        { name: 'name', label: 'A short name for it', placeholder: 'e.g. claude-2, work-max, chatgpt', required: true },
-      ], { ok: 'Add', intro: 'Each subscription signs in once, separately. Crew spreads the work across all of them and switches automatically when one reaches its limit.' });
-      if (!v) return;
-      const name = v.name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-');
-      if (s.accounts.some((a) => a.name === name)) { toast('That name is already used.', { bad: true }); return; }
-      try {
-        const n = await save({ accounts: [...s.accounts, { name, vendor: v.vendor, profile: '' }] });
-        s.accounts = n.accounts;
-        await load();
-        if (store.isLocal) {
-          const m = await api(`/api/accounts/${encodeURIComponent(name)}/login`, { method: 'POST', body: {} });
-          toast(m.message, { ms: 9000 });
-        }
-      } catch (e) { /* shown */ }
-    }
-    load();
-    return [card('Subscriptions', 'Your Claude and ChatGPT subscriptions. The team shares the work across them so no single one runs out, and carries on with the others if one does.',
-      list,
-      h('div', { class: 'row wrap', style: { marginTop: '10px' } }, btn('Add a subscription', add, { cls: 'primary', ic: 'plus' }), btn('Check again', () => load(true), { ic: 'reload' })),
-      h('p', { class: 'muted small', style: { margin: '10px 0 0' } }, 'Use only your own subscriptions, for your own work, and never share a sign-in.'))];
   },
 
   instructions(s) {
     const editor = (value, path, label) => {
-      const ta = h('textarea', { class: 'editor', rows: 16, 'aria-label': label }, value);
+      const ta = h('textarea', { class: 'editor', rows: 14, 'aria-label': label }, value);
       const saveBtn = btn('Save', async () => {
         try { await api(path, { method: 'PUT', body: { text: ta.value } }); toast('Saved. New work follows these instructions.'); saveBtn.disabled = true; } catch (e) { fail(e); }
-      }, { cls: 'primary', disabled: true });
+      }, { cls: 'primary sm', disabled: true });
       ta.addEventListener('input', () => { saveBtn.disabled = false; });
-      return [ta, h('div', { class: 'row', style: { justifyContent: 'flex-end', marginTop: '8px' } }, saveBtn)];
+      return [ta, h('div', { class: 'row end', style: { marginTop: '8px' } }, saveBtn)];
     };
     return [
+      card('Instructions for Claude and ChatGPT', 'How chats should behave: tone, format, what to ask before acting.', ...editor(s.assistant, '/api/assistant-instructions', 'Chat instructions')),
       card('Team rules', 'Standing instructions every team member follows on every project. Write them like a memo to your staff.', ...editor(s.rules, '/api/rules', 'Team rules')),
-      card('Assistant instructions', 'How the Assistant should behave in conversations: tone, format, what to ask before acting.', ...editor(s.assistant, '/api/assistant-instructions', 'Assistant instructions')),
     ];
-  },
-
-  keys(s) {
-    const list = h('div');
-    const draw = (secrets) => list.replaceChildren(...(secrets.length ? secrets.map((k) => h('div', { class: 'acct' },
-      icon('key'), h('div', { class: 'grow' }, h('b', { class: 'code-box' }, k.name), h('div', { class: 'muted small code-box' }, k.hint)),
-      btn('', async () => {
-        if (!(await confirmBox(`Delete ${k.name}?`, 'Agents will no longer be able to use this key.', { ok: 'Delete', danger: true }))) return;
-        try { const r = await api('/api/secrets', { method: 'PUT', body: { name: k.name, value: null } }); draw(r.secrets); } catch (e) { fail(e); }
-      }, { cls: 'sm icon ghost', ic: 'trash', title: 'Delete' }))) : [h('p', { class: 'muted' }, 'No keys yet.')]));
-    draw(s.secrets);
-    const add = async () => {
-      const v = await ask('Add an API key', [
-        { name: 'name', label: 'Name', placeholder: 'e.g. OPENWEATHER_API_KEY', required: true, hint: 'Capital letters, digits and underscores.' },
-        { name: 'value', label: 'The key', type: 'password', required: true },
-      ], { ok: 'Save key' });
-      if (!v) return;
-      try { const r = await api('/api/secrets', { method: 'PUT', body: { name: v.name.toUpperCase(), value: v.value } }); draw(r.secrets); toast('Key saved.'); } catch (e) { fail(e); }
-    };
-    return [card('API keys', 'Keys for other services (weather, maps, email…). They stay on this computer; agents can use them, and they are hidden from every chat, log and report.',
-      list, h('div', { class: 'row', style: { marginTop: '10px' } }, btn('Add a key', add, { cls: 'primary', ic: 'plus' })))];
   },
 
   voice(s) {
     const app = s.app;
-    const voiceSel = h('select', { style: { width: 'auto', minWidth: '240px' }, onchange: (e) => save({ app: { voice_name: e.target.value } }) });
+    const voiceSel = h('select', { onchange: (e) => save({ app: { voice_name: e.target.value } }) });
     const fillVoices = () => {
       const voices = speech.voices().slice().sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
-      voiceSel.replaceChildren(h('option', { value: '' }, 'Automatic'), ...voices.map((v) => h('option', { value: v.name, selected: v.name === app.voice_name }, `${v.name} — ${v.lang}`)));
+      clear(voiceSel, h('option', { value: '' }, 'Automatic'), ...voices.map((v) => h('option', { value: v.name, selected: v.name === app.voice_name }, `${v.name} — ${v.lang}`)));
     };
     fillVoices();
     document.addEventListener('crew:voices', fillVoices, { once: true });
@@ -282,7 +278,7 @@ const RENDER = {
     let rt = null;
     rate.addEventListener('input', () => {
       rateLabel.textContent = `${Number(rate.value).toFixed(1)}×`;
-      store.overview.app.voice_rate = Number(rate.value);
+      if (store.overview) store.overview.app.voice_rate = Number(rate.value);
       clearTimeout(rt);
       rt = setTimeout(() => save({ app: { voice_rate: Number(rate.value) } }, true), 500);
     });
@@ -293,11 +289,11 @@ const RENDER = {
         row('Voice', '', voiceSel),
         row('Speed', '', h('div', { class: 'row' }, rate, rateLabel)),
         row('Read every answer aloud', 'Otherwise press the speaker button under an answer', toggle(app.auto_read, (v) => save({ app: { auto_read: v } }))),
-        row('Try it', '', btn('Play a sample', () => speech.speak('Hello. This is how I will sound when I read my answers to you.'), { ic: 'volume' }))),
+        row('Try it', '', btn('Play a sample', () => speech.speak('Hello. This is how I will sound when I read my answers to you.'), { ic: 'volume', cls: 'sm' }))),
     ];
   },
 
-  phone(s) {
+  phone() {
     if (!store.isLocal) {
       return [card('Use on your phone', 'You are already using Crew on this device. To pair another phone or sign phones out, open Settings on the computer running Crew.')];
     }
@@ -317,7 +313,7 @@ const RENDER = {
             h('ol', { class: 'connect-steps' },
               h('li', null, h('div', null, 'Make sure the phone is on the same Wi-Fi as this computer.')),
               h('li', null, h('div', null, 'Open the phone’s camera and point it at this code. Tap the link that appears.')),
-              h('li', null, h('div', null, 'In Chrome, tap ⋮ then “Add to Home screen” for a Crew app icon.')))));
+              h('li', null, h('div', null, 'In Chrome, tap ⋮ then “Add to Home screen” for a Crew icon.')))));
         }
       } else if (p.enabled) {
         codes.append(h('p', { class: 'muted' }, 'This computer is not connected to a network.'));
@@ -332,38 +328,76 @@ const RENDER = {
     };
     api('/api/pair').then(draw).catch(fail);
     return [
-      card('Use Crew on your phone', 'Ask, build and follow projects from your Samsung. Crew keeps running on this computer; the phone is a remote screen for it.', out),
+      card('Use Crew on your phone', 'Chat, start projects and follow them from your Samsung. Crew keeps running on this computer; the phone is a remote screen for it.', out),
       card('Voice on the phone', 'The phone’s browser only allows the microphone on secure connections. Two easy ways:',
         h('ol', { class: 'connect-steps' },
-          h('li', null, h('div', null, h('b', null, 'At your desk: '), 'connect the phone on the Phone page. Crew then also opens on the phone at ', h('span', { class: 'code-box' }, 'localhost:' + (location.port || '8765')), ', where the microphone works.')),
-          h('li', null, h('div', null, h('b', null, 'Anywhere: '), 'install Tailscale (free) on both the computer and the phone. It gives Crew a private, secure address that works away from home too.'))),
-        h('div', { class: 'row', style: { marginTop: '8px' } }, h('a', { class: 'btn sm', href: '#/phone' }, icon('phone'), 'Open the Phone page'))),
+          h('li', null, h('div', null, h('b', null, 'At your desk: '), 'connect the phone on the Phone page. Crew then also opens on the phone at ', h('span', { class: 'mono' }, 'localhost:' + (location.port || '8765')), ', where the microphone works.')),
+          h('li', null, h('div', null, h('b', null, 'Anywhere: '), 'install Tailscale (free) on both the computer and the phone. It gives Crew a private, secure address that works away from home too.')))),
     ];
   },
 
   lessons() {
-    const box = h('div', null, h('p', { class: 'muted' }, 'Loading…'));
+    const team = h('div', null, h('p', { class: 'muted' }, 'Loading…'));
+    const ceo = h('div', null, h('p', { class: 'muted' }, 'Loading…'));
+    const record = h('div');
     api('/api/lessons').then((r) => {
-      box.replaceChildren(...(r.lessons.length ? r.lessons.map((l) => h('div', { class: 'lesson' },
+      clear(team, ...(r.lessons.length ? r.lessons.map((l) => h('div', { class: 'lesson' },
         h('div', { class: 'row' }, h('span', { class: 'pill' }, humanize(l.category)), l.weight > 1 ? h('span', { class: 'muted small' }, `confirmed ${l.weight}×`) : null),
         h('div', null, l.text))) : [h('p', { class: 'muted' }, 'No lessons yet. They are written after each project.')]));
-    }).catch(fail);
-    return [card('Lessons learned', 'After every project the team writes down what worked and what did not. Future teams read the most useful lessons before they start, so Crew improves with use.', box)];
-  },
-
-  about() {
-    const box = h('div', { class: 'health' }, h('p', { class: 'muted' }, 'Checking…'));
-    const meta = h('p', { class: 'muted small', style: { margin: '10px 0 0' } });
-    api('/api/health').then((r) => {
-      box.replaceChildren(...r.items.map((i) => h('div', { class: 'row' },
-        h('span', { class: 'dot ' + (i.ok ? 'ok' : i.optional ? 'warn' : 'bad') }), h('span', { class: 'grow' }, i.label),
-        h('span', { class: 'pill ' + (i.ok ? 'ok' : i.optional ? 'warn' : 'bad') }, i.ok ? 'Ready' : i.optional ? 'Optional — not installed' : 'Missing'))));
-      meta.textContent = `Crew ${r.version} · Python ${r.python} · Crew’s folder: ${r.home}`;
+      clear(ceo, ...(r.ceo.length ? r.ceo.map((l) => h('div', { class: 'lesson' }, h('div', null, l.text),
+        l.weight > 1 ? h('span', { class: 'muted small' }, `confirmed ${l.weight}×`) : null)) : [h('p', { class: 'muted' }, 'The CEO writes its first effort lessons after a few projects.')]));
+      const rows = r.effort_record || [];
+      clear(record, ...(rows.length ? [h('table', { class: 'plain', style: { marginTop: '10px' } },
+        h('thead', null, h('tr', null, h('th', null, 'Kind of job'), h('th', null, 'Size'), h('th', null, 'Effort'), h('th', null, 'Jobs'), h('th', null, 'Passed first check'),
+          h('th', null, 'Typical time'), h('th', null, 'Typical tokens'))),
+        h('tbody', null, rows.map((x) => h('tr', null, h('td', null, humanize(x.kind)), h('td', null, x.size), h('td', null, x.effort), h('td', null, String(x.n)),
+          h('td', null, `${Math.round(100 * (x.first_pass || 0))}%`), h('td', null, `${Math.round(x.minutes || 0)} min`),
+          h('td', null, x.tokens ? Math.round(x.tokens).toLocaleString() : '—')))))] : []));
     }).catch(fail);
     return [
-      card('Check-up', 'What Crew needs on this computer. Anything missing? Run the Crew installer again; it only adds what is missing.', box, meta),
-      card('About Crew', '',
-        h('p', { style: { margin: 0 } }, 'Crew turns your subscriptions into one team. A lead plans the work, members build separate parts at the same time, every part is checked by someone else, and a final review approves the whole. Everything runs on this computer, on your own subscriptions.')),
+      card('What the team has learned', 'After every project the team writes down what worked and what did not. Future teams read the most useful lessons before they start.', team),
+      card('What the CEO has learned about effort', 'The CEO keeps its own notes: which effort level suits which kind of job, judged by how often the work passed its first check and how many tokens it took.', ceo, record),
+    ];
+  },
+
+  updates() {
+    const crew = h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'Checking…'));
+    const claude = h('div', { class: 'stack' });
+    const health = h('div', { class: 'health' }, h('p', { class: 'muted' }, 'Checking…'));
+    const meta = h('p', { class: 'muted small', style: { marginTop: '10px' } });
+    const drawCrew = (u) => {
+      clear(crew, 
+        h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('b', null, `Version ${u.current || ''}`),
+          h('div', { class: 'muted small' }, u.available ? `Version ${u.latest} is ready.` : u.error ? u.error : u.latest ? 'You have the newest version.' : 'Not checked yet.')),
+        store.isLocal && u.available ? btn('Update now', () => store.installUpdate(u), { cls: 'accent sm', ic: 'download' }) : null,
+        btn('Check now', async (e) => {
+          e.currentTarget.disabled = true;
+          try { drawCrew(await api('/api/update?refresh=1')); } catch (x) { fail(x); }
+        }, { cls: 'sm', ic: 'reload' })),
+        u.available && (u.notes || []).length ? h('ul', { class: 'small', style: { margin: 0, paddingLeft: '20px' } }, u.notes.map((n) => h('li', null, n))) : null,
+        h('p', { class: 'muted small' }, 'Updates replace only Crew’s program. Your chats, projects, captures, sign-ins, API keys and settings stay exactly as they are — no reinstalling, nothing to enter again.'));
+    };
+    api('/api/update').then(drawCrew).catch(fail);
+    api('/api/claude').then((c) => {
+      clear(claude, h('div', { class: 'row wrap' }, h('div', { class: 'grow' }, h('b', null, `Version ${c.version || 'not found'}`),
+        h('div', { class: 'muted small' }, 'Crew updates it by itself once a day, and at once if a model asks for a newer version.')),
+      store.isLocal ? btn('Update now', async (e) => {
+        const b = e.currentTarget;
+        b.disabled = true;
+        try { const r = await api('/api/claude/update', { method: 'POST', body: {} }); toast(r.message, { bad: !r.ok, ms: 8000 }); } catch (x) { fail(x); }
+        b.disabled = false;
+      }, { cls: 'sm', ic: 'download' }) : null));
+    }).catch(() => clear(claude, h('p', { class: 'muted' }, 'Could not check.')));
+    api('/api/health').then((r) => {
+      clear(health, ...r.items.map((i) => h('div', { class: 'row' },
+        h('span', { class: 'dot ' + (i.ok ? 'ok' : i.optional ? 'warn' : 'bad') }), h('span', { class: 'grow' }, i.label),
+        h('span', { class: 'pill ' + (i.ok ? 'ok' : i.optional ? 'warn' : 'bad') }, i.ok ? 'Ready' : i.optional ? 'Optional — not installed' : 'Missing'))));
+      meta.textContent = `Python ${r.python} · Crew’s folder: ${r.home}`;
+    }).catch(fail);
+    return [
+      card('Crew', '', crew),
+      card('Claude Code', '', claude),
+      card('Check-up', 'What Crew needs on this computer. Anything missing? Run the Crew installer again; it only adds what is missing and keeps everything you have.', health, meta),
     ];
   },
 };

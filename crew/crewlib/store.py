@@ -98,6 +98,13 @@ class Store:
         self.db.execute("PRAGMA busy_timeout=30000")
         with self._lock:
             self.db.executescript(SCHEMA)
+            for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT")):
+                have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
+                if column not in have:
+                    try:
+                        self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+                    except sqlite3.OperationalError:  # another process added it at the same moment
+                        pass
 
     def close(self) -> None:
         self.db.close()

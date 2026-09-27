@@ -131,9 +131,16 @@ Do this:
 Do not edit any files. Be rigorous and brief."""
 
 
-def ceo_plan_prompt(brief: str, plan: str, board: str) -> str:
+EFFORT_GUIDE = """Effort levels (Claude's own names): low = trivial edits; medium = routine, fully specified work;
+high = normal building work; xhigh = hard or risky work (tricky logic, security, data, the shared foundation);
+max = the hardest, highest-stakes work. Quality comes first: when unsure, choose the higher level. Higher effort
+costs more time and subscription usage, so do not give max to routine work."""
+
+
+def ceo_plan_prompt(brief: str, plan: str, board: str, record: str = "") -> str:
     return f"""You are the CEO-level reviewer: the most capable model on the team, consulted rarely and only for
-high-leverage calls. Review the lead's plan before the team starts building.
+high-leverage calls. Review the lead's plan before the team starts building, and decide how hard each task's
+builder should think.
 
 Brief:
 {brief}
@@ -147,8 +154,37 @@ Task board:
 Look for: a wrong or risky approach, requirements in the brief that no task covers, shared decisions left
 implicit (interfaces not fixed in the foundation task), overlapping file scopes, tasks too large to finish in
 ~45 minutes, missing tests or checks. Read the repository if you need to.
+
+{EFFORT_GUIDE}
+
+{record or "You have no effort record yet; use your judgement."}
+
 Record your verdict with team_verdict(kind="plan"): "approve" (optionally with up to 3 high-value adjustments),
-or "changes" with a numbered must-fix list. Be brief and decisive."""
+or "changes" with a numbered must-fix list. In the same call, set an effort for EVERY task:
+efforts=[{{"task_id": 1, "effort": "high"}}, ...]. Be brief and decisive."""
+
+
+def ceo_effort_prompt(brief: str, record: str = "") -> str:
+    return f"""You are the CEO-level decision maker. One builder will build this whole job on its own, then a fresh
+reviewer and you will check it. Decide how hard the builder should think.
+
+Brief:
+{brief}
+
+{EFFORT_GUIDE}
+
+{record or "You have no effort record yet; use your judgement."}
+
+Answer with the effort and a one-sentence reason."""
+
+
+CEO_EFFORT_SCHEMA = {
+    "type": "object",
+    "properties": {"effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]},
+                   "reason": {"type": "string"}},
+    "required": ["effort", "reason"],
+    "additionalProperties": False,
+}
 
 
 def ceo_ruling_prompt(question: str, context: str) -> str:

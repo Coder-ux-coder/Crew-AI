@@ -19,22 +19,30 @@ from crewlib.util import atomic_write, crew_home, load_env_file
 
 # Models offered in the pickers. The owner can type any other name too; the ban list still applies.
 KNOWN_MODELS = [
-    {"id": "claude-opus-5-5", "label": "Claude Opus 5.5", "note": "Best for the work"},
-    {"id": "claude-fable-5-1", "label": "Claude Fable 5.1", "note": "Most capable, tighter limits"},
-    {"id": "claude-opus-5", "label": "Claude Opus 5", "note": "Previous Opus"},
+    {"id": "claude-opus-5-5", "label": "Opus 5.5", "note": "Best for everyday work", "engine": "claude"},
+    {"id": "claude-fable-5-1", "label": "Fable 5.1", "note": "Most capable, tighter limits", "engine": "claude"},
+    {"id": "claude-opus-5", "label": "Opus 5", "note": "Previous Opus", "engine": "claude"},
 ]
-EFFORTS = list(cfgmod.EFFORTS)
+EFFORTS = list(cfgmod.EFFORT_CHOICES)
+CODEX_EFFORTS = ["auto", "minimal", "low", "medium", "high", "xhigh"]
 APP_DEFAULTS = {
+    "chat_engine": "claude",
     "chat_model": "claude-opus-5-5",
-    "chat_effort": "high",
+    "chat_effort": "auto",
     "chat_account": "",
+    "codex_model": "",
+    "codex_effort": "auto",
+    "start_with_windows": False,
     "voice_name": "",
     "voice_rate": 1.0,
     "auto_read": False,
     "dictation_lang": "en-US",
     "theme": "system",
-    "accent": "green",
+    "accent": "clay",
+    "font": "serif",
+    "owner_name": "",
     "phone_enabled": False,
+    "settings_version": 2,
 }
 
 
@@ -53,9 +61,37 @@ def _raw() -> dict:
     return tomllib.loads(p.read_text(encoding="utf-8"))
 
 
+SETTINGS_VERSION = 2
+# Values an older Crew wrote as defaults, and what they became (only exact old defaults are changed).
+_OLD_DEFAULTS = [("models", "effort_work", "high", "auto"), ("models", "effort_light", "medium", "auto"),
+                 ("models", "effort_ceo", "high", "max"), ("team", "max_hours", 3.0, 0.0),
+                 ("app", "chat_effort", "high", "auto"), ("app", "accent", "green", "clay")]
+
+
+def _migrate(raw: dict) -> dict:
+    """Bring a settings file from an older Crew up to date without losing anything the owner chose."""
+    if int((raw.get("app") or {}).get("settings_version") or 1) >= SETTINGS_VERSION:
+        return raw
+    for section, key, old, new in _OLD_DEFAULTS:
+        sec = raw.get(section)
+        if isinstance(sec, dict) and key in sec and sec[key] == old:
+            sec[key] = new
+    raw.setdefault("app", {})["settings_version"] = SETTINGS_VERSION
+    return raw
+
+
 def load() -> dict:
     """Everything the Settings screen shows, with defaults filled in."""
     raw = _raw()
+    if raw and int((raw.get("app") or {}).get("settings_version") or 1) < SETTINGS_VERSION:
+        migrated = _migrate(raw)
+        try:
+            atomic_write(path(), dump({"team": migrated.get("team") or {}, "models": migrated.get("models") or {},
+                                       "app": migrated.get("app") or {}, "account": migrated.get("account") or [],
+                                       "seat": migrated.get("seat") or []}))
+        except OSError:
+            pass
+        raw = _raw()
     cfg = cfgmod.load(str(path()) if path().is_file() else None)
     team = {k: getattr(cfg.team, k) for k in cfg.team.__dataclass_fields__}
     models = {k: getattr(cfg.models, k) for k in cfg.models.__dataclass_fields__}
@@ -64,7 +100,8 @@ def load() -> dict:
     seats = [{"name": s.name, "vendor": s.vendor, "account": s.account, "role": s.role} for s in cfg.seats]
     explicit_seats = bool(raw.get("seat"))
     return {"team": team, "models": models, "app": app, "accounts": accounts, "seats": seats,
-            "explicit_seats": explicit_seats, "known_models": KNOWN_MODELS, "efforts": EFFORTS}
+            "explicit_seats": explicit_seats, "known_models": KNOWN_MODELS, "efforts": EFFORTS,
+            "codex_efforts": CODEX_EFFORTS}
 
 
 def save(update: dict) -> dict:

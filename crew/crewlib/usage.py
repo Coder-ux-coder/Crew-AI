@@ -1,0 +1,103 @@
+"""How much of each subscription is used: the 5-hour and weekly limits Claude reports, and tokens
+per day. Written by every Crew process (the app, team runs, the assistant); read by the app.
+
+SQLite at ~/.crew/usage.db (safe with several writers).
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+
+from .util import crew_home
+
+
+def _db() -> sqlite3.Connection:
+    db = sqlite3.connect(crew_home() / "usage.db", timeout=30, isolation_level=None)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=30000")
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS limits (account TEXT PRIMARY KEY, status TEXT, kind TEXT,
+            five_util REAL, five_reset INTEGER, week_util REAL, week_reset INTEGER, updated REAL);
+        CREATE TABLE IF NOT EXISTS tokens (account TEXT, day TEXT, input INTEGER DEFAULT 0, output INTEGER DEFAULT 0,
+            cache_read INTEGER DEFAULT 0, cache_write INTEGER DEFAULT 0, turns INTEGER DEFAULT 0,
+            PRIMARY KEY (account, day));
+    """)
+    return db
+
+
+def record_rate(account: str, info: dict) -> None:
+    """Store a Claude Code rate_limit_event (utilization is 0–1)."""
+    if not account or not isinstance(info, dict):
+        return
+    windows = info.get("unifiedWindows") or {}
+    five, week = windows.get("five_hour") or {}, windows.get("seven_day") or {}
+    if not five and info.get("rateLimitType") == "five_hour":
+        five = {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}
+    if not week and info.get("rateLimitType") in ("seven_day", "seven_day_opus"):
+        week = {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}
+    try:
+        db = _db()
+        try:
+            db.execute(
+                "INSERT INTO limits(account,status,kind,five_util,five_reset,week_util,week_reset,updated) "
+                "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(account) DO UPDATE SET status=excluded.status, kind=excluded.kind, "
+                "five_util=COALESCE(excluded.five_util, limits.five_util), "
+                "five_reset=COALESCE(excluded.five_reset, limits.five_reset), "
+                "week_util=COALESCE(excluded.week_util, limits.week_util), "
+                "week_reset=COALESCE(excluded.week_reset, limits.week_reset), updated=excluded.updated",
+                (account, info.get("status"), info.get("rateLimitType"), five.get("utilization"), five.get("resetsAt"),
+                 week.get("utilization"), week.get("resetsAt"), time.time()))
+        finally:
+            db.close()
+    except sqlite3.Error:
+        pass
+
+
+def record_tokens(account: str, usage: dict | None) -> None:
+    """Add one turn's token use (Claude Code's result.usage) to today's total for the account."""
+    if not account or not usage:
+        return
+    day = time.strftime("%Y-%m-%d")
+    vals = (int(usage.get("input_tokens") or 0), int(usage.get("output_tokens") or 0),
+            int(usage.get("cache_read_input_tokens") or 0), int(usage.get("cache_creation_input_tokens") or 0))
+    try:
+        db = _db()
+        try:
+            db.execute(
+                "INSERT INTO tokens(account,day,input,output,cache_read,cache_write,turns) VALUES(?,?,?,?,?,?,1) "
+                "ON CONFLICT(account,day) DO UPDATE SET input=input+excluded.input, output=output+excluded.output, "
+                "cache_read=cache_read+excluded.cache_read, cache_write=cache_write+excluded.cache_write, "
+                "turns=turns+1", (account, day, *vals))
+        finally:
+            db.close()
+    except sqlite3.Error:
+        pass
+
+
+def snapshot(days: int = 7) -> dict:
+    """Everything the Usage screen shows: limits per account and tokens for the last `days` days."""
+    db = _db()
+    try:
+        limits = {r["account"]: dict(r) for r in db.execute("SELECT * FROM limits")}
+        since = time.strftime("%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400))
+        rows = [dict(r) for r in db.execute("SELECT * FROM tokens WHERE day >= ? ORDER BY day", (since,))]
+    finally:
+        db.close()
+    now = time.time()
+    for lim in limits.values():  # a window that has reset since we last heard counts as empty
+        if lim.get("five_reset") and lim["five_reset"] < now:
+            lim["five_util"], lim["five_reset"] = 0.0, None
+        if lim.get("week_reset") and lim["week_reset"] < now:
+            lim["week_util"], lim["week_reset"] = 0.0, None
+    today = time.strftime("%Y-%m-%d")
+    per_account: dict[str, dict] = {}
+    for r in rows:
+        acc = per_account.setdefault(r["account"], {"today": 0, "week": 0, "days": {}})
+        total = r["input"] + r["output"] + r["cache_read"] + r["cache_write"]
+        acc["week"] += total
+        acc["days"][r["day"]] = {"total": total, "output": r["output"], "turns": r["turns"]}
+        if r["day"] == today:
+            acc["today"] = total
+    return {"limits": limits, "tokens": per_account, "now": now}

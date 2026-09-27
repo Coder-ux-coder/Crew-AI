@@ -684,9 +684,10 @@ export function openViewer(cap, { onChange = null } = {}) {
     try {
       const chat = await api('/api/chats', { method: 'POST', body: {} });
       const att = await api(`/api/chats/${chat.id}/attach-capture`, { method: 'POST', body: { name: cap.name } });
-      store.pendingChat = { text: isVideo ? 'What happens in this recording?' : 'What do you see in this screenshot?', attachments: [att] };
+      store.pendingSend = { id: chat.id, text: isVideo ? 'What happens in this recording?' : 'What do you see in this screenshot?',
+        attachments: [{ ...att, name: cap.name }], settings: { product: 'claude', model: chat.model, effort: chat.effort || 'auto', mode: 'auto' } };
       close();
-      location.hash = '#/assistant/' + chat.id;
+      location.hash = '#/chat/' + chat.id;
     } catch (e) { fail(e); }
   };
   const del = async () => {
@@ -694,7 +695,7 @@ export function openViewer(cap, { onChange = null } = {}) {
     try { await api('/api/captures/' + encodeURIComponent(cap.name), { method: 'DELETE' }); bus.emit('captures'); onChange && onChange(); close(); } catch (e) { fail(e); }
   };
   const common = [
-    btn('Ask the assistant', askAssistant, { cls: 'sm', ic: 'chat' }),
+    btn('Ask Claude about it', askAssistant, { cls: 'sm', ic: 'chat' }),
     btn('Download', () => download(cap.url, cap.name), { cls: 'sm', ic: 'download' }),
     btn('Delete', del, { cls: 'sm', ic: 'trash' }),
     btn('Close', () => close(), { cls: 'sm', ic: 'x' }),

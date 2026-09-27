@@ -64,6 +64,11 @@ TOOLS = [
      _obj({"key": S}, ["key"])),
     ("phone_open_app", "Open an app on the phone by name (for example WhatsApp, Chrome, Settings).",
      _obj({"name": S}, ["name"])),
+    ("todo_write", "Your to-do list for multi-step work, shown live to the owner. Send the whole list each time, with "
+                   "each item's status: pending, in_progress (one at a time) or completed. Use it for any task with "
+                   "three or more steps.",
+     _obj({"todos": {"type": "array", "items": _obj({"content": S, "status": {"type": "string", "enum": [
+         "pending", "in_progress", "completed"]}}, ["content", "status"])}}, ["todos"])),
 ]
 
 
@@ -84,6 +89,10 @@ def call_app(name: str, args: dict) -> dict:
 
 
 def handle(name: str, args: dict) -> tuple[list[dict], bool]:
+    if name == "todo_write":  # the app shows the list from the call itself; nothing to do here
+        items = args.get("todos") or []
+        done = sum(1 for x in items if isinstance(x, dict) and x.get("status") == "completed")
+        return [{"type": "text", "text": f"To-do list updated ({done} of {len(items)} done)."}], False
     if not APP:
         return [{"type": "text", "text": "The browser and phone tools need the Crew app to be open."}], True
     res = call_app(name, args)

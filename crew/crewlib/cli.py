@@ -102,14 +102,16 @@ def cmd_start(args) -> int:
         repo = gitops.ensure_repo(target.resolve())
     (runs_dir() / "LATEST").write_text(run_id)
     return _run(cfg, run_dir, repo, request, run_id, resume=False, open_web=not args.no_web,
-                headless=args.headless)
+                headless=args.headless, max_hours=args.max_hours)
 
 
 def _run(cfg, run_dir: Path, repo: Path, request: str, run_id: str, resume: bool, open_web: bool,
-         headless: bool = False) -> int:
+         headless: bool = False, max_hours: float | None = None) -> int:
     from .orchestrator import Orchestrator
 
     orch = Orchestrator(cfg, run_dir, repo, request, run_id, resume=resume)
+    if max_hours is not None and not resume:
+        orch.store.set("max_hours", max(0.0, float(max_hours)))  # a timer for this project only
     server = None
     try:
         if headless:  # started by the Crew app, which shows the run itself
@@ -302,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--headless", action="store_true", help="no live view at all (used by the Crew app)")
     p.add_argument("--run-id", help=argparse.SUPPRESS)
     p.add_argument("--mode", choices=("auto", "solo", "team"), help="solo builder or full team (default: auto)")
+    p.add_argument("--max-hours", type=float, help="stop after this many hours (default: no time limit)")
     p.set_defaults(fn=cmd_start)
 
     p = sub.add_parser("resume", help="continue a stopped run")

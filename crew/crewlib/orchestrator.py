@@ -47,6 +47,7 @@ class SeatRT:
     stopping: bool = False
     restart_times: list[float] = field(default_factory=list)
     cooldown_until: float = 0.0
+    want_effort: str = ""  # the effort the CEO set for the seat's current task
 
     @property
     def name(self) -> str:
@@ -159,8 +160,22 @@ class Orchestrator:
                            work_model=self.cfg.models.work, permission_mode=self.cfg.team.permission_mode,
                            run_dir=self.run_dir, extra_env=self._secret_env())
 
-    def _codex_setup(self) -> CodexSetup:
-        return CodexSetup(model=self.cfg.models.codex, effort=self.cfg.models.effort_work, run_dir=self.run_dir,
+    def task_effort(self, task: dict | None) -> str:
+        """How hard the builder of a task should think: the owner's fixed choice, else the CEO's call per task
+        (made at plan review), else a sensible default from the task's size and kind."""
+        fixed = self.cfg.models.effort_work
+        if fixed and fixed != "auto":
+            return fixed
+        if task and task.get("effort"):
+            return task["effort"]
+        if not task:
+            return "auto"
+        if task.get("kind") in ("research", "verify", "docs"):
+            return "medium"
+        return {"S": "medium", "M": "high", "L": "xhigh"}.get(task.get("size") or "M", "high")
+
+    def _codex_setup(self, effort: str | None = None) -> CodexSetup:
+        return CodexSetup(model=self.cfg.models.codex, effort=effort or self.cfg.models.effort_work, run_dir=self.run_dir,
                           extra_env=self._secret_env(),
                           bypass_sandbox=self.cfg.team.permission_mode == "bypassPermissions")
 
@@ -178,24 +193,27 @@ class Orchestrator:
             return prompts.lead_system(rt.name, seats)
         return prompts.member_system(rt.name, seats, self.lead_name)
 
-    def start_seat(self, rt: SeatRT, first: str | None, resume_session: str | None = None) -> None:
+    def start_seat(self, rt: SeatRT, first: str | None, resume_session: str | None = None,
+                   effort: str | None = None) -> None:
         system = self._system_prompt(rt)
         index = list(self.seats).index(rt.name)
         port_env = {"CREW_PORT_BASE": str(4100 + 100 * index)}  # separate server ports per agent
+        effort = effort or rt.want_effort or None
         if rt.spec.vendor == "claude":
-            setup = self._claude_setup()
+            setup = self._claude_setup(effort=effort)
             setup.extra_env = {**setup.extra_env, **port_env}
             rt.runner = ClaudeSeat(rt.name, rt.spec.role, rt.account, rt.worktree, setup, system,
                                    self.events, self.redact)
         else:
-            setup = self._codex_setup()
+            setup = self._codex_setup(effort=effort)
             setup.extra_env = {**setup.extra_env, **port_env}
             rt.runner = CodexSeat(rt.name, rt.spec.role, rt.account, rt.worktree, setup, system,
                                   self.events, self.redact)
         rt.busy = bool(first)
         rt.turn_started = rt.last_event = now()
         rt.runner.start(first_message=first, resume=resume_session)
-        self.store.update_seat(rt.name, status="busy" if first else "idle", account=rt.account.name)
+        self.store.update_seat(rt.name, status="busy" if first else "idle", account=rt.account.name,
+                               effort=setup.effort)
         self.log(f"started {rt.name} on {rt.account.name}" + (f" (resume {resume_session})" if resume_session else ""))
 
     # =================================================================== run
@@ -300,6 +318,7 @@ class Orchestrator:
         task_id = self.store.create_task(
             title=brief.get("title") or "The project", spec=self.brief_text(), acceptance=criteria,
             scope=["**"], depends_on=[], size="L", kind="build", suggested_owner=lead.name, created_by="crew")
+        self.store.update_task(task_id, effort=self.solo_effort())
         self.set_phase("build")
         self.last_progress = now()
         self.say(f"This job is small enough that one builder is fastest, so {lead.name} builds it and the others "
@@ -329,7 +348,9 @@ class Orchestrator:
     # ================================================================== loop
 
     def loop(self) -> None:
-        max_seconds = self.cfg.team.max_hours * 3600
+        hours = self.store.get("max_hours")
+        hours = float(self.cfg.team.max_hours if hours is None else hours)
+        max_seconds = hours * 3600  # 0: no time limit
         while self.phase() not in ("done", "stopped", "failed"):
             try:
                 ev = self.events.get(timeout=TICK)
@@ -343,8 +364,8 @@ class Orchestrator:
                 self.say("Stop requested by the owner. Saving everyone's work.")
                 self.stop_run()
                 break
-            if now() - self.started > max_seconds:
-                self.say(f"Time limit reached ({self.cfg.team.max_hours} h). Stopping and saving the work.")
+            if max_seconds > 0 and now() - self.started > max_seconds:
+                self.say(f"The timer you set ({hours:g} h) is up. Stopping and saving the work.")
                 self.stop_run()
                 break
             self.tick()
@@ -390,6 +411,11 @@ class Orchestrator:
             if now() - self.last_activity_write.get(rt.name, 0) > 2:
                 self.last_activity_write[rt.name] = now()
                 self.store.update_seat(rt.name, note=clip(rt.last_label, 120), last_event_at=ev.ts)
+        elif ev.kind == "helper":
+            if ev.data.get("state") != "step":  # starts and ends are kept for the app's agents panel
+                row = self.store.seat(rt.name) or {}
+                self.store.event("helper", seat=rt.name, task_id=row.get("current_task"), id=ev.data.get("id"),
+                                 state=ev.data.get("state"), what=ev.data.get("what", ""), type=ev.data.get("type", ""))
         elif ev.kind == "repeat":
             self.say(f"@{rt.name} you have run the same step several times ({clip(ev.data.get('label', ''), 80)}). "
                      "Step back: check your assumptions, try a different approach, or block the task with the reason.",
@@ -662,6 +688,19 @@ class Orchestrator:
             if unread:
                 parts.append(prompts.chat_digest(unread))
                 self.store.mark_read(rt.name, unread[-1]["id"])
+            running = getattr(getattr(rt.runner, "setup", None), "effort", None)
+            if rt.want_effort and running and running != rt.want_effort:
+                if isinstance(rt.runner, CodexSeat):
+                    rt.runner.setup.effort = rt.want_effort  # Codex takes the effort per turn
+                    self.store.update_seat(rt.name, effort=rt.want_effort)
+                else:  # Claude Code sets effort per process: resume the same conversation at the new effort
+                    session = (self.store.seat(rt.name) or {}).get("session_id")
+                    rt.stopping = True
+                    rt.runner.stop()
+                    rt.stopping = False
+                    self.log(f"{rt.name}: effort {running} → {rt.want_effort}")
+                    self.start_seat(rt, "\n\n".join(parts), resume_session=session, effort=rt.want_effort)
+                    continue
             rt.busy = True
             rt.turn_started = rt.last_event = now()
             self.store.update_seat(rt.name, status="busy")
@@ -775,12 +814,14 @@ class Orchestrator:
 
     def _board_text(self) -> str:
         return "\n".join(
-            f"#{t['id']} [{t['status']}] {t['title']} size {t['size']} kind {t['kind']} owner→{t['suggested_owner'] or '-'}"
+            f"#{t['id']} [{t['status']}] {t['title']} size {t['size']} kind {t['kind']} effort {t.get('effort') or '-'}"
+            f" owner→{t['suggested_owner'] or '-'}"
             f" deps {t['depends_on']} scope {t['scope']}\n    spec: {clip(t['spec'], 400)}\n    accept: {clip(t['acceptance'], 300)}"
             for t in self.store.tasks())
 
     def _ceo_plan_job(self) -> None:
-        prompt = prompts.ceo_plan_prompt(self.brief_text(), self.store.get("plan_summary", ""), self._board_text())
+        prompt = prompts.ceo_plan_prompt(self.brief_text(), self.store.get("plan_summary", ""), self._board_text(),
+                                         lessons.render_for_ceo())
         res = self.run_ceo("ceo-plan", prompt)
         if not self.store.get("verdict:plan"):
             self.log(f"CEO plan review gave no verdict ({clip(res.text, 200)}); proceeding")
@@ -856,6 +897,7 @@ class Orchestrator:
             return False
         self.store.update_seat(rt.name, current_task=task["id"], chat_used=0)
         rt.idle_nudges = 0
+        rt.want_effort = self.task_effort(task)
         rt.pending.append(prompts.assignment(task, branch, mode, resumed=resumed))
         self.say(f"Task #{task['id']} → {rt.name}: {task['title']}", task_id=task["id"])
         return True
@@ -876,6 +918,7 @@ class Orchestrator:
                     continue
                 self.store.update_task(task["id"], status="in_progress")
                 self.store.update_seat(owner.name, current_task=task["id"], chat_used=0)
+                owner.want_effort = self.task_effort(task)
                 owner.pending.append(prompts.assignment(self.store.task(task["id"]), task["branch"],
                                                         (self.store.account(owner.account.name) or {}).get("mode", "normal"),
                                                         resumed=True))
@@ -948,13 +991,20 @@ class Orchestrator:
         wt = self.run_dir / "worktrees" / f"_review-{task['id']}"
         name = f"reviewer-{task['id']}"
         self.say(f"Reviewing task #{task['id']} with fresh eyes ({account.vendor}, {account.name}).", task_id=task["id"])
+        self.store.event("oneoff", seat=name, task_id=task["id"], state="start", role="reviewer", vendor=account.vendor,
+                         account=account.name, effort=self.task_effort(task),
+                         model=self.cfg.models.work if account.vendor == "claude" else (self.cfg.models.codex or ""))
         if account.vendor == "codex":
             res = run_once_codex(prompt, seat=name, role="reviewer", account=account, workdir=wt,
-                                 setup=self._codex_setup(), redact=self.redact, task_id=task["id"], read_only=True)
+                                 setup=self._codex_setup(effort=self.task_effort(task)), redact=self.redact,
+                                 task_id=task["id"], read_only=True)
         else:
             res = run_once_claude(prompt, seat=name, role="reviewer", account=account, workdir=wt,
-                                  setup=self._claude_setup(), redact=self.redact, task_id=task["id"], read_only=True)
+                                  setup=self._claude_setup(effort=self.task_effort(task)), redact=self.redact,
+                                  task_id=task["id"], read_only=True)
         self._account_usage(account.name, res)
+        self.store.event("oneoff", seat=name, task_id=task["id"], state="error" if res.is_error else "done",
+                         tokens=res.tokens, seconds=round(res.duration_s or 0))
         return res
 
     def on_review_done(self, task_id: int, outcome: tuple[str, str, str | None]) -> None:
@@ -1012,6 +1062,11 @@ class Orchestrator:
             self.store.update_task(task_id, status="merged", finished_at=now())
             self.store.event("merged", task_id=task_id, tokens=task["tokens"], size=task["size"],
                              seconds=now() - (task["started_at"] or now()), rounds=task["review_rounds"])
+            effort = self.task_effort(task)
+            if effort != "auto":
+                lessons.record_effort_outcome(task["kind"], task["size"], effort, task["review_rounds"],
+                                              (now() - (task["started_at"] or now())) / 60, task["tokens"],
+                                              project=self.store.get("project_name", "") or "")
             self.say(f"Task #{task_id} merged into the team's result. ✔", task_id=task_id)
         elif status == "error":
             fails = int(self.store.get(f"merge_errors:{task_id}", 0) or 0) + 1
@@ -1157,7 +1212,20 @@ class Orchestrator:
 
     # ================================================================== CEO
 
-    def run_ceo(self, name: str, prompt: str, workdir: Path | None = None) -> RunResult:
+    def solo_effort(self) -> str:
+        """In solo mode there is no plan review, so the CEO decides the builder's effort up front."""
+        if self.cfg.models.effort_work != "auto":
+            return self.cfg.models.effort_work
+        res = self.run_ceo("ceo-effort", prompts.ceo_effort_prompt(self.brief_text(), lessons.render_for_ceo()),
+                           json_schema=prompts.CEO_EFFORT_SCHEMA, timeout=600)
+        choice = res.structured if isinstance(res.structured, dict) else {}
+        effort = choice.get("effort") if choice.get("effort") in lessons.EFFORT_ORDER else "high"
+        self.say(f"The CEO set the builder's effort to {effort}" + (f": {choice['reason']}" if choice.get("reason")
+                                                                     else " (default)."))
+        return effort
+
+    def run_ceo(self, name: str, prompt: str, workdir: Path | None = None, json_schema: dict | None = None,
+                timeout: float = 2400) -> RunResult:
         modes = {a["name"]: a.get("mode") for a in self.store.accounts()}
         claude_accounts = [a for a in self.store.accounts() if a["vendor"] == "claude"]
         acc_row = scheduler.pick_account(claude_accounts, modes)
@@ -1166,17 +1234,21 @@ class Orchestrator:
         account = self.cfg.account(acc_row["name"])
         model = self.cfg.models.ceo or self.cfg.models.work
         effort = self.cfg.models.effort_ceo
+        self.store.event("oneoff", seat=name, state="start", role="ceo", vendor="claude", account=account.name,
+                         model=model, effort=effort if effort != "auto" else "max")
         res = run_once_claude(prompt, seat=name, role="ceo", account=account, workdir=workdir or self.main_wt,
                               setup=self._claude_setup(effort=effort, model=model), redact=self.redact,
-                              read_only=True, timeout=2400)
+                              read_only=True, timeout=timeout, json_schema=json_schema)
         self._account_usage(account.name, res)
         if res.is_error and model != self.cfg.models.work:
             # The CEO model has its own, tighter limit: fall back to the workhorse at maximum effort.
             self.log(f"CEO model unavailable ({clip(res.text, 200)}); using {self.cfg.models.work} at max effort")
             res = run_once_claude(prompt, seat=name, role="ceo", account=account, workdir=workdir or self.main_wt,
                                   setup=self._claude_setup(effort="max"), redact=self.redact,
-                                  read_only=True, timeout=2400)
+                                  read_only=True, timeout=timeout, json_schema=json_schema)
             self._account_usage(account.name, res)
+        self.store.event("oneoff", seat=name, state="error" if res.is_error else "done", tokens=res.tokens,
+                         seconds=round(res.duration_s or 0))
         return res
 
     def process_escalations(self) -> None:
@@ -1278,8 +1350,12 @@ class Orchestrator:
         return path
 
     def retrospective(self) -> None:
-        """Save what this run taught us: cost model, failovers, stalls, and the lead's own lessons."""
+        """Save what this run taught us: cost model, failovers, stalls, the CEO's effort lessons, and the lead's own."""
         update_cost_model(self.store, self.cfg)
+        try:
+            lessons.derive_ceo_lessons()
+        except Exception as exc:  # lessons must never break delivery
+            self.log(f"CEO lessons: {exc}")
         for ev in self.store.events("failover"):
             d = ev["data"]
             lessons.add("usage", f"Failover {d.get('frm')} → {d.get('to')} kept the conversation "

@@ -111,7 +111,19 @@ if (-not (Have 'claude') -and -not (Test-Path $ClaudeExe)) {
   Refresh-Path
 }
 if ((Have 'claude') -or (Test-Path $ClaudeExe)) {
-  Good 'Claude Code is installed. You sign in from inside Crew (Home page or Settings > Subscriptions).'
+  # New models need a recent Claude Code: bring every copy on this PC up to date (Crew uses the newest).
+  $copies = @()
+  if (Test-Path $ClaudeExe) { $copies += $ClaudeExe }
+  $onPath = Get-Command claude -ErrorAction SilentlyContinue
+  if ($onPath -and ($copies -notcontains $onPath.Source)) { $copies += $onPath.Source }
+  foreach ($exe in $copies) {
+    Say "      Updating Claude Code ($exe)..."
+    & $exe update *> $null
+  }
+  Refresh-Path
+  $ver = ''
+  foreach ($exe in $copies) { $v = (& $exe --version 2> $null) -join ' '; if ($v) { $ver = $v.Trim(); break } }
+  Good "Claude Code $ver is ready. You sign in from inside Crew (Settings > Subscriptions)."
 } else {
   Note 'Claude Code did not install. Install it from https://claude.ai/download, then run this installer again.'
 }
@@ -136,7 +148,12 @@ if (Ask-YesNo 'Will you use a ChatGPT subscription with Crew too?' $true) {
 
 # ------------------------------------------------------------------------------------------ 5
 Step 5 'Browser and picture add-ons'
-& $Py -m pip install --user --upgrade --disable-pip-version-check --quiet playwright pillow *> $null
+$Requirements = Join-Path $Source 'requirements-app.txt'
+if (Test-Path $Requirements) {
+  & $Py -m pip install --user --upgrade --disable-pip-version-check --quiet -r $Requirements *> $null
+} else {
+  & $Py -m pip install --user --upgrade --disable-pip-version-check --quiet playwright pillow *> $null
+}
 if ($LASTEXITCODE -eq 0) {
   Good 'Installed. The side-panel browser uses Microsoft Edge, which is already on your PC.'
 } else {
@@ -163,6 +180,9 @@ if ((Test-Path $Adb) -or (Have 'adb')) { Good 'Ready. Connect your phone from th
 
 # ------------------------------------------------------------------------------------------ 7
 Step 7 'Crew itself'
+if (Test-Path (Join-Path $Target 'crewlib\cli.py')) {
+  Say '      Updating your existing Crew. Your chats, projects, sign-ins, API keys and settings are kept.'
+}
 # Close the Crew window's background program so the new version starts fresh. Team projects that are
 # running keep going (they are separate programs), and can always be continued later.
 Get-CimInstance Win32_Process -Filter "Name like 'python%.exe'" -ErrorAction SilentlyContinue |
@@ -236,9 +256,9 @@ if ($script:Notes.Count -gt 0) {
 if ($running) {
   Write-Host 'All done: Crew is running and its window is opening.' -ForegroundColor Green
   Write-Host ''
-  Write-Host 'On its Home page, press "Sign in" to connect your Claude subscription.' -ForegroundColor White
-  Write-Host 'Add your other subscriptions in Settings > Subscriptions. To use Crew on your Samsung,' -ForegroundColor White
-  Write-Host 'open Settings > Use on your phone and scan the code.' -ForegroundColor White
+  Write-Host 'Everything you had is kept: chats, projects, sign-ins, API keys and settings.' -ForegroundColor White
+  Write-Host 'New subscriptions: Settings > Subscriptions. Your Samsung: Settings > Use on your phone.' -ForegroundColor White
+  Write-Host 'From now on, Crew updates itself: when a new version is ready, press "Update now" inside Crew.' -ForegroundColor White
   Write-Host 'Next time, open Crew with the Crew icon on your desktop.' -ForegroundColor White
 } else {
   Write-Host 'Crew was installed but did not answer. Please send a screenshot of this window.' -ForegroundColor Red

@@ -28,11 +28,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from crewlib import lessons
+from crewlib import claude_cli, connections as conn_mod, lessons, usage as usage_mod
 from crewlib.util import atomic_write, crew_home
 
 from . import browser as browser_mod
-from . import captures, chat, computer as computer_mod, phone as phone_mod, settings, skills
+from . import captures, chat, computer as computer_mod, phone as phone_mod, settings, skills, updater
+from .workflows import TEMPLATES as WORKFLOW_TEMPLATES, Workflows
 from .runs import RunManager
 from .sse import hub
 
@@ -43,7 +44,7 @@ for _ext, _type in ((".js", "text/javascript"), (".mjs", "text/javascript"), (".
                     (".webm", "video/webm"), (".mp4", "video/mp4"), (".png", "image/png"), (".md", "text/markdown"),
                     (".csv", "text/csv"), (".pdf", "application/pdf"), (".html", "text/html")):
     mimetypes.add_type(_type, _ext)
-VERSION = "1.0.0"
+VERSION = updater.current().get("version", "2.0.0")
 MAX_UPLOAD = 300 * 1024 * 1024
 
 
@@ -65,6 +66,77 @@ class App:
         self._auth_cache: dict[str, tuple[float, dict]] = {}
         self.lan_servers: list = []
         skills.build_active_pack()
+        self.workflows = Workflows(self)
+        self.skill_install = {"state": "idle", "message": ""}
+
+    def upkeep(self) -> None:
+        """Once a day, in the background: keep Claude Code current and look for a newer Crew."""
+        def work():
+            try:
+                claude_cli.update_if_stale()
+            except Exception as exc:
+                print(f"claude update: {exc}")
+            if not (crew_home() / "anthropic-skills.json").is_file() and settings.load()["accounts"]:
+                self.install_anthropic_skills()  # once: Anthropic's official skills for every Claude subscription
+            try:
+                if time.time() - float(updater.last_check().get("checked") or 0) > 20 * 3600:
+                    info = updater.check()
+                    if info.get("available"):
+                        hub.publish("app", "update", info)
+            except Exception as exc:
+                print(f"update check: {exc}")
+        threading.Thread(target=work, daemon=True, name="crew-upkeep").start()
+
+    def install_anthropic_skills(self) -> None:
+        """Anthropic's official skills (Word, Excel, PowerPoint, PDF, skill creator …) through Claude Code's
+        own plugin marketplace, for every Claude subscription."""
+        if self.skill_install["state"] == "running":
+            return
+        self.skill_install = {"state": "running", "message": "Installing Anthropic's skills…"}
+
+        def work():
+            from crewlib.agents import which
+            exe = which("claude")
+            problems = [] if exe else ["Claude Code is not installed."]
+            for acc in [a for a in settings.load()["accounts"] if a["vendor"] == "claude" and exe]:
+                env = self._account_env(acc)
+                for args in (["plugin", "marketplace", "add", "anthropics/skills"],
+                             ["plugin", "install", "document-skills@anthropic-agent-skills"],
+                             ["plugin", "install", "example-skills@anthropic-agent-skills"]):
+                    try:
+                        proc = subprocess.run([exe, *args], capture_output=True, text=True, timeout=300, env=env,
+                                              stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace")
+                        out = (proc.stdout + proc.stderr).lower()
+                        if proc.returncode != 0 and "already" not in out:
+                            problems.append(f"{acc['name']}: {(proc.stderr or proc.stdout).strip()[-200:]}")
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        problems.append(f"{acc['name']}: {exc}")
+            self.skill_install = ({"state": "done", "message": "Anthropic's skills are installed."} if not problems else
+                                  {"state": "error", "message": "; ".join(problems)[:600]})
+            if not problems:
+                atomic_write(crew_home() / "anthropic-skills.json", json.dumps({"installed": time.time()}))
+            hub.publish("app", "notice", {"kind": "skills", "text": self.skill_install["message"]})
+        threading.Thread(target=work, daemon=True).start()
+
+    def library(self, limit: int = 300) -> list[dict]:
+        """Files made in chats (newest first), for the Library screen."""
+        titles = {c["id"]: c["title"] for c in self.chats.db.q("SELECT id, title FROM chats")}
+        items = []
+        root = crew_home() / "chats"
+        if root.is_dir():
+            for chat_dir in root.iterdir():
+                if chat_dir.name not in titles:
+                    continue
+                for p in chat_dir.rglob("*"):
+                    rel = p.relative_to(chat_dir)
+                    if not p.is_file() or rel.parts[0] in (".crew", "attachments") or p.name.startswith("."):
+                        continue
+                    st = p.stat()
+                    items.append({"name": rel.as_posix(), "url": f"/files/chat/{chat_dir.name}/{rel.as_posix()}",
+                                  "kind": chat.file_kind(p.name), "size": st.st_size, "modified": st.st_mtime,
+                                  "where": titles[chat_dir.name], "origin": f"#/chat/{chat_dir.name}"})
+        items.sort(key=lambda x: x["modified"], reverse=True)
+        return items[:limit]
 
     @staticmethod
     def _conf() -> dict:
@@ -463,7 +535,8 @@ class Handler(BaseHTTPRequestHandler):
         st = settings.load()
         return self._json({
             "version": VERSION, "models": st["models"], "team": st["team"], "app": st["app"],
-            "known_models": st["known_models"], "efforts": st["efforts"], "accounts": st["accounts"],
+            "known_models": st["known_models"], "efforts": st["efforts"], "codex_efforts": st["codex_efforts"],
+            "accounts": st["accounts"],
             "runs": self.app.runs.list()[:12], "chats": self.app.chats.list()[:30],
             "browser": self.app.browser.status(), "phone_access": self.app.phone_access,
             "local": self._loopback(),
@@ -478,7 +551,8 @@ class Handler(BaseHTTPRequestHandler):
     @route("POST", "/api/runs")
     def api_run_start(self):
         b = self._body()
-        rid = self.app.runs.start(b.get("request", ""), repo=b.get("folder") or None, mode=b.get("mode") or None)
+        rid = self.app.runs.start(b.get("request", ""), repo=b.get("folder") or None, mode=b.get("mode") or None,
+                                  hours=b.get("hours"))
         return self._json({"id": rid})
 
     @route("GET", r"/api/runs/([\w.-]+)")
@@ -516,7 +590,28 @@ class Handler(BaseHTTPRequestHandler):
     @route("POST", "/api/chats")
     def api_chat_new(self):
         b = self._body()
-        return self._json(self.app.chats.create(b.get("model"), b.get("effort")))
+        return self._json(self.app.chats.create(b.get("engine"), b.get("model"), b.get("effort"), b.get("mode")))
+
+    @route("PUT", r"/api/chats/([\w-]+)")
+    def api_chat_update(self, cid):
+        b = self._body()
+        if "title" in b:
+            self.app.chats.rename(cid, b["title"])
+        if "pinned" in b:
+            self.app.chats.pin(cid, bool(b["pinned"]))
+        return self._json({"ok": True})
+
+    @route("POST", r"/api/chats/([\w-]+)/mode")
+    def api_chat_mode(self, cid):
+        return self._json(self.app.chats.set_mode(cid, self._body().get("mode", "auto")))
+
+    @route("POST", r"/api/chats/([\w-]+)/approve")
+    def api_chat_approve(self, cid):
+        return self._json(self.app.chats.approve_plan(cid, self._body().get("note", "")))
+
+    @route("GET", r"/api/chats/([\w-]+)/files")
+    def api_chat_files(self, cid):
+        return self._json({"files": self.app.chats.files(cid)})
 
     @route("GET", r"/api/chats/([\w-]+)")
     def api_chat(self, cid):
@@ -527,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_chat_send(self, cid):
         b = self._body()
         return self._json(self.app.chats.send(cid, b.get("text", ""), b.get("model"), b.get("effort"),
-                                              b.get("attachments") or []))
+                                              b.get("attachments") or [], b.get("mode"), b.get("engine")))
 
     @route("POST", r"/api/chats/([\w-]+)/upload")
     def api_chat_upload(self, cid):
@@ -709,10 +804,141 @@ class Handler(BaseHTTPRequestHandler):
     def api_account_login(self, name):
         return self._json({"message": self.app.open_login(name)})
 
+    # ---------------------------------------------------------- usage & Claude Code
+
+    @route("GET", "/api/usage")
+    def api_usage(self):
+        snap = usage_mod.snapshot(7)
+        accounts = []
+        for acc in settings.load()["accounts"]:
+            lim = snap["limits"].get(acc["name"]) or {}
+            tok = snap["tokens"].get(acc["name"]) or {"today": 0, "week": 0, "days": {}}
+            accounts.append({**acc, "limits": lim, "tokens": tok})
+        return self._json({"accounts": accounts, "now": snap["now"]})
+
+    @route("GET", "/api/claude")
+    def api_claude(self):
+        path, version = claude_cli.best()
+        return self._json({"path": path, "version": claude_cli.version_text(version), "info": self.app.chats.info(),
+                           "update": claude_cli.state()})
+
+    @route("POST", "/api/claude/update")
+    def api_claude_update(self):
+        ok, message = claude_cli.update()
+        return self._json({"ok": ok, "message": message})
+
+    # ---------------------------------------------------------- Anthropic's skills
+
+    @route("POST", "/api/skills/anthropic")
+    def api_skills_anthropic(self):
+        self.app.install_anthropic_skills()
+        return self._json(self.app.skill_install)
+
+    @route("GET", "/api/skills/anthropic")
+    def api_skills_anthropic_state(self):
+        return self._json(self.app.skill_install)
+
+    # ---------------------------------------------------------- connections
+
+    @route("GET", "/api/connections")
+    def api_connections(self):
+        keys = [{**k, "label": conn_mod.key_label(k["name"])} for k in settings.secret_names()]
+        return self._json({"keys": keys, "presets": conn_mod.KEY_PRESETS, "mcp": conn_mod.listing(),
+                           "claude_desktop": bool(conn_mod.claude_desktop_config())})
+
+    @route("POST", "/api/connections/mcp")
+    def api_connection_add(self):
+        b = self._body()
+        headers = b.get("headers") or {}
+        if isinstance(headers, str):
+            headers = dict(h.split(":", 1) for h in headers.splitlines() if ":" in h)
+        args = b.get("args") or []
+        if isinstance(args, str):
+            args = args.split()
+        conn_mod.add_mcp(b.get("name", ""), b.get("type", "http"), url=b.get("url", ""), headers=headers,
+                         command=b.get("command", ""), args=args, env=b.get("env") or {})
+        return self._json({"mcp": conn_mod.listing()})
+
+    @route("DELETE", r"/api/connections/mcp/([\w-]+)")
+    def api_connection_remove(self, name):
+        conn_mod.remove_mcp(name)
+        return self._json({"mcp": conn_mod.listing()})
+
+    @route("POST", r"/api/connections/mcp/([\w-]+)/toggle")
+    def api_connection_toggle(self, name):
+        conn_mod.set_enabled(name, bool(self._body().get("enabled")))
+        return self._json({"mcp": conn_mod.listing()})
+
+    @route("POST", "/api/connections/import-claude")
+    def api_connection_import(self):
+        added = conn_mod.import_claude_desktop()
+        return self._json({"added": added, "mcp": conn_mod.listing()})
+
+    # ---------------------------------------------------------- workflows
+
+    @route("GET", "/api/library")
+    def api_library(self):
+        return self._json({"items": self.app.library()})
+
+    @route("GET", "/api/workflows")
+    def api_workflows(self):
+        return self._json({"workflows": self.app.workflows.list(), "templates": WORKFLOW_TEMPLATES})
+
+    @route("POST", "/api/workflows")
+    def api_workflow_new(self):
+        return self._json(self.app.workflows.create(self._body()))
+
+    @route("PUT", r"/api/workflows/(\w+)")
+    def api_workflow_update(self, wid):
+        return self._json(self.app.workflows.update(wid, self._body()))
+
+    @route("DELETE", r"/api/workflows/(\w+)")
+    def api_workflow_delete(self, wid):
+        return self._json({"ok": self.app.workflows.delete(wid)})
+
+    @route("POST", r"/api/workflows/(\w+)/run")
+    def api_workflow_run(self, wid):
+        return self._json(self.app.workflows.run(wid, extra=self._body().get("extra", "")))
+
+    @route("GET", r"/api/workflows/(\w+)/runs")
+    def api_workflow_runs(self, wid):
+        return self._json({"runs": self.app.workflows.runs(wid)})
+
+    # ---------------------------------------------------------- app-wide events & updates
+
+    @route("GET", "/api/events")
+    def api_events(self):
+        return self._sse("app")
+
+    @route("GET", "/api/update")
+    def api_update_state(self):
+        info = updater.check() if self.query.get("refresh") == "1" else (updater.last_check() or {})
+        info["current"] = updater.current().get("version")
+        return self._json(info)
+
+    @route("POST", "/api/update")
+    def api_update_install(self):
+        if not self._loopback():
+            return self._error(403, "Update Crew on the computer it runs on.")
+        result = updater.install()
+        self.app.chats.shutdown()
+        self.app.workflows.stop()
+        updater.restart_later(self.app.port)
+        return self._json({"ok": True, **result})
+
+    @route("POST", "/api/startup")
+    def api_startup(self):
+        enabled = bool(self._body().get("enabled"))
+        message = set_start_with_windows(enabled)
+        settings.save({"app": {"start_with_windows": enabled}})
+        return self._json({"ok": True, "message": message})
+
     @route("GET", "/api/lessons")
     def api_lessons(self):
-        return self._json({"lessons": [{"category": x["category"], "text": x["text"], "weight": x["weight"]}
-                                       for x in lessons.top(60)]})
+        items = [{"category": x["category"], "text": x["text"], "weight": x["weight"]} for x in lessons.top(80)]
+        return self._json({"lessons": [x for x in items if x["category"] != "ceo"],
+                           "ceo": [x for x in items if x["category"] == "ceo"],
+                           "effort_record": lessons.effort_stats()})
 
     # ------------------------------------------------------ internal (agents)
 
@@ -801,6 +1027,27 @@ def phone_action(p: phone_mod.PhoneService, action: str, body: dict, driver: str
     raise ValueError(f"Unknown phone action '{action}'.")
 
 
+def set_start_with_windows(enabled: bool) -> str:
+    """Add or remove Crew from Windows' Startup folder (so workflows and the phone can always reach it)."""
+    if os.name != "nt":
+        return "Starting with the computer is set up by the installer on Windows."
+    startup = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    link = startup / "Crew.lnk"
+    if not enabled:
+        link.unlink(missing_ok=True)
+        return "Crew will no longer start with Windows."
+    root = Path(__file__).resolve().parent.parent
+    pyw = Path(sys.executable).with_name("pythonw.exe")
+    target = pyw if pyw.is_file() else Path(sys.executable)
+    icon = root / "crewapp" / "static" / "icons" / "crew.ico"
+    ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{link}');"
+          f"$s.TargetPath='{target}';$s.Arguments='-X utf8 -m crewlib app --no-open';"
+          f"$s.WorkingDirectory='{root}';$s.IconLocation='{icon},0';$s.Save()")
+    subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                   capture_output=True, timeout=60)
+    return "Crew will start quietly when you sign in to Windows."
+
+
 def open_path(path: Path) -> None:
     if os.name == "nt":
         os.startfile(str(path))  # type: ignore[attr-defined]
@@ -887,6 +1134,8 @@ def main(port: int = 8765, phone: bool = False, open_window: bool = True) -> int
         return 1
     Handler.app = app
     url = f"http://localhost:{port}"
+    app.workflows.start_clock()
+    app.upkeep()
     if phone or settings.load()["app"].get("phone_enabled"):
         app.set_phone_access(True)
     print(f"Crew is running at {url}" +

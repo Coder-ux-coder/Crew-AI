@@ -3,7 +3,7 @@
 
 [team]
 mode = "auto"            # "auto": one builder + reviewers for small jobs, the full team for big ones; or "solo" / "team"
-max_hours = 3            # hard stop for one run
+max_hours = 0            # 0 = no time limit; or a number of hours to stop after
 stall_minutes = 8        # an agent silent this long is nudged, then restarted
 ledger_minutes = 12      # no task moving for this long -> the lead must replan
 chat_budget = 8          # chat messages per agent per task (blockers are always allowed)
@@ -19,9 +19,9 @@ ceo = "claude-fable-5-1"         # used rarely: plan review, rulings, final revi
 codex = ""                       # Codex model; empty = Codex's own best default
 allowed = ["claude-opus-5-5", "claude-fable-5-1"]
 banned = ["haiku", "sonnet", "terra", "luna"]
-effort_work = "high"             # low | medium | high | xhigh | max
-effort_light = "medium"          # small jobs such as refining your request
-effort_ceo = "high"
+effort_work = "auto"             # auto (the CEO decides per task) | low | medium | high | xhigh | max
+effort_light = "auto"            # small jobs such as refining your request
+effort_ceo = "max"               # the CEO always thinks hardest
 
 # One block per subscription. profile = "default" uses the normal sign-in of that tool;
 # other accounts get their own folder under ~/.crew/accounts and are signed in by `crew setup`.

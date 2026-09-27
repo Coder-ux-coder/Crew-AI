@@ -105,7 +105,9 @@ class Brain:
             if want:
                 self.tool("team_verdict", kind="plan", verdict="changes", notes="1. Split task 2 into smaller pieces.")
             else:
-                self.tool("team_verdict", kind="plan", verdict="approve", notes="")
+                ids = [int(x) for x in re.findall(r"^#(\d+) ", text, re.M)]
+                efforts = [{"task_id": i, "effort": ("xhigh" if n == 0 else "high")} for n, i in enumerate(ids)]
+                self.tool("team_verdict", kind="plan", verdict="approve", notes="", efforts=efforts)
             return "verdict given"
         if "final acceptance review" in text:
             self.tool("team_verdict", kind="final", verdict="approve", notes="")
@@ -208,75 +210,279 @@ class Brain:
 # ------------------------------------------------------------------- claude mode
 
 
+FAKE_SKILLS = ["xlsx", "docx", "pptx", "pdf", "frontend-design", "canvas-design", "doc-coauthoring", "internal-comms",
+               "brand-guidelines", "skill-creator"]
+FAKE_COMMANDS = ["compact", "context", "usage", "cost", "clear", "review", "init", "security-review"] + FAKE_SKILLS
+
+
+def claude_version() -> str:
+    f = STATE / "claude-version"
+    return f.read_text().strip() if f.is_file() else str(SCEN.get("claude_version", "2.1.290"))
+
+
 def assistant_main(argv: list[str]) -> int:
-    """The app's Assistant: a persistent conversation with word-by-word streaming and device tools."""
+    """The app's Assistant: a persistent conversation that behaves like Claude Code's stream-json mode —
+    word-by-word text, thinking, tools, to-dos, helpers (sub-agents), plan mode, slash commands, limits."""
+    import queue
+    import threading
+
     def opt(name, default=None):
         return argv[argv.index(name) + 1] if name in argv else default
 
     model = opt("--model", "claude-opus-5-5")
     sid = opt("--resume") or str(uuid.uuid4())
+    state = {"mode": opt("--permission-mode", "default"), "context": 12000 if opt("--resume") else 9000}
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude-fake")
+    account = home.name if os.environ.get("CLAUDE_CONFIG_DIR") else "default"  # the profile folder's name
     devices = None
     cfg = opt("--mcp-config")
+    servers = {}
     if cfg and Path(cfg).is_file():
-        server = json.loads(Path(cfg).read_text()).get("mcpServers", {}).get("crew_devices")
+        servers = json.loads(Path(cfg).read_text()).get("mcpServers", {})
+        server = servers.get("crew_devices")
         if server:
             devices = Mcp(server["command"], server["args"], server.get("env", {}))
 
+    inbox: "queue.Queue[dict]" = queue.Queue()
+    interrupted = threading.Event()
+
+    def reader():
+        for line in sys.stdin:
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                continue
+            if msg.get("type") == "control_request":
+                req = msg.get("request") or {}
+                if req.get("subtype") == "interrupt":
+                    interrupted.set()
+                elif req.get("subtype") == "set_permission_mode":
+                    state["mode"] = req.get("mode")
+                out({"type": "control_response", "response": {"subtype": "success", "request_id": msg.get("request_id")}})
+            else:
+                inbox.put(msg)
+        inbox.put({"type": "eof"})
+
+    lock = threading.Lock()
+
     def out(obj):
-        sys.stdout.write(json.dumps(obj) + "\n")
-        sys.stdout.flush()
+        with lock:
+            sys.stdout.write(json.dumps({**obj, "session_id": sid} if "session_id" not in obj else obj) + "\n")
+            sys.stdout.flush()
 
-    def stream_text(text: str) -> None:
-        out({"type": "stream_event", "event": {"type": "content_block_start", "index": 0,
-                                                "content_block": {"type": "text", "text": ""}}, "session_id": sid})
+    def stream_text(text: str) -> str:
+        out({"type": "stream_event", "event": {"type": "content_block_start", "index": 1,
+                                                "content_block": {"type": "text", "text": ""}}})
+        sent = ""
         for word in re.findall(r"\S+\s*", text):
-            out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
-                                                    "delta": {"type": "text_delta", "text": word}}, "session_id": sid})
+            if interrupted.is_set():
+                break
+            out({"type": "stream_event", "event": {"type": "content_block_delta", "index": 1,
+                                                    "delta": {"type": "text_delta", "text": word}}})
+            sent += word
             time.sleep(float(SCEN.get("word_delay", 0.03)))
+        return sent
 
-    def tool(name: str, **args) -> str:
-        out({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": f"mcp__crew_devices__{name}",
-                                                          "input": args}]}, "session_id": sid})
-        if devices is None:
-            return "no devices"
-        text, _ = devices.call(name, **args)
+    def tool_use(name: str, inp: dict, parent: str | None = None) -> str:
+        tid = "toolu_" + uuid.uuid4().hex[:20]
+        out({"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": tid, "name": name, "input": inp}]}, "parent_tool_use_id": parent})
+        return tid
+
+    def tool_result(tid: str, content, parent: str | None = None, error: bool = False) -> None:
+        out({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": tid, "content": content, "is_error": error}]},
+            "parent_tool_use_id": parent})
+
+    def device(name: str, **args) -> str:
+        tid = tool_use(f"mcp__crew_devices__{name}", args)
+        text = devices.call(name, **args)[0] if devices is not None else "no devices"
+        tool_result(tid, text[:300])
         return text
 
+    def think(n: int) -> None:
+        out({"type": "stream_event", "event": {"type": "content_block_start", "index": 0,
+                                                "content_block": {"type": "thinking", "thinking": "", "signature": ""}}})
+        for est in (50, n):
+            out({"type": "system", "subtype": "thinking_tokens", "estimated_tokens": est})
+            time.sleep(0.05)
+
+    def finish(result: str, usage: dict | None = None, local: str | None = None, error: bool = False, **extra) -> None:
+        payload = {"type": "result", "subtype": "success" if not error else "error_during_execution",
+                   "is_error": error, "result": result, "num_turns": 0 if local else 1,
+                   "usage": usage or {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
+                                      "cache_creation_input_tokens": 0},
+                   "modelUsage": {model: {"contextWindow": 1000000, "maxOutputTokens": 128000}},
+                   "total_cost_usd": 0.01, "duration_ms": 40, **extra}
+        if local:
+            payload["local_command"] = local
+        out(payload)
+
+    def rate() -> None:
+        f = STATE / f"assistant-util-{account}"
+        util = float(f.read_text()) if f.is_file() else float(SCEN.get("start_util", 0.12))
+        util = min(0.99, util + 0.03)
+        f.write_text(str(util))
+        now_s = int(time.time())
+        out({"type": "rate_limit_event", "rate_limit_info": {
+            "status": "allowed", "rateLimitType": "five_hour", "utilization": util,
+            "unifiedWindows": {"five_hour": {"utilization": util, "resetsAt": now_s + 3 * 3600},
+                               "seven_day": {"utilization": util / 3, "resetsAt": now_s + 4 * 86400}}}})
+
+    out({"type": "autocompact_state", "value": {"enabled": True, "effective_window": 980000, "threshold": 784000}})
     out({"type": "system", "subtype": "init", "session_id": sid, "model": model, "cwd": os.getcwd(),
-         "mcp_servers": [{"name": "crew_devices", "status": "connected"}] if devices else []})
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        msg = json.loads(line)
+         "permissionMode": state["mode"], "claude_code_version": claude_version(),
+         "tools": ["Task", "Bash", "Edit", "Read", "Write", "WebSearch", "WebFetch", "TaskCreate", "TaskUpdate", "Skill"]
+         + [f"mcp__crew_devices__{n}" for n in ("browser_open", "browser_read")],
+         "mcp_servers": [{"name": n, "status": "connected"} for n in servers],
+         "slash_commands": FAKE_COMMANDS, "skills": FAKE_SKILLS,
+         "agents": ["general-purpose", "Explore", "Plan"],
+         "plugins": [{"name": "document-skills", "path": "/fake"}, {"name": "example-skills", "path": "/fake"}]})
+    threading.Thread(target=reader, daemon=True).start()
+
+    while True:
+        msg = inbox.get()
+        if msg.get("type") == "eof":
+            return 0
         if msg.get("type") != "user":
             continue
+        interrupted.clear()
         content = msg["message"]["content"]
         text = content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
-        low = text.lower()
+        low = text.lower().strip()
         started = time.time()
-        if "open" in low and ("website" in low or "http" in low or "page" in low and "browser" in low):
+        if SCEN.get("assistant_outdated") and claude_version() < "2.1.280":
+            finish(f"API Error: 400 Claude Code {claude_version()} does not support this model; version 2.1.280 or "
+                   "newer is required. Run 'claude update', or update the Claude desktop app, then try again.",
+                   error=True)
+            continue
+        if SCEN.get("assistant_limit") and account in SCEN["assistant_limit"]:
+            reset = int(time.time()) + 3600
+            out({"type": "rate_limit_event", "rate_limit_info": {
+                "status": "rejected", "rateLimitType": "five_hour", "utilization": 1.0, "resetsAt": reset,
+                "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": reset}}}})
+            finish(f"Claude AI usage limit reached|{reset}", error=True)
+            continue
+        if low.startswith("/context"):
+            report = (f"## Context Usage\n\n**Model:** {model}  \n**Tokens:** {state['context'] / 1000:.1f}k / 1m "
+                      f"({state['context'] / 10000:.0f}%)\n\n| Category | Tokens |\n|---|---|\n| System prompt | 2.2k |\n"
+                      f"| Messages | {(state['context'] - 2200) / 1000:.1f}k |")
+            out({"type": "assistant", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": report}]}})
+            finish(report, local="context")
+            continue
+        if low.startswith("/usage") or low.startswith("/cost"):
+            report = "Total cost: $0.05\nUsage by model:\n  claude-opus-5-5: 2 input, 10 output"
+            out({"type": "assistant", "message": {"model": "<synthetic>", "content": [{"type": "text", "text": report}]}})
+            finish(report, local="usage")
+            continue
+        if low.startswith("/compact"):
+            out({"type": "system", "subtype": "status", "status": "compacting"})
+            time.sleep(0.2)
+            pre, state["context"] = state["context"], 1500
+            out({"type": "system", "subtype": "compact_boundary",
+                 "compact_metadata": {"trigger": "manual", "pre_tokens": pre, "post_tokens": 1500}})
+            finish("", local="compact")
+            continue
+
+        state["context"] += 900 + len(text) // 3
+        out({"type": "stream_event", "event": {"type": "message_start", "message": {
+            "model": model, "usage": {"input_tokens": 3, "cache_read_input_tokens": state["context"] - 3,
+                                      "cache_creation_input_tokens": 0}}}})
+        think(int(SCEN.get("thinking_tokens", 240)))
+        answer = ""
+        if state["mode"] == "plan":
+            plans = home / "plans"
+            plans.mkdir(parents=True, exist_ok=True)
+            plan_path = plans / "calm-river.md"
+            plan = ("# Plan\n\n1. Look at what is needed.\n2. Make the page `hello.html` with a greeting.\n"
+                    "3. Check that it opens correctly.")
+            plan_path.write_text(plan)
+            tid = tool_use("Write", {"file_path": str(plan_path), "content": plan})
+            tool_result(tid, f"File created successfully at: {plan_path}")
+            answer = "Here is my plan:\n\n1. Look at what is needed.\n2. Make the page.\n3. Check it.\n\nApprove it and I will start."
+        elif "approved" in low and "plan" in low:
+            Path("hello.html").write_text("<!doctype html><title>Hello</title><h1>Hello!</h1>", encoding="utf-8")
+            tid = tool_use("Write", {"file_path": str(Path("hello.html").resolve()), "content": "<h1>Hello!</h1>"})
+            tool_result(tid, "File created successfully")
+            answer = "Done — I made **hello.html** as planned."
+        elif "research" in low:
+            tid = tool_use("Task", {"description": "Research the topic", "subagent_type": "general-purpose",
+                                    "prompt": "Find three facts."})
+            for q in ("first source", "second source"):
+                sub = tool_use("WebSearch", {"query": q}, parent=tid)
+                time.sleep(0.1)
+                tool_result(sub, "results", parent=tid)
+            tool_result(tid, [{"type": "text", "text": "Three facts found."}])
+            answer = "My helper found three facts:\n\n1. One.\n2. Two.\n3. Three."
+        elif "checklist" in low:  # Crew's own to-do tool (headless Claude Code may have none)
+            items = [{"content": "Read the brief", "status": "in_progress"}, {"content": "Write the note", "status": "pending"}]
+            device("todo_write", todos=items)
+            device("todo_write", todos=[{**x, "status": "completed"} for x in items])
+            answer = "Checklist complete."
+        elif "steps" in low or "to-do" in low or "todo" in low:
+            ids = []
+            for n, subject in enumerate(("Gather the numbers", "Write the summary", "Check the result"), start=1):
+                tid = tool_use("TaskCreate", {"subject": subject, "description": subject})
+                tool_result(tid, f"Task #{n} created successfully: {subject}")
+                ids.append(str(n))
+            for n in ids:
+                tid = tool_use("TaskUpdate", {"taskId": n, "status": "in_progress"})
+                tool_result(tid, f"Updated task #{n} status")
+                time.sleep(0.05)
+                tid = tool_use("TaskUpdate", {"taskId": n, "status": "completed"})
+                tool_result(tid, f"Updated task #{n} status")
+            answer = "All three steps are done."
+        elif "open" in low and ("website" in low or "http" in low or "page" in low and "browser" in low):
             url = (re.findall(r"https?://\S+", text) or ["https://example.com"])[0]
-            tool("browser_open", url=url)
-            seen = tool("browser_read")
+            device("browser_open", url=url)
+            seen = device("browser_read")
             title = (re.findall(r'"title": "([^"]*)"', seen) or ["the page"])[0]
             answer = f"I opened **{title}** in the browser.\n\n- It loaded without problems.\n- You can see it in the side panel."
         elif "make" in low and "page" in low:
-            Path("page.html").write_text("<!doctype html><title>Demo</title><h1>Hello from the assistant</h1>", encoding="utf-8")
+            tid = tool_use("Write", {"file_path": str(Path("page.html").resolve()), "content": "<h1>Hello</h1>"})
+            Path("page.html").write_text("<!doctype html><title>Demo</title><h1>Hello from the assistant</h1>",
+                                         encoding="utf-8")
+            tool_result(tid, "File created successfully")
             answer = "I made a small web page for you. Open it from the card below."
         elif "attached" in low:
             names = re.findall(r"attachments/[\w.-]+", text)
             answer = f"I looked at {', '.join(names) or 'your file'}. It arrived safely."
+        elif "slow" in low:
+            answer = " ".join(["word"] * 400)
+        elif "which keys" in low:
+            keys = sorted(k for k in os.environ if k.endswith("_API_KEY"))
+            answer = "I can use: " + (", ".join(keys) or "none")
         else:
             answer = ("Here is a short answer.\n\n## Summary\n\n- **First**, the main point.\n- **Second**, a supporting point.\n\n"
                       "| Item | Value |\n|---|---|\n| Speed | Fast |\n\nThat is all.")
-        stream_text(answer)
-        out({"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}, "session_id": sid})
-        out({"type": "result", "subtype": "success", "is_error": False, "result": answer, "session_id": sid,
-             "total_cost_usd": 0.01, "duration_ms": int((time.time() - started) * 1000)})
-    return 0
+        said = stream_text(answer)
+        if interrupted.is_set():
+            finish(said, error=True, subtype="error_during_execution", terminal_reason="aborted")
+            continue
+        out({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}})
+        rate()
+        out_tokens = len(answer.split()) * 2
+        state["context"] += out_tokens
+        finish(answer, usage={"input_tokens": 3, "output_tokens": out_tokens, "cache_read_input_tokens": state["context"],
+                              "cache_creation_input_tokens": 800}, duration_ms=int((time.time() - started) * 1000))
 
 
 def claude_main(argv: list[str]) -> int:
+    if argv[:1] == ["--version"]:
+        print(f"{claude_version()} (Claude Code)")
+        return 0
+    if argv[:1] == ["update"]:
+        before = claude_version()
+        (STATE / "claude-version").write_text("2.1.290")
+        print(f"Successfully updated from {before} to version 2.1.290" if before != "2.1.290"
+              else "Claude Code is up to date (2.1.290)")
+        return 0
+    if argv[:2] == ["plugin", "marketplace"] or argv[:2] == ["plugin", "install"]:
+        (STATE / ("plugin-" + "-".join(a.replace("/", "_") for a in argv[1:4]))).write_text("ok")
+        print("done")
+        return 0
     if "--include-partial-messages" in argv:
         return assistant_main(argv)
 
@@ -344,7 +550,9 @@ def claude_main(argv: list[str]) -> int:
         payload = {"type": "result", "subtype": "success", "is_error": False, "result": result,
                    "usage": {"input_tokens": 1200, "output_tokens": 300, "cache_creation_input_tokens": 500},
                    "total_cost_usd": 0.02, "num_turns": 1, "duration_ms": 50, "session_id": sid}
-        if schema:
+        if schema and '"effort"' in schema:
+            payload["structured_output"] = {"effort": SCEN.get("solo_effort", "high"), "reason": "a small, clear job"}
+        elif schema:
             payload["structured_output"] = {
                 "title": "Feature pack", "goal": "Build a small package of features with tests.",
                 "deliverables": ["app package"], "acceptance_criteria": ["all tests pass"],

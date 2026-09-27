@@ -15,6 +15,7 @@ from pathlib import Path
 from .util import crew_home
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+EFFORT_CHOICES = ("auto",) + EFFORTS  # auto: the model decides (assistant), or the CEO decides per task (team)
 VENDORS = ("claude", "codex")
 
 
@@ -29,9 +30,9 @@ class ModelPolicy:
     codex: str = ""  # empty: Codex uses its own default (its best model)
     allowed: list[str] = field(default_factory=lambda: ["claude-opus-5-5", "claude-fable-5-1"])
     banned: list[str] = field(default_factory=lambda: ["haiku", "sonnet", "terra", "luna"])
-    effort_work: str = "high"
-    effort_light: str = "medium"
-    effort_ceo: str = "high"
+    effort_work: str = "auto"   # auto: the CEO sets each task's effort when it reviews the plan
+    effort_light: str = "auto"  # checks, notes, research
+    effort_ceo: str = "max"     # the CEO always thinks hardest
 
     def check(self, model: str) -> str:
         """Return the model if policy allows it, else raise. Codex models are
@@ -48,8 +49,8 @@ class ModelPolicy:
 
     def validate(self) -> None:
         for name in ("effort_work", "effort_light", "effort_ceo"):
-            if getattr(self, name) not in EFFORTS:
-                raise ConfigError(f"models.{name} must be one of {EFFORTS}")
+            if getattr(self, name) not in EFFORT_CHOICES:
+                raise ConfigError(f"models.{name} must be one of {EFFORT_CHOICES}")
         self.check(self.work)
         if self.ceo:
             self.check(self.ceo)
@@ -80,7 +81,7 @@ class SeatSpec:
 @dataclass
 class TeamSettings:
     mode: str = "auto"  # auto | team | solo  (auto: solo for small or hard-to-split jobs)
-    max_hours: float = 3.0
+    max_hours: float = 0.0  # 0: no time limit (set a timer per project if you want one)
     max_cost_usd: float = 0.0  # 0 = no dollar cap (subscriptions are flat-rate)
     stall_minutes: float = 8.0
     ledger_minutes: float = 12.0

@@ -18,7 +18,8 @@ from pathlib import Path
 
 from .util import atomic_write, crew_home, now
 
-CATEGORIES = ("usage", "speed", "quality", "models", "subagents", "tooling", "process", "errors", "project")
+CATEGORIES = ("usage", "speed", "quality", "models", "subagents", "tooling", "process", "errors", "project", "ceo")
+EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
 _STOP = set("a an the to of in on for and or but is are was were be been it this that with as at by from "
             "when then do does did not no if so you your we our they them their its into than can will should".split())
 _lock = threading.Lock()
@@ -34,6 +35,9 @@ def _db() -> sqlite3.Connection:
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, last_seen REAL, category TEXT, text TEXT,
         evidence TEXT, source TEXT, project TEXT, weight INTEGER DEFAULT 1, norm TEXT)""")
     db.execute("CREATE TABLE IF NOT EXISTS memo (key TEXT PRIMARY KEY, value TEXT)")
+    db.execute("""CREATE TABLE IF NOT EXISTS effort_outcomes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, project TEXT, kind TEXT, size TEXT, effort TEXT,
+        rounds INTEGER, first_pass INTEGER, minutes REAL, tokens INTEGER)""")
     return db
 
 
@@ -140,10 +144,87 @@ def ensure_seeded() -> None:
 
 
 def render_for_agents(limit: int = 25) -> str:
-    items = top(limit)
+    items = [x for x in top(limit + 10) if x["category"] != "ceo"][:limit]  # the CEO's own lessons stay with the CEO
     if not items:
         return ""
     return "\n".join(f"- ({x['category']}) {x['text']}" for x in items)
+
+
+# ------------------------------------------------------------------ the CEO's effort record
+
+def record_effort_outcome(kind: str, size: str, effort: str, rounds: int, minutes: float, tokens: int,
+                          project: str = "") -> None:
+    """One finished task: how hard its builder thought, and how it went (first-time approval, time, tokens)."""
+    if effort not in EFFORT_ORDER:
+        return
+    db = _db()
+    try:
+        db.execute("INSERT INTO effort_outcomes(ts,project,kind,size,effort,rounds,first_pass,minutes,tokens) "
+                   "VALUES(?,?,?,?,?,?,?,?,?)",
+                   (now(), project, kind or "build", size or "M", effort, int(rounds or 0), int((rounds or 0) == 0),
+                    round(float(minutes or 0), 1), int(tokens or 0)))
+    finally:
+        db.close()
+
+
+def effort_stats() -> list[dict]:
+    """Per (kind, size, effort): how many tasks, share approved first time, typical minutes and tokens."""
+    db = _db()
+    try:
+        rows = [dict(r) for r in db.execute(
+            "SELECT kind, size, effort, COUNT(*) AS n, AVG(first_pass) AS first_pass, AVG(minutes) AS minutes, "
+            "AVG(tokens) AS tokens, AVG(rounds) AS rounds FROM effort_outcomes GROUP BY kind, size, effort")]
+    finally:
+        db.close()
+    rows.sort(key=lambda r: (r["kind"], r["size"], EFFORT_ORDER.index(r["effort"])))
+    return rows
+
+
+def render_for_ceo(limit: int = 12) -> str:
+    """What the CEO has learned about effort: its own record plus its written lessons."""
+    lines = []
+    stats = effort_stats()
+    if stats:
+        lines.append("Your record so far (task kind, size, effort → tasks, approved first time, typical minutes, "
+                     "typical tokens):")
+        for r in stats:
+            lines.append(f"- {r['kind']} {r['size']} at {r['effort']}: {r['n']} task(s), "
+                         f"{round(100 * (r['first_pass'] or 0))}% first time, ~{round(r['minutes'] or 0)} min, "
+                         f"~{int(r['tokens'] or 0) // 1000}k tokens")
+    own = top(limit, categories=("ceo",))
+    if own:
+        lines.append("Your lessons:")
+        lines += [f"- {x['text']}" for x in own]
+    return "\n".join(lines)
+
+
+def derive_ceo_lessons(min_tasks: int = 3) -> list[str]:
+    """Turn the effort record into plain lessons for the CEO (reinforced as evidence accumulates)."""
+    stats = effort_stats()
+    by_group: dict[tuple[str, str], list[dict]] = {}
+    for r in stats:
+        by_group.setdefault((r["kind"], r["size"]), []).append(r)
+    written = []
+    for (kind, size), rows in by_group.items():
+        solid = [r for r in rows if r["n"] >= min_tasks]
+        for r in solid:
+            rate = r["first_pass"] or 0
+            if rate < 0.6:
+                text = (f"{kind} tasks of size {size} at {r['effort']} effort were approved first time only "
+                        f"{round(100 * rate)}% of the time ({r['n']} tasks): give such work more effort.")
+            elif rate >= 0.9:
+                lower = [x for x in solid if EFFORT_ORDER.index(x["effort"]) < EFFORT_ORDER.index(r["effort"])
+                         and (x["first_pass"] or 0) >= 0.9]
+                if lower:
+                    continue  # a lower effort already does as well; that lesson is written for it
+                text = (f"{kind} tasks of size {size} at {r['effort']} effort were approved first time "
+                        f"{round(100 * rate)}% of the time ({r['n']} tasks, ~{round(r['minutes'] or 0)} min): "
+                        f"{r['effort']} is enough for this kind of work.")
+            else:
+                continue
+            add("ceo", text, evidence="effort record", source="crew-effort-record")
+            written.append(text)
+    return written
 
 
 def write_playbook() -> Path:

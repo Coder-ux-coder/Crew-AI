@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import usage as usage_log
 from .config import Account
 from .util import Redactor, clip, dumps, now
 
@@ -83,6 +84,11 @@ def which(name: str) -> str | None:
     override = os.environ.get(f"CREW_{name.upper()}_BIN")
     if override:
         return override
+    if name == "claude":
+        from .claude_cli import best
+        newest, _ = best()
+        if newest:
+            return newest
     found = shutil.which(name)
     if os.name == "nt":
         found = _windows_program(name, found)
@@ -205,6 +211,9 @@ def _claude_common_args(setup: ClaudeSetup, seat: str, role: str, system_file: P
             "type": "stdio", "command": py, "args": ["-m", "crewapp.devices_mcp"],
             "env": {"CREW_APP_URL": os.environ["CREW_APP_URL"], "CREW_APP_TOKEN": os.environ["CREW_APP_TOKEN"],
                     "PYTHONPATH": str(CREW_ROOT)}}
+    from .connections import mcp_servers as owner_connections
+    for name, srv in owner_connections().items():  # the owner's own connections (Hunter, Notion, …)
+        mcp["mcpServers"].setdefault(name, srv)
     (files / "mcp.json").write_text(json.dumps(mcp, indent=1), encoding="utf-8")
     hook_cmd = f'"{py}" -m crewlib.hook'
     settings: dict = {"model": setup.model}
@@ -233,8 +242,10 @@ def _claude_common_args(setup: ClaudeSetup, seat: str, role: str, system_file: P
         },
     }
     (files / "agents.json").write_text(json.dumps(subagents, indent=1), encoding="utf-8")
-    args = ["--model", setup.model, "--effort", setup.effort,
-            "--mcp-config", str(files / "mcp.json"), "--strict-mcp-config",
+    args = ["--model", setup.model]
+    if setup.effort and setup.effort != "auto":
+        args += ["--effort", setup.effort]
+    args += ["--mcp-config", str(files / "mcp.json"), "--strict-mcp-config",
             "--settings", str(files / "settings.json"),
             "--agents", str(files / "agents.json"),
             "--permission-mode", setup.permission_mode]
@@ -273,6 +284,7 @@ class ClaudeSeat:
         self.busy = False
         self._lock = threading.Lock()
         self._recent_tools: list[str] = []
+        self._helpers: set[str] = set()  # sub-agents (Task/Agent tool) still at work
         self.log_path = setup.run_dir / "logs" / f"{seat}.jsonl"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.gen = next(_GENERATION)
@@ -378,9 +390,17 @@ class ClaudeSeat:
             servers = {s.get("name"): s.get("status") for s in msg.get("mcp_servers") or []}
             self._emit("init", session_id=self.session_id, model=msg.get("model"), mcp=servers)
         elif kind == "assistant":
+            parent = msg.get("parent_tool_use_id")
             for block in (msg.get("message") or {}).get("content") or []:
                 if block.get("type") == "tool_use":
                     name = block.get("name", "")
+                    if name in ("Task", "Agent") and not parent and block.get("id"):
+                        inp = block.get("input") or {}
+                        self._helpers.add(block["id"])
+                        self._emit("helper", id=block["id"], state="start", what=clip(inp.get("description") or "", 80),
+                                   type=inp.get("subagent_type") or "helper")
+                    elif parent in self._helpers:
+                        self._emit("helper", id=parent, state="step", what=name)
                     sig = name + ":" + hashlib.sha1(dumps(block.get("input")).encode()).hexdigest()[:10]
                     self._recent_tools = (self._recent_tools + [sig])[-8:]
                     if name.startswith("mcp__crew_team__"):
@@ -395,13 +415,21 @@ class ClaudeSeat:
                 elif block.get("type") == "text" and block.get("text"):
                     self._emit("activity", label="writing", text=clip(block["text"], 500))
         elif kind == "user":
+            content = (msg.get("message") or {}).get("content")
+            if not msg.get("parent_tool_use_id") and isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("tool_use_id") in self._helpers:
+                        self._helpers.discard(block["tool_use_id"])
+                        self._emit("helper", id=block["tool_use_id"], state="error" if block.get("is_error") else "done")
             self._emit("activity", label="tool result")
         elif kind == "rate_limit_event":
+            usage_log.record_rate(self.account.name, msg.get("rate_limit_info") or {})
             self._emit("rate", info=msg.get("rate_limit_info") or {})
         elif kind == "result":
             text = msg.get("result") or ""
             is_error = bool(msg.get("is_error")) or msg.get("subtype") not in (None, "success")
             usage = msg.get("usage") or {}
+            usage_log.record_tokens(self.account.name, usage)
             self.busy = False
             self._emit("result", text=clip(text, 4000), is_error=is_error, subtype=msg.get("subtype"),
                        limit_hit=bool(is_error and LIMIT_RE.search(text or "")),
@@ -446,21 +474,34 @@ def _toml_str(value: str) -> str:
     return json.dumps(value)  # a JSON string is a valid TOML basic string
 
 
+CODEX_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def codex_effort(effort: str | None) -> str | None:
+    """OpenAI's own effort names; a Claude level maps to the nearest one. None: Codex decides (auto)."""
+    if not effort or effort == "auto":
+        return None
+    if effort in CODEX_EFFORTS:
+        return effort
+    return {"max": "xhigh"}.get(effort, effort if effort in CODEX_EFFORTS else "high")
+
+
 def _codex_config_args(setup: CodexSetup, seat: str, role: str, task_id: int | None, read_only: bool) -> list[str]:
     team_env = {"CREW_DB": str(setup.run_dir / "team.db"), "CREW_SEAT": seat, "CREW_ROLE": role,
                 "PYTHONPATH": str(CREW_ROOT)}
     if task_id is not None:
         team_env["CREW_TASK"] = str(task_id)
     env_table = "{" + ", ".join(f"{k} = {_toml_str(v)}" for k, v in team_env.items()) + "}"
-    effort = {"xhigh": "high", "max": "high"}.get(setup.effort, setup.effort)
+    effort = codex_effort(setup.effort)
     args = [
         "-c", f"mcp_servers.crew_team.command={_toml_str(sys.executable)}",
         "-c", 'mcp_servers.crew_team.args=["-m", "crewlib.mcp_server"]',
         "-c", f"mcp_servers.crew_team.env={env_table}",
         "-c", "mcp_servers.crew_team.startup_timeout_sec=30",
         "-c", 'approval_policy="never"',
-        "-c", f"model_reasoning_effort={_toml_str(effort)}",
     ]
+    if effort:
+        args += ["-c", f"model_reasoning_effort={_toml_str(effort)}"]
     if setup.bypass_sandbox and not read_only:
         args.append("--dangerously-bypass-approvals-and-sandbox")
     else:
@@ -546,7 +587,9 @@ class CodexSeat:
             self.session_id = res.session_id
         rate = read_codex_rate(self.account, self.session_id) if self.session_id else None
         if rate:
+            usage_log.record_rate(self.account.name, rate)
             self._emit("rate", info=rate)
+        usage_log.record_tokens(self.account.name, {"input_tokens": res.tokens})
         self.busy = False
         self._emit("result", text=clip(res.text, 4000), is_error=res.is_error, subtype="error" if res.is_error else "success",
                    limit_hit=res.limit_hit, auth_error=res.auth_error, tokens=res.tokens, output_tokens=0, cost=0.0,
@@ -751,6 +794,7 @@ def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, work
                 res.session_id = msg.get("session_id")
             elif msg.get("type") == "rate_limit_event":
                 res.rate = msg.get("rate_limit_info") or {}
+                usage_log.record_rate(account.name, res.rate)
                 if res.rate.get("status") == "rejected":
                     res.limit_hit, res.resets_at = True, res.rate.get("resetsAt")
             elif msg.get("type") == "result":
@@ -758,6 +802,7 @@ def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, work
                 res.structured = msg.get("structured_output")
                 res.is_error = bool(msg.get("is_error")) or msg.get("subtype") not in (None, "success")
                 res.tokens = _usage_tokens(msg.get("usage"))
+                usage_log.record_tokens(account.name, msg.get("usage"))
                 res.cost_usd = float(msg.get("total_cost_usd") or 0)
                 if res.is_error and LIMIT_RE.search(res.text):
                     res.limit_hit = True
