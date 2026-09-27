@@ -39,12 +39,25 @@ def _db() -> sqlite3.Connection:
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, project TEXT, kind TEXT, size TEXT, effort TEXT,
         rounds INTEGER, first_pass INTEGER, minutes REAL, tokens INTEGER)""")
     have = {row[1] for row in db.execute("PRAGMA table_info(effort_outcomes)")}
-    for column in ("tier", "model"):  # added with the three-tier team; older rows count as the manager's
+    # tier, model: added with the three-tier team (older rows count as the manager's);
+    # outcome, handovers: added with the model scorecard
+    for column, decl in (("tier", "TEXT"), ("model", "TEXT"), ("outcome", "TEXT"), ("handovers", "INTEGER")):
         if column not in have:
             try:
-                db.execute(f"ALTER TABLE effort_outcomes ADD COLUMN {column} TEXT")
+                db.execute(f"ALTER TABLE effort_outcomes ADD COLUMN {column} {decl}")
             except sqlite3.OperationalError:  # another process added it at the same moment
                 pass
+    db.execute("""CREATE TABLE IF NOT EXISTS contests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, project TEXT, task TEXT, kind TEXT, size TEXT,
+        winner_model TEXT, loser_model TEXT, winner_tier TEXT, loser_tier TEXT,
+        winner_passed INTEGER, loser_passed INTEGER, reason TEXT)""")
+    if db.execute("SELECT 1 FROM memo WHERE key='first_pass_fixed'").fetchone() is None:
+        # Before 2.2 a task approved at its first review was stored as not passing first time (the round count
+        # includes the approving review). Correct those records once, and drop the effort lessons built on them;
+        # they are written again from the corrected record after the next project.
+        db.execute("UPDATE effort_outcomes SET first_pass = CASE WHEN rounds <= 1 THEN 1 ELSE 0 END")
+        db.execute("DELETE FROM lessons WHERE source='crew-effort-record'")
+        db.execute("INSERT OR IGNORE INTO memo(key,value) VALUES('first_pass_fixed','1')")
     return db
 
 
@@ -160,17 +173,34 @@ def render_for_agents(limit: int = 25) -> str:
 # ------------------------------------------------------------------ the CEO's effort record
 
 def record_effort_outcome(kind: str, size: str, effort: str, rounds: int, minutes: float, tokens: int,
-                          project: str = "", tier: str = "manager", model: str = "") -> None:
-    """One finished task: who built it (tier), how hard it thought, and how it went (first-time approval,
-    time, tokens)."""
+                          project: str = "", tier: str = "manager", model: str = "", outcome: str = "merged",
+                          first_pass: bool | None = None, handovers: int = 0) -> None:
+    """One finished piece of work: who built it (model, tier), how hard it thought, and how it went — whether it
+    passed its first check, the reviews it took (`rounds` counts the approving one), time, tokens, handovers.
+    outcome: merged | moved-up (the workhorse failed twice and the manager took over) | won | lost (head-to-head)."""
     if effort not in EFFORT_ORDER:
-        return
+        effort = "medium" if tier == "workhorse" else "high"  # "auto": the model chose; recorded as its default
+    passed = int(rounds or 0) <= 1 if first_pass is None else bool(first_pass)
     db = _db()
     try:
         db.execute("INSERT INTO effort_outcomes(ts,project,kind,size,effort,rounds,first_pass,minutes,tokens,tier,"
-                   "model) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                   (now(), project, kind or "build", size or "M", effort, int(rounds or 0), int((rounds or 0) == 0),
-                    round(float(minutes or 0), 1), int(tokens or 0), tier or "manager", model or ""))
+                   "model,outcome,handovers) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (now(), project, kind or "build", size or "M", effort, int(rounds or 0), int(passed),
+                    round(float(minutes or 0), 1), int(tokens or 0), tier or "manager", model or "", outcome,
+                    int(handovers or 0)))
+    finally:
+        db.close()
+
+
+def record_contest(project: str, task: str, kind: str, size: str, winner_model: str, loser_model: str,
+                   winner_tier: str, loser_tier: str, winner_passed: bool, loser_passed: bool, reason: str) -> None:
+    """One head-to-head: two models built the same task and the manager, judging blind, kept the better one."""
+    db = _db()
+    try:
+        db.execute("INSERT INTO contests(ts,project,task,kind,size,winner_model,loser_model,winner_tier,loser_tier,"
+                   "winner_passed,loser_passed,reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (now(), project, task, kind, size, winner_model, loser_model, winner_tier, loser_tier,
+                    int(bool(winner_passed)), int(bool(loser_passed)), (reason or "")[:600]))
     finally:
         db.close()
 

@@ -342,6 +342,72 @@ class UpgradeTests(unittest.TestCase):
         self.assertGreater(state["estimate"]["tokens_used"], 0)
         self.assertIn(state["tasks"][0]["effort"], ("low", "medium", "high", "xhigh", "max"))
 
+    # ------------------------------------------------------------ choosing the subscription
+
+    def test_choose_the_subscription_for_a_chat_and_switch_it(self):
+        """A chat runs on the subscription the owner picks; switching mid-conversation carries it across."""
+        s = self.s
+        before = s.api("GET", "/api/settings")
+        extra = [{"name": "claude-2", "vendor": "claude", "profile": ""}, {"name": "claude-3", "vendor": "claude", "profile": ""}]
+        try:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"] + extra})
+            cid, ev = self.new_chat(account="claude-2")
+            self.assertEqual(s.api("GET", f"/api/chats/{cid}")["account"], "claude-2")
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "remember the word tulip"})
+            _, done = collect_turn(ev)
+            self.assertEqual(done["meta"]["account"], "claude-2")
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "which word?", "account": "claude-3"})
+            seen, done = collect_turn(ev)
+            self.assertEqual(done["meta"]["account"], "claude-3")
+            self.assertFalse(done["meta"].get("error"), done)  # the conversation came along (no "not found")
+            self.assertIn("Now using claude-3.", [d.get("text") for n, d in seen if n == "notice"])
+            err = s.api("POST", f"/api/chats/{cid}/send", {"text": "x", "account": "nobody"}, expect=400)
+            self.assertIn("no Claude subscription called nobody", err["error"])
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "back to automatic", "account": ""})
+            collect_turn(ev)
+            self.assertEqual(s.api("GET", f"/api/chats/{cid}")["account"], "")
+        finally:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"]})
+
+    def test_a_workflow_keeps_its_subscription(self):
+        s = self.s
+        before = s.api("GET", "/api/settings")
+        try:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"] + [{"name": "claude-2", "vendor": "claude", "profile": ""}]})
+            w = s.api("POST", "/api/workflows", {"name": "Pinned", "prompt": "Say hello briefly.", "engine": "claude",
+                                                 "account": "claude-2", "schedule": {"kind": "manual"}})
+            self.assertEqual(w["account"], "claude-2")
+            err = s.api("POST", "/api/workflows", {"name": "Bad", "prompt": "Say hello briefly.", "engine": "codex",
+                                                   "account": "claude-2", "schedule": {"kind": "manual"}}, expect=400)
+            self.assertIn("no ChatGPT subscription called claude-2", err["error"])
+            s.api("DELETE", f"/api/workflows/{w['id']}")
+        finally:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"]})
+
+    def test_a_project_uses_only_the_chosen_subscriptions(self):
+        s = self.s
+        before = s.api("GET", "/api/settings")
+        first = before["accounts"][0]["name"]
+        try:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"] + [{"name": "claude-2", "vendor": "claude", "profile": ""}]})
+            rid = s.api("POST", "/api/runs", {"request": "Build a small feature pack with tests", "mode": "solo",
+                                              "accounts": ["claude-2"]})["id"]
+            state = until(lambda: (lambda st: st if st.get("raw_phase") == "done" else None)(
+                s.api("GET", f"/api/runs/{rid}")), timeout=240, step=1.5)
+            self.assertEqual(state["accounts_chosen"], ["claude-2"])
+            used = {a["account"] for a in state["agents"] if a["account"]}
+            self.assertEqual(used, {"claude-2"}, state["agents"])
+            self.assertNotIn(first, used)
+        finally:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"]})
+
+    def test_scorecard_endpoint(self):
+        d = self.s.api("GET", "/api/scorecard")
+        self.assertEqual(d["window_days"], 180)
+        self.assertEqual((d["workhorse"], d["manager"]), ("gpt-6-sol", "claude-opus-5-5"))
+        for key in ("models", "matrix", "rules", "contests", "thresholds"):
+            self.assertIn(key, d)
+
 
 class HelperTrackingTests(unittest.TestCase):
     def test_sub_agents_are_reported(self):

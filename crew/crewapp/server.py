@@ -545,6 +545,12 @@ class Handler(BaseHTTPRequestHandler):
 
     # ----------------------------------------------------------------- runs
 
+    @route("GET", "/api/scorecard")
+    def api_scorecard(self):
+        from crewlib import scorecard
+        m = settings.load()["models"]
+        return self._json(scorecard.summary(m.get("codex") or "", m.get("work") or ""))
+
     @route("GET", "/api/runs")
     def api_runs(self):
         return self._json({"runs": self.app.runs.list()})
@@ -553,7 +559,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_run_start(self):
         b = self._body()
         rid = self.app.runs.start(b.get("request", ""), repo=b.get("folder") or None, mode=b.get("mode") or None,
-                                  hours=b.get("hours"))
+                                  hours=b.get("hours"), head_to_head=b.get("head_to_head") or None,
+                                  accounts=b.get("accounts") or None)
         return self._json({"id": rid})
 
     @route("GET", r"/api/runs/([\w.-]+)")
@@ -591,7 +598,8 @@ class Handler(BaseHTTPRequestHandler):
     @route("POST", "/api/chats")
     def api_chat_new(self):
         b = self._body()
-        return self._json(self.app.chats.create(b.get("engine"), b.get("model"), b.get("effort"), b.get("mode")))
+        return self._json(self.app.chats.create(b.get("engine"), b.get("model"), b.get("effort"), b.get("mode"),
+                                                b.get("account")))
 
     @route("PUT", r"/api/chats/([\w-]+)")
     def api_chat_update(self, cid):
@@ -623,7 +631,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_chat_send(self, cid):
         b = self._body()
         return self._json(self.app.chats.send(cid, b.get("text", ""), b.get("model"), b.get("effort"),
-                                              b.get("attachments") or [], b.get("mode"), b.get("engine")))
+                                              b.get("attachments") or [], b.get("mode"), b.get("engine"),
+                                              b.get("account")))
 
     @route("POST", r"/api/chats/([\w-]+)/upload")
     def api_chat_upload(self, cid):

@@ -854,9 +854,16 @@ input[type=range] { width: 170px; accent-color: var(--accent); }
 }
 
 /* ---- 2.1: the three tiers (workhorse, manager, CEO) ---- */
-.pill.t-workhorse { background: color-mix(in srgb, var(--gpt) 14%, transparent); color: var(--gpt); }
-.pill.t-manager { background: color-mix(in srgb, var(--claude) 16%, transparent); color: var(--claude); }
-.pill.t-ceo { background: color-mix(in srgb, var(--team) 14%, transparent); color: var(--team); }
+/* Tier colours, checked for colour-blind separation and contrast in both themes (always shown with the tier's
+   name, never alone). Text stays in ink; the colour sits in a dot or a mark beside it. */
+:root { --tier-workhorse: #10A37F; --tier-manager: #D97757; --tier-ceo: #6E5BD0; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --tier-workhorse: #199e70; --tier-manager: #d0643e; --tier-ceo: #9085e9; } }
+:root[data-theme="dark"] { --tier-workhorse: #199e70; --tier-manager: #d0643e; --tier-ceo: #9085e9; }
+.pill.t-workhorse, .pill.t-manager, .pill.t-ceo { color: var(--ink-2); }
+.pill.t-workhorse::before, .pill.t-manager::before, .pill.t-ceo::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--tier-c); }
+.pill.t-workhorse { --tier-c: var(--tier-workhorse); background: color-mix(in srgb, var(--tier-workhorse) 13%, transparent); }
+.pill.t-manager { --tier-c: var(--tier-manager); background: color-mix(in srgb, var(--tier-manager) 14%, transparent); }
+.pill.t-ceo { --tier-c: var(--tier-ceo); background: color-mix(in srgb, var(--tier-ceo) 13%, transparent); }
 .shares { display: flex; flex-direction: column; gap: 7px; }
 .shares .sbar { display: flex; height: 10px; border-radius: 99px; overflow: hidden; background: var(--line); }
 .shares .sbar i { display: block; height: 100%; transition: width .4s ease; }
@@ -867,13 +874,13 @@ input[type=range] { width: 170px; accent-color: var(--accent); }
 .shares .spct { min-width: 34px; text-align: right; }
 .shares .starget { min-width: 52px; text-align: right; }
 .shares .srow.off .spct { color: var(--warn); }
-.shares .t-workhorse { background: var(--gpt); }
-.shares .t-manager { background: var(--claude); }
-.shares .t-ceo { background: var(--team); }
+.shares .t-workhorse { background: var(--tier-workhorse); }
+.shares .t-manager { background: var(--tier-manager); }
+.shares .t-ceo { background: var(--tier-ceo); }
 .tier-card .tier-row { display: grid; grid-template-columns: 22px 1fr auto; gap: 10px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
 .tier-card .tier-row:first-of-type { border-top: 0; }
 .tier-card .tier-ico { width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; color: #fff; font-size: 11px; font-weight: 700; }
-.tier-card .tier-ico.t-workhorse { background: var(--gpt); } .tier-card .tier-ico.t-manager { background: var(--claude); } .tier-card .tier-ico.t-ceo { background: var(--team); }
+.tier-card .tier-ico.t-workhorse { background: var(--tier-workhorse); } .tier-card .tier-ico.t-manager { background: var(--tier-manager); } .tier-card .tier-ico.t-ceo { background: var(--tier-ceo); }
 .tier-card .tier-row small { display: block; color: var(--muted); line-height: 1.4; margin-top: 2px; }
 .tier-card .tier-row select { max-width: 190px; }
 @media (max-width: 640px) { .tier-card .tier-row { grid-template-columns: 22px 1fr; } .tier-card .tier-row > :last-child { grid-column: 2; } }
@@ -887,3 +894,44 @@ input[type=range] { width: 170px; accent-color: var(--accent); }
 .sysline > span { min-width: 0; overflow-wrap: anywhere; }
 /* Wide tables (the CEO's effort record) scroll inside their card instead of pushing the page sideways. */
 .set-card table.plain { display: block; max-width: 100%; overflow-x: auto; }
+
+/* ---- 2.2: choosing the subscription ---- */
+.acct-tag { font-size: 12px; color: var(--muted); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-tag::before { content: "·"; margin: 0 5px 0 1px; }
+.check-row { display: flex; gap: 10px; align-items: center; padding: 9px 12px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; }
+.check-row:hover { background: var(--panel-2); }
+.check-row input { width: 18px; height: 18px; flex: none; accent-color: var(--accent); }
+.check-row small { display: block; color: var(--muted); font-size: 12.5px; }
+
+/* ---- 2.2: the model scorecard ---- */
+.score-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.score-tile { display: flex; flex-direction: column; gap: 6px; border-top: 3px solid var(--tier-c, var(--line)); }
+.score-tile.t-workhorse { --tier-c: var(--tier-workhorse); } .score-tile.t-manager { --tier-c: var(--tier-manager); } .score-tile.t-ceo { --tier-c: var(--tier-ceo); }
+.score-tile .who { display: flex; align-items: center; gap: 8px; }
+.score-tile .who b { font-size: 15px; }
+.score-tile .hero { font-size: 40px; line-height: 1.05; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; color: var(--ink); }
+.score-tile .hero small { font-size: 14px; font-weight: 500; color: var(--muted); letter-spacing: 0; margin-left: 6px; }
+.score-tile .facts { display: grid; gap: 3px; font-size: 13px; color: var(--ink-2); }
+.score-tile .facts span { color: var(--muted); }
+.score-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13.5px; }
+.score-table th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12.5px; padding: 8px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.score-table td { padding: 9px 10px; border-bottom: 1px solid var(--line-2); vertical-align: middle; }
+.score-table tr:last-child td { border-bottom: 0; }
+.score-table .th-model { display: inline-flex; align-items: center; gap: 6px; }
+.score-table .th-model::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--tier-c, var(--muted)); }
+.score-table .th-model.t-workhorse { --tier-c: var(--tier-workhorse); } .score-table .th-model.t-manager { --tier-c: var(--tier-manager); }
+.score-cell { display: flex; align-items: baseline; gap: 6px; white-space: nowrap; }
+.score-cell b { font-variant-numeric: tabular-nums; font-size: 14px; }
+.score-cell small { color: var(--muted); }
+.score-cell .verdict { display: inline-flex; align-items: center; gap: 3px; font-size: 12px; color: var(--ink-2); }
+.score-cell .verdict .i { width: 13px; height: 13px; }
+.score-cell .verdict.strong .i { color: var(--ok); } .score-cell .verdict.weak .i { color: var(--bad); } .score-cell .verdict.thin { color: var(--muted); }
+.score-cell.best b { text-decoration: underline; text-decoration-color: var(--tier-c, var(--accent)); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.score-rule { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line-2); font-size: 14px; }
+.score-rule:first-child { border-top: 0; }
+.score-rule .i { width: 17px; height: 17px; margin-top: 2px; color: var(--muted); }
+.score-rule small { display: block; color: var(--muted); font-size: 12.5px; }
+.table-scroll { overflow-x: auto; max-width: 100%; contain: inline-size; }  /* scrolls inside; never widens the page */
+.acct-btn .acct-tag::before { content: none; }
+.acct-btn .acct-tag { color: inherit; font-size: inherit; }
+@media (max-width: 640px) { .acct-btn .acct-tag { max-width: 88px; } }

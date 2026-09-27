@@ -103,6 +103,8 @@ def tier_allows(seat: dict, task: dict, workhorse_usable: bool, manager_may_help
     tier = task.get("tier") or "manager"
     if seat_tier(seat.get("vendor") or "claude") == "workhorse":
         return tier == "workhorse" and task.get("kind") != "foundation"
+    if task.get("twin"):
+        return tier == "manager"  # a head-to-head needs the two tiers' own models: no stand-ins
     return tier == "manager" or task.get("kind") == "foundation" or not workhorse_usable or manager_may_help
 
 

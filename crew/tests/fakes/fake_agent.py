@@ -18,6 +18,9 @@ injected through CREW_FAKE_SCENARIO (JSON):
   codex_ceo_fails: true      the CEO on Codex (GPT-6 Astra) errors, so its Claude backup must take over
   review_limit_task: [ids]   the reviewer of these tasks hits its usage limit once on every Claude account
   limit_seconds: N           how long a usage limit lasts (default 3600)
+  reject_twice: [ids]        the reviewer requests changes the first two times (a workhorse task moves up)
+  contest_winner: vendor     the head-to-head judge prefers this vendor's version (default "codex")
+  contest_fail: vendor       the judge finds problems in this vendor's version
 
 With a Codex account in the run, the lead makes odd-numbered features workhorse tasks (GPT-6 Sol) and even ones
 manager tasks. A CEO asked for a JSON answer (--output-schema / --json-schema) on Codex answers in JSON only,
@@ -109,6 +112,8 @@ class Brain:
         return text, err
 
     def turn(self, text: str) -> str:
+        if "You are judging a head-to-head" in text:
+            return "judged"  # the verdict is the structured answer (see judge_verdict)
         if "Turn the owner's request below into a precise brief" in text:
             return "BRIEF"
         if "senior reviewer with fresh eyes" in text:
@@ -230,6 +235,10 @@ class Brain:
 
     def review(self, text: str) -> str:
         tid = int(re.search(r"Review task #(\d+)", text).group(1))
+        if tid in SCEN.get("reject_twice", []) and (once(f"reject2a-{tid}") or once(f"reject2b-{tid}")):
+            self.tool("team_review_submit", task_id=tid, verdict="changes",
+                      notes="1. The feature returns the wrong value for the edge case; handle it and add a test.")
+            return "reviewed"
         if tid in SCEN.get("review_limit_task", []) and once(f"review-limit-{tid}-{os.environ.get('CREW_FAKE_ACCOUNT')}"):
             return "LIMIT"
         if tid in SCEN.get("reject_task", []) and once(f"reject-{tid}"):
@@ -238,6 +247,24 @@ class Brain:
         else:
             self.tool("team_review_submit", task_id=tid, verdict="approve", notes="Looks correct; tests pass.")
         return "reviewed"
+
+
+def judge_verdict() -> dict:
+    """The head-to-head judge's answer: it looks at who committed each version (./a and ./b) to find its vendor."""
+    vendors = dict(item.partition(":")[::2] for item in os.environ.get("CREW_FAKE_SEATS", "").split(",") if item)
+
+    def vendor(folder: str) -> str:
+        subject = sh("git", "-C", folder, "log", "-1", "--format=%s")
+        m = re.search(r"by ([\w-]+)", subject)
+        return vendors.get(m.group(1), "claude") if m else "claude"
+
+    v = {k: vendor(k) for k in ("a", "b")}
+    out = {k: ({"verdict": "changes", "notes": "1. The edge case fails; add a test and handle it."}
+               if v[k] == SCEN.get("contest_fail") else {"verdict": "approve", "notes": "Meets the spec."}) for k in v}
+    prefer = SCEN.get("contest_winner", "codex")
+    out["winner"] = next((k for k in ("a", "b") if v[k] == prefer), "a")
+    out["reason"] = f"The {prefer} version is simpler and fully tested."
+    return out
 
 
 # ------------------------------------------------------------------- claude mode
@@ -585,7 +612,9 @@ def claude_main(argv: list[str]) -> int:
         payload = {"type": "result", "subtype": "success", "is_error": False, "result": result,
                    "usage": {"input_tokens": 1200, "output_tokens": 300, "cache_creation_input_tokens": 500},
                    "total_cost_usd": 0.02, "num_turns": 1, "duration_ms": 50, "session_id": sid}
-        if schema and '"builder_tier"' in schema:
+        if schema and '"winner"' in schema:
+            payload["structured_output"] = judge_verdict()
+        elif schema and '"builder_tier"' in schema:
             payload["structured_output"] = {
                 "title": "Feature pack", "goal": "Build a small package of features with tests.",
                 "deliverables": ["app package"], "acceptance_criteria": ["all tests pass"],

@@ -92,6 +92,9 @@ def cmd_start(args) -> int:
     cfg = config_mod.load(args.config, seats=args.seats)
     if args.mode:
         cfg.team.mode = args.mode
+    chosen = [a.strip() for a in (args.accounts or "").split(",") if a.strip()]
+    if chosen:
+        cfg.restrict(chosen)
     run_id = args.run_id or new_run_id(request)
     run_dir = runs_dir() / run_id
     run_dir.mkdir(parents=True, exist_ok=bool(args.run_id))
@@ -102,16 +105,22 @@ def cmd_start(args) -> int:
         repo = gitops.ensure_repo(target.resolve())
     (runs_dir() / "LATEST").write_text(run_id)
     return _run(cfg, run_dir, repo, request, run_id, resume=False, open_web=not args.no_web,
-                headless=args.headless, max_hours=args.max_hours)
+                headless=args.headless, max_hours=args.max_hours, head_to_head=args.head_to_head,
+                accounts=chosen)
 
 
 def _run(cfg, run_dir: Path, repo: Path, request: str, run_id: str, resume: bool, open_web: bool,
-         headless: bool = False, max_hours: float | None = None) -> int:
+         headless: bool = False, max_hours: float | None = None, head_to_head: str | None = None,
+         accounts: list[str] | None = None) -> int:
     from .orchestrator import Orchestrator
 
     orch = Orchestrator(cfg, run_dir, repo, request, run_id, resume=resume)
     if max_hours is not None and not resume:
         orch.store.set("max_hours", max(0.0, float(max_hours)))  # a timer for this project only
+    if head_to_head and not resume:
+        orch.store.set("head_to_head", head_to_head)  # this project only
+    if accounts and not resume:
+        orch.store.set("accounts_chosen", accounts)  # this project uses only these subscriptions
     server = None
     try:
         if headless:  # started by the Crew app, which shows the run itself
@@ -155,6 +164,8 @@ def cmd_resume(args) -> int:
         sys.exit("That run already finished.")
     store.set("stop_requested", None)
     cfg = config_mod.load(args.config)
+    if store.get("accounts_chosen"):  # the project keeps the subscriptions the owner chose for it
+        cfg.restrict([a for a in store.get("accounts_chosen") if any(x.name == a for x in cfg.accounts)])
     repo = Path(store.get("repo"))
     return _run(cfg, run_dir, repo, store.get("goal", ""), run_dir.name, resume=True, open_web=not args.no_web,
                 headless=args.headless)
@@ -305,6 +316,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--run-id", help=argparse.SUPPRESS)
     p.add_argument("--mode", choices=("auto", "solo", "team"), help="solo builder or full team (default: auto)")
     p.add_argument("--max-hours", type=float, help="stop after this many hours (default: no time limit)")
+    p.add_argument("--accounts", help="use only these subscriptions for this project (names, comma-separated)")
+    p.add_argument("--head-to-head", choices=("off", "some", "all"),
+                   help="build some or all parts with both the workhorse and the manager model; the better is kept")
     p.set_defaults(fn=cmd_start)
 
     p = sub.add_parser("resume", help="continue a stopped run")

@@ -100,7 +100,7 @@ class Store:
         with self._lock:
             self.db.executescript(SCHEMA)
             for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT"),
-                                        ("tasks", "tier", "TEXT")):
+                                        ("tasks", "tier", "TEXT"), ("tasks", "twin", "INTEGER")):
                 have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
                 if column not in have:
                     try:
@@ -307,8 +307,8 @@ class Store:
             return []
         clashes = []
         for other in self.tasks(ACTIVE_STATES):
-            if other["id"] == task["id"] or not other["scope"]:
-                continue
+            if other["id"] in (task["id"], task.get("twin")) or not other["scope"]:
+                continue  # head-to-head twins build the same files on separate branches
             if scopes_overlap(task["scope"], other["scope"]):
                 clashes.append(other)
         return clashes
@@ -332,8 +332,8 @@ class Store:
                     raise StoreError(f"task #{task_id} waits on task #{dep}")
             if task["scope"]:
                 marks = ",".join("?" * len(ACTIVE_STATES))
-                for other in db.execute(f"SELECT * FROM tasks WHERE status IN ({marks}) AND id!=?",
-                                        (*ACTIVE_STATES, task["id"])).fetchall():
+                for other in db.execute(f"SELECT * FROM tasks WHERE status IN ({marks}) AND id!=? AND id!=?",
+                                        (*ACTIVE_STATES, task["id"], task.get("twin") or -1)).fetchall():
                     o = _decode_task(dict(other))
                     if o["scope"] and scopes_overlap(task["scope"], o["scope"]):
                         raise StoreError(f"task #{task_id} overlaps files held by task #{o['id']} ({o['owner']})")

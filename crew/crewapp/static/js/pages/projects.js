@@ -131,7 +131,9 @@ class ProjectView {
     clear(this.pills, 
       h('span', { class: 'pill' + (s.running ? ' live' : phase === 'done' ? ' ok' : phase === 'failed' ? ' bad' : '') }, s.running ? s.phase : phase === 'done' ? 'Finished' : s.phase),
       MODE_LABEL[s.mode] ? h('span', { class: 'pill outline' }, MODE_LABEL[s.mode]) : null,
-      s.timer ? h('span', { class: 'pill outline' }, icon('clock'), `${s.timer} h limit`) : null);
+      s.timer ? h('span', { class: 'pill outline' }, icon('clock'), `${s.timer} h limit`) : null,
+      (s.accounts_chosen || []).length ? h('span', { class: 'pill outline', title: 'This project uses only these subscriptions' }, icon('key'), s.accounts_chosen.join(', ')) : null,
+      s.head_to_head && s.head_to_head !== 'off' ? h('span', { class: 'pill t-ceo', title: 'Parts built by both models; the better version is kept' }, 'Head-to-head') : null);
 
     // actions
     const acts = [];
@@ -286,7 +288,8 @@ function agentCard(a, phase) {
   const workingHelpers = helpers.filter((x) => x.status === 'working').length;
   return h('div', { class: 'agent' + (a.status === 'done' ? ' done' : '') },
     h('div', { class: 'a-top' },
-      h('span', { class: 'av' + (busy ? ' busy' : ''), style: { background: a.role === 'CEO' ? 'var(--accent)' : colorFor(a.name) } }, a.role === 'CEO' ? icon('spark') : a.name.replace(/[^a-z0-9]/gi, '').slice(0, 2)),
+      h('span', { class: 'av' + (busy ? ' busy' : ''), style: { background: a.role === 'CEO' ? 'var(--team)' : colorFor(a.name) } },
+        a.role === 'CEO' ? icon(product === 'codex' ? 'gpt' : 'spark') : a.name.replace(/[^a-z0-9]/gi, '').slice(0, 2)),
       h('div', { class: 'a-name' }, h('b', null, a.title || cap(a.name)), h('small', null, [a.title && a.title.startsWith(a.role) ? '' : a.role, a.account].filter(Boolean).join(' · '))),
       a.status === 'done' ? h('span', { class: 'pill ok' }, 'Done') : a.status === 'failed' ? h('span', { class: 'pill bad' }, 'Stopped') : busy ? h('span', { class: 'pill live' }, 'Working') : h('span', { class: 'pill' }, STATE[a.status] || a.status || 'Ready')),
     h('div', { class: 'a-tags' }, productBadge(product, a.product || 'Claude'), a.model ? h('span', { class: 'pill outline' }, modelName(a.model)) : null,

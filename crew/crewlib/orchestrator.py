@@ -9,13 +9,15 @@ resumed.
 from __future__ import annotations
 
 import queue
+import random
+import shutil
 import threading
 import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitops, lessons, prompts, scheduler, tiers
+from . import gitops, lessons, prompts, scheduler, scorecard, tiers
 from . import tools as team_tools
 from .agents import (ClaudeSeat, ClaudeSetup, CodexSeat, CodexSetup, Event, RunResult, copy_claude_session,
                      run_once_claude, run_once_codex)
@@ -26,6 +28,9 @@ from .tools import _fmt_msg, _mentions
 from .util import Redactor, atomic_write, clip, crew_home, hhmm, human_duration, load_env_file, now
 
 TICK = 1.0
+CONTEST_KINDS = ("build", "fix", "test", "docs")  # work whose two versions can be compared side by side
+CONTESTS_SOME = 2         # head-to-heads per project when the owner chose "some"
+CONTEST_WAIT = 15 * 60    # how long a finished version waits for its rival before it is checked alone
 
 
 @dataclass
@@ -202,14 +207,23 @@ class Orchestrator:
         seats = self.store.seats()
         if self.store.get("mode") == "solo":
             builder = self.store.get("solo_builder") or self.lead_name
-            if rt.name == builder:
+            if rt.name in (builder, self.store.get("solo_rival")):
                 return prompts.solo_system(rt.name, seats)
             if rt.spec.role == "lead":
                 return prompts.solo_manager_system(rt.name, seats, builder)
         if rt.spec.role == "lead":
-            return prompts.lead_system(rt.name, seats)
+            return prompts.lead_system(rt.name, seats, self.scorecard_text())
         return prompts.member_system(rt.name, seats, self.lead_name)
 
+    def scorecard_text(self) -> str:
+        try:
+            return scorecard.render(self.cfg.models.codex, self.cfg.models.work)
+        except Exception as exc:  # the scorecard informs; it must never stop a run
+            self.log(f"scorecard: {exc}")
+            return ""
+
+    def head_to_head(self) -> str:
+        return self.store.get("head_to_head") or self.cfg.team.head_to_head
     def start_seat(self, rt: SeatRT, first: str | None, resume_session: str | None = None,
                    effort: str | None = None) -> None:
         system = self._system_prompt(rt)
@@ -338,6 +352,10 @@ class Orchestrator:
         the workhorse (GPT-6 Sol) while the lead (Opus 5.5) stands by to decide and to verify; others by the lead."""
         lead = self.seats[self.lead_name]
         tier, effort = self.solo_plan()
+        if tier == "workhorse":
+            tier, moved = scorecard.route_tier("build", "L", tier, self.cfg.models.codex, self.cfg.models.work)
+            if moved:
+                self.say(f"The scorecard sends this job to the manager: {moved}.")
         builder = lead
         if tier == "workhorse":
             accounts = {a["name"]: a for a in self.store.accounts()}
@@ -345,8 +363,11 @@ class Orchestrator:
             if sol:
                 builder = min(sol, key=lambda r: scheduler._burn(accounts.get(r.account.name, {})))
         self.store.set("solo_builder", builder.name)
+        rival = self._solo_rival(builder) if self.head_to_head() in ("some", "all") else None
+        if rival is not None:
+            self.store.set("solo_rival", rival.name)
         for rt in self.seats.values():
-            if rt is not builder and rt is not lead:
+            if rt not in (builder, lead, rival):
                 rt.benched = True
                 self.store.update_seat(rt.name, status="standby", note="backs up this run")
         brief = self.store.get("brief", {}) or {}
@@ -370,19 +391,77 @@ class Orchestrator:
             self.say(f"This job is routine, so the workhorse {builder.name} ({who}) builds it at {effort} effort. "
                      f"{lead.name} ({model_label(self.cfg.models.work)}) answers its questions and verifies the "
                      "result; a fresh reviewer checks it, then the CEO model.")
+        if rival is not None:
+            twin_id = self._make_twin(self.store.task(task_id))
+            self.say(f"Head-to-head: {rival.name} ({self.model_of(rival)}) builds the same job independently. A "
+                     "manager compares the two versions without knowing which is which and keeps the better one.")
         task = self.store.task(task_id)
         if self.give_task(builder, task, "normal"):
-            first = "\n\n".join([prompts.kickoff_solo(self.brief_text(), self.request), *builder.pending])
+            first = "\n\n".join([prompts.kickoff_solo(self.brief_text(), self.request, contest=rival is not None),
+                                  *builder.pending])
             builder.pending.clear()
             self.start_seat(builder, first)
+        if rival is not None and self.give_task(rival, self.store.task(twin_id), "normal"):
+            first = "\n\n".join([prompts.kickoff_solo(self.brief_text(), self.request, contest=True), *rival.pending])
+            rival.pending.clear()
+            self.start_seat(rival, first)
         if builder is not lead:
             self.start_seat(lead, None)  # idle until it is needed: no tokens are used while it waits
+
+    def model_of(self, rt: SeatRT) -> str:
+        return model_label(self.cfg.models.codex if rt.spec.vendor == "codex" else self.cfg.models.work)
+
+    def _solo_rival(self, builder: SeatRT) -> SeatRT | None:
+        """The other tier's builder for a one-builder head-to-head (never the lead, who verifies the result)."""
+        accounts = {a["name"]: a for a in self.store.accounts()}
+        modes = {a["name"]: a.get("mode") for a in self.store.accounts()}
+        pool = [rt for rt in self.seats.values() if not rt.down and rt.name != self.lead_name
+                and rt.spec.vendor != builder.spec.vendor and modes.get(rt.account.name) != "parked"]
+        return min(pool, key=lambda r: scheduler._burn(accounts.get(r.account.name, {}))) if pool else None
+
+    def _make_twin(self, task: dict) -> int:
+        """A second, independent copy of a task for the other tier's model (a head-to-head)."""
+        other = "manager" if task.get("tier") == "workhorse" else "workhorse"
+        twin_id = self.store.create_task(
+            title=task["title"], spec=task["spec"], acceptance=task["acceptance"], scope=task["scope"],
+            depends_on=task["depends_on"], size=task["size"], kind=task["kind"], suggested_owner=None,
+            created_by="crew", tier=other)
+        self.store.update_task(twin_id, twin=task["id"], effort=task.get("effort"))
+        self.store.update_task(task["id"], twin=twin_id)
+        return twin_id
+
+    def setup_contests(self) -> None:
+        """When the owner asked for head-to-heads: pick the parts (all eligible ones, or the few where the scorecard
+        knows least) and add a twin of each for the other tier's model."""
+        if self.head_to_head() not in ("some", "all") or self.store.get("contests_set"):
+            return
+        self.store.set("contests_set", True)
+        managers = [rt for rt in self.seats.values() if rt.spec.vendor == "claude" and not rt.down]
+        if not self.workhorse_seats() or not managers:
+            self.say("Head-to-head skipped: it needs both a workhorse (ChatGPT) and a manager (Claude) subscription.")
+            return
+        eligible = [t for t in self.store.tasks(("todo",)) if t["kind"] in CONTEST_KINDS and t["size"] in ("S", "M")
+                    and not t.get("twin")]
+        if self.head_to_head() == "some":
+            known = scorecard.stats()["models"]
+
+            def evidence(t: dict) -> tuple:
+                rival = self.cfg.models.work if t.get("tier") == "workhorse" else self.cfg.models.codex
+                cell = ((known.get(rival) or {}).get("by_kind") or {}).get(f"{t['kind']} {t['size']}") or {}
+                return (cell.get("n", 0), scorecard.SIZE_ORDER.get(t["size"], 9), t["id"])
+
+            eligible = sorted(eligible, key=evidence)[:CONTESTS_SOME]
+        made = [t["id"] for t in eligible if self._make_twin(t)]
+        if made:
+            self.say(f"Head-to-head: {', '.join(f'#{i}' for i in made)} will each be built twice, by "
+                     f"{model_label(self.cfg.models.codex)} and {model_label(self.cfg.models.work)}. A manager "
+                     "compares the two versions without knowing which is which and keeps the better one.")
 
     def resume_seats(self) -> None:
         solo = self.store.get("mode") == "solo"
         builder = self.store.get("solo_builder") or self.lead_name
         for rt in self.seats.values():
-            if solo and rt.name not in (builder, self.lead_name):
+            if solo and rt.name not in (builder, self.lead_name, self.store.get("solo_rival")):
                 rt.benched = True
                 continue
             row = self.store.seat(rt.name) or {}
@@ -884,7 +963,7 @@ class Orchestrator:
 
     def _ceo_plan_job(self) -> None:
         prompt = prompts.ceo_plan_prompt(self.brief_text(), self.store.get("plan_summary", ""), self._board_text(),
-                                         lessons.render_for_ceo())
+                                         lessons.render_for_ceo(), self.scorecard_text())
         self.store.set("verdict:plan", None)
         res = self.run_ceo("ceo-plan", prompt, json_schema=prompts.CEO_PLAN_SCHEMA,
                            accept=lambda r: bool(self.store.get("verdict:plan")) or self._valid_verdict(r))
@@ -923,6 +1002,7 @@ class Orchestrator:
         self.set_phase("build")
         self.last_progress = now()
         self.say("Plan approved. Build started.", urgent=True)
+        self.setup_contests()
 
     # ================================================================= build
 
@@ -1004,7 +1084,7 @@ class Orchestrator:
         self.store.update_seat(rt.name, current_task=task["id"], chat_used=0)
         rt.idle_nudges = 0
         rt.want_effort = self.task_effort(task)
-        rt.pending.append(prompts.assignment(task, branch, mode, resumed=resumed))
+        rt.pending.append(prompts.assignment(task, branch, mode, resumed=resumed, contest=bool(task.get("twin"))))
         self.say(f"Task #{task['id']} → {rt.name}: {task['title']}", task_id=task["id"])
         return True
 
@@ -1035,22 +1115,33 @@ class Orchestrator:
 
     # ---------------------------------------------------------------- review
 
+    def _snapshot(self, task: dict) -> bool:
+        """Commit the author's work and fix exactly what is reviewed (once; a resumed run reuses it).
+        False while the author is still finishing its turn."""
+        if self.store.get(f"review_sha:{task['id']}"):
+            return True
+        owner = self.seats.get(task["owner"] or "")
+        if owner is not None and owner.busy and now() - (task["submitted_at"] or now()) < 180:
+            return False
+        if owner is not None:
+            gitops.commit_all(owner.worktree, f"task #{task['id']}: {clip(task['summary'] or task['title'], 70)}")
+            self.store.update_seat(owner.name, current_task=None)
+            sha = gitops.head(owner.worktree)
+        else:
+            sha = gitops.out(self.repo, "rev-parse", task["branch"])
+        self.store.set(f"review_sha:{task['id']}", sha)
+        return True
+
     def dispatch_reviews(self) -> None:
         for task in self.store.tasks(("review",)):
             key = f"review-{task['id']}"
             if key in self.jobs or float(self.store.get(f"review_wait:{task['id']}") or 0) > now():
                 continue
-            if not self.store.get(f"review_sha:{task['id']}"):  # snapshot once; a resumed run reuses it
-                owner = self.seats.get(task["owner"] or "")
-                if owner is not None and owner.busy and now() - (task["submitted_at"] or now()) < 180:
-                    continue  # let the author finish its turn before the work is snapshotted
-                if owner is not None:
-                    gitops.commit_all(owner.worktree, f"task #{task['id']}: {clip(task['summary'] or task['title'], 70)}")
-                    self.store.update_seat(owner.name, current_task=None)
-                    sha = gitops.head(owner.worktree)
-                else:
-                    sha = gitops.out(self.repo, "rev-parse", task["branch"])
-                self.store.set(f"review_sha:{task['id']}", sha)
+            twin = self.store.task(task["twin"]) if task.get("twin") else None
+            if twin is not None and twin["status"] not in ("cancelled", "merged") and self._dispatch_contest(task, twin):
+                continue
+            if not self._snapshot(task):
+                continue
             self.store.set(f"review:{task['id']}", None)
             if self.cfg.team.review == "off":
                 self.job_results.put((key, ("approve", "Review is switched off in settings.", None)))
@@ -1132,6 +1223,208 @@ class Orchestrator:
                          tokens=res.tokens, seconds=round(res.duration_s or 0))
         return res
 
+    # ------------------------------------------------------------ head-to-head
+
+    def _dispatch_contest(self, task: dict, twin: dict) -> bool:
+        """A head-to-head task is in review. True when handled here (judging started, or waiting for the rival);
+        False when the rival is too late and this version is checked on its own."""
+        orig = task if task["id"] < twin["id"] else twin
+        key = f"contest-{orig['id']}"
+        if key in self.jobs or float(self.store.get(f"review_wait:{orig['id']}") or 0) > now():
+            return True
+        if twin["status"] == "review":
+            if self._snapshot(task) and self._snapshot(twin):
+                self.start_job(key, self._contest_job, orig["id"])
+            return True
+        if now() - (task["submitted_at"] or now()) < CONTEST_WAIT:
+            return True  # the other version is still being built
+        self._end_contest(survivor=task, dropped=twin, why="the other version was not ready in time.")
+        return True  # the survivor is checked on its own at the next tick
+
+    def _withdraw(self, task: dict, why: str) -> None:
+        """Stop a seat that is still building a version that has been withdrawn."""
+        rt = self.seats.get(task["owner"] or "")
+        row = self.store.seat(rt.name) if rt else None
+        if rt is None or not row or row.get("current_task") != task["id"]:
+            return
+        if rt.busy and rt.runner is not None:
+            rt.runner.interrupt()
+        gitops.park_worktree(rt.worktree, rt.name)
+        self.store.update_seat(rt.name, current_task=None)
+        rt.pending.append(f"Stop working on task #{task['id']}: {why} Your work so far is kept on its branch. "
+                          "Wait for your next assignment.")
+
+    def _keep_version(self, winner: dict, loser: dict) -> dict:
+        """Keep one version under the original task's number (everything that depends on it keeps working) and
+        withdraw the other. Returns the surviving task."""
+        orig, twin = (winner, loser) if winner["id"] < loser["id"] else (loser, winner)
+        if winner["id"] != orig["id"]:
+            self.store.update_task(orig["id"], branch=winner["branch"], owner=winner["owner"], tier=winner["tier"],
+                                   status=winner["status"], summary=winner["summary"], evidence=winner["evidence"],
+                                   started_at=winner["started_at"], submitted_at=winner["submitted_at"],
+                                   tokens=winner["tokens"], effort=winner.get("effort") or orig.get("effort"),
+                                   attempts=winner.get("attempts") or 1)
+            self.store.set(f"review_sha:{orig['id']}", self.store.get(f"review_sha:{winner['id']}"))
+        self.store.update_task(orig["id"], twin=None)
+        self.store.update_task(twin["id"], twin=None, status="cancelled", finished_at=now())
+        self.store.set(f"review_sha:{twin['id']}", None)
+        return self.store.task(orig["id"])
+
+    def _end_contest(self, survivor: dict, dropped: dict, why: str) -> None:
+        """A head-to-head that cannot be judged: keep the finished version and withdraw the other."""
+        self._withdraw(dropped, "the head-to-head ended without your version.")
+        kept = self._keep_version(survivor, dropped)
+        self.store.append_note(kept["id"], "crew", f"Head-to-head ended: {why}")
+        self.say(f"Head-to-head on task #{kept['id']} ended: {why} The finished version is checked on its own.",
+                 task_id=kept["id"])
+
+    def _contest_job(self, orig_id: int) -> tuple[str, object]:
+        orig = self.store.task(orig_id)
+        twin = self.store.task(orig["twin"]) if orig and orig.get("twin") else None
+        if not orig or not twin:
+            return ("fallback", "the head-to-head was already over")
+        versions = [orig, twin]
+        random.shuffle(versions)  # the judge never learns which model built which version
+        labels = {"a": versions[0]["id"], "b": versions[1]["id"]}
+        root = self.run_dir / "worktrees" / f"_contest-{orig_id}"
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+        folders = {}
+        try:
+            for letter, t in zip("ab", versions):
+                folders[letter] = root / letter
+                gitops.git(self.repo, "worktree", "add", "-f", "--detach", str(folders[letter]),
+                           self.store.get(f"review_sha:{t['id']}") or t["branch"])
+            checks = self.store.get("checks", []) or []
+            results = {letter: gitops.run_checks(folders[letter], checks,
+                                                 self.run_dir / "logs" / f"checks-contest-{orig_id}-{letter}.log",
+                                                 self.cfg.team.checks_timeout_minutes * 60) for letter in "ab"}
+            prompt = prompts.contest_prompt(orig, self.integration, checks,
+                                            {k: r.summary if r.ran else "" for k, r in results.items()})
+            res = self.run_judge(orig, twin, prompt, root)
+            data = res.structured if isinstance(res.structured, dict) else {}
+            valid = data.get("winner") in ("a", "b") and all(
+                isinstance(data.get(k), dict) and data[k].get("verdict") in ("approve", "changes") for k in "ab")
+            if not valid:
+                return ("wait", clip(res.text, 300)) if res.limit_hit else ("fallback", clip(res.text, 300))
+            for letter, r in results.items():  # failing checks are a defect whatever the judge thought
+                if r.ran and not r.ok:
+                    data[letter] = {"verdict": "changes",
+                                    "notes": "The checks fail on this version:\n" + r.summary + "\n\n" + data[letter]["notes"]}
+            return ("judged", {"labels": labels, "a": data["a"], "b": data["b"], "winner": data["winner"],
+                               "reason": str(data.get("reason") or "").strip(), "by": f"judge-{orig_id}"})
+        finally:
+            for folder in folders.values():
+                gitops.remove_worktree(self.repo, folder)
+            shutil.rmtree(root, ignore_errors=True)
+
+    def run_judge(self, orig: dict, twin: dict, prompt: str, workdir: Path) -> RunResult:
+        """A fresh manager (Opus 5.5) judges the two versions blind, on another subscription than their authors'."""
+        modes = {a["name"]: a.get("mode") for a in self.store.accounts()}
+        authors = {self.seats[t["owner"]].account.name for t in (orig, twin) if t.get("owner") in self.seats}
+        managers = [a for a in self.store.accounts() if a["vendor"] == "claude"]
+        avoid = next((a for a in authors if any(m["name"] == a for m in managers)), None)
+        acc_row = scheduler.pick_account(managers, modes, avoid=avoid)
+        if acc_row is None:
+            return RunResult(is_error=True, limit_hit=True, text="Every manager subscription is at its usage limit.")
+        account = self.cfg.account(acc_row["name"])
+        name = f"judge-{orig['id']}"
+        effort = self.review_effort(orig)
+        self.say(f"Judging the head-to-head on task #{orig['id']}: {model_label(self.cfg.models.work)} compares both "
+                 "versions without knowing which model built which.", task_id=orig["id"])
+        self.store.event("oneoff", seat=name, task_id=orig["id"], state="start", role="reviewer", vendor="claude",
+                         account=account.name, effort=effort, model=self.cfg.models.work)
+        res = run_once_claude(prompt, seat=name, role="reviewer", account=account, workdir=workdir,
+                              setup=self._claude_setup(effort=effort), redact=self.redact, task_id=orig["id"],
+                              read_only=True, json_schema=prompts.CONTEST_SCHEMA, timeout=2400)
+        self._account_usage(account.name, res)
+        self.store.event("oneoff", seat=name, task_id=orig["id"], state="error" if res.is_error else "done",
+                         tokens=res.tokens, seconds=round(res.duration_s or 0))
+        return res
+
+    def on_contest_done(self, orig_id: int, outcome: tuple[str, object]) -> None:
+        kind, detail = outcome
+        orig = self.store.task(orig_id)
+        twin = self.store.task(orig["twin"]) if orig and orig.get("twin") else None
+        if orig is None or twin is None:
+            return
+        if kind == "wait":
+            resets = [int(a.get("parked_until") or 0) for a in self.store.accounts() if a["vendor"] == "claude"]
+            self.store.set(f"review_wait:{orig_id}", min(resets) if resets and min(resets) > now() else int(now() + 600))
+            return
+        if kind != "judged":
+            self._end_contest(survivor=orig, dropped=twin, why="the judge could not compare the two versions.")
+            return
+        by_id = {detail["labels"]["a"]: detail["a"], detail["labels"]["b"]: detail["b"]}
+        passed = {tid: v["verdict"] == "approve" for tid, v in by_id.items()}
+        winner_id = detail["labels"][detail["winner"]]
+        if passed[orig["id"]] != passed[twin["id"]]:
+            winner_id = orig["id"] if passed[orig["id"]] else twin["id"]  # a version that passed beats one that did not
+        winner, loser = (orig, twin) if winner_id == orig["id"] else (twin, orig)
+        wseat, lseat = self.store.seat(winner["owner"] or "") or {}, self.store.seat(loser["owner"] or "") or {}
+        wmodel = wseat.get("model") or self.cfg.models.work
+        lmodel = lseat.get("model") or self.cfg.models.work
+        project = self.store.get("project_name", "") or ""
+        for t, won in ((winner, True), (loser, False)):
+            self._score(t, first_pass=passed[t["id"]], outcome="won" if won else "lost", rounds=1)
+        lessons.record_contest(project, orig["title"], orig["kind"], orig["size"], wmodel, lmodel,
+                               seat_tier(wseat.get("vendor") or "claude"), seat_tier(lseat.get("vendor") or "claude"),
+                               passed[winner["id"]], passed[loser["id"]], detail.get("reason", ""))
+        self.store.set(f"scored:{orig_id}", True)
+        self.store.event("contest", task_id=orig_id, winner=wmodel, loser=lmodel, winner_passed=passed[winner["id"]],
+                         loser_passed=passed[loser["id"]], reason=detail.get("reason", ""))
+        verdict = by_id[winner["id"]]
+        self.store.event("review", task_id=orig_id, verdict=verdict["verdict"], by=detail.get("by"), rounds=1)
+        state = lambda ok: "passed" if ok else "did not pass"  # noqa: E731
+        self.say(f"Head-to-head on task #{orig_id} ({orig['title']}): {model_label(wmodel)}'s version "
+                 f"{state(passed[winner['id']])} and {model_label(lmodel)}'s {state(passed[loser['id']])}. Kept "
+                 f"{model_label(wmodel)}'s" + (f": {clip(detail['reason'], 300)}" if detail.get("reason") else "."),
+                 task_id=orig_id)
+        kept = self._keep_version(winner, loser)
+        if passed[winner["id"]]:
+            self.store.update_task(kept["id"], status="approved", review_notes=verdict["notes"], review_rounds=1)
+        else:
+            self.store.set(f"review_sha:{kept['id']}", None)
+            self.store.update_task(kept["id"], status="changes", review_notes=verdict["notes"], review_rounds=1)
+            self.say(f"Task #{kept['id']} needs changes before it is merged: {clip(verdict['notes'], 400)}",
+                     task_id=kept["id"])
+
+    # ------------------------------------------------------------ scorecard
+
+    def _score(self, task: dict, first_pass: bool | None = None, outcome: str = "merged",
+               rounds: int | None = None) -> None:
+        """One scorecard record for the model that built this task."""
+        builder = self.store.seat(task["owner"] or "") or {}
+        start = task.get("started_at") or now()
+        end = task.get("submitted_at") or now() if outcome != "merged" else now()
+        try:
+            lessons.record_effort_outcome(
+                task["kind"], task["size"], self.task_effort(task),
+                task["review_rounds"] if rounds is None else rounds, max(0.0, (end - start) / 60), task["tokens"],
+                project=self.store.get("project_name", "") or "", tier=seat_tier(builder.get("vendor") or "claude"),
+                model=builder.get("model") or self.cfg.models.work, outcome=outcome, first_pass=first_pass,
+                handovers=max(0, int(task.get("attempts") or 1) - 1))
+        except Exception as exc:  # the record must never break the run
+            self.log(f"scorecard record: {exc}")
+
+    def promote_task(self, task: dict, rounds: int, notes: str) -> None:
+        """The workhorse's work failed its check twice: the task moves up to the manager, who continues from that
+        work and the reviewer's notes. The workhorse's attempt is scored as not passing."""
+        builder = self.store.seat(task["owner"] or "") or {}
+        self._score(task, first_pass=False, outcome="moved-up", rounds=rounds)
+        effort = self.task_effort(task)
+        self.store.set(f"review_sha:{task['id']}", None)
+        self.store.update_task(task["id"], status="todo", owner=None, suggested_owner=None, tier="manager",
+                               review_rounds=0, tokens=0, started_at=None, review_notes=notes,
+                               effort="high" if effort in ("low", "medium", "auto") else effort)
+        self.store.append_note(task["id"], "crew", f"Moved up to the manager after {rounds} checks the workhorse's "
+                               "work did not pass. Continue from the work on this branch and the latest review.")
+        self.store.event("moved_up", task_id=task["id"], frm=builder.get("model") or "", to=self.cfg.models.work,
+                         rounds=rounds)
+        self.say(f"Task #{task['id']} moves up to {model_label(self.cfg.models.work)}: "
+                 f"{model_label(builder.get('model') or '')}'s work did not pass the check {rounds} times. It "
+                 "continues from that work and the reviewer's notes.", task_id=task["id"])
+
     def on_review_done(self, task_id: int, outcome: tuple[str, str, str | None]) -> None:
         verdict, notes, by = outcome
         task = self.store.task(task_id)
@@ -1154,6 +1447,10 @@ class Orchestrator:
         if verdict == "approve":
             self.store.update_task(task_id, status="approved", review_notes=notes, review_rounds=rounds)
             self.say(f"Task #{task_id} approved{f' by {by}' if by else ''}.", task_id=task_id)
+            return
+        builder = self.store.seat(task["owner"] or "") or {}
+        if rounds >= 2 and task.get("tier") == "workhorse" and builder.get("vendor") == "codex":
+            self.promote_task(task, rounds, notes)
             return
         self.store.update_task(task_id, status="changes", review_notes=notes, review_rounds=rounds)
         self.say(f"Task #{task_id} needs changes (round {rounds}): {clip(notes, 400)}", task_id=task_id)
@@ -1200,12 +1497,8 @@ class Orchestrator:
             self.store.event("merged", task_id=task_id, tokens=task["tokens"], size=task["size"],
                              seconds=now() - (task["started_at"] or now()), rounds=task["review_rounds"],
                              model=model, tier=seat_tier(builder.get("vendor") or "claude"))
-            effort = self.task_effort(task)
-            if effort != "auto":
-                lessons.record_effort_outcome(task["kind"], task["size"], effort, task["review_rounds"],
-                                              (now() - (task["started_at"] or now())) / 60, task["tokens"],
-                                              project=self.store.get("project_name", "") or "",
-                                              tier=seat_tier(builder.get("vendor") or "claude"), model=model)
+            if not self.store.get(f"scored:{task_id}"):  # head-to-head tasks were scored when judged
+                self._score(task)
             self.say(f"Task #{task_id} merged into the team's result. ✔", task_id=task_id)
         elif status == "error":
             fails = int(self.store.get(f"merge_errors:{task_id}", 0) or 0) + 1
@@ -1479,11 +1772,15 @@ class Orchestrator:
                 elif key.startswith("review-"):
                     tid = int(key.split("-")[1])
                     self.store.update_task(tid, status="changes", review_notes=f"Review failed to run: {result}")
+                elif key.startswith("contest-"):
+                    self.on_contest_done(int(key.split("-")[1]), ("fallback", str(result)))
                 elif key == "final":
                     self.on_final_done(f"red:{result}")
                 continue
             if key.startswith("review-"):
                 self.on_review_done(int(key.split("-")[1]), result)
+            elif key.startswith("contest-"):
+                self.on_contest_done(int(key.split("-")[1]), result)
             elif key.startswith("merge-"):
                 self.on_merge_done(int(key.split("-")[1]), result)
             elif key == "final":
@@ -1529,6 +1826,17 @@ class Orchestrator:
                      f"who had not written it ({first_pass} approved at the first review).")
         if failovers:
             lines.append(f"- Usage limits were handled {len(failovers)} time(s) by moving work to another subscription.")
+        contests = self.store.events("contest")
+        if contests:
+            wins: dict[str, int] = {}
+            for e in contests:
+                wins[model_label(e["data"].get("winner") or "")] = wins.get(model_label(e["data"].get("winner") or ""), 0) + 1
+            lines.append(f"- Head-to-head: {len(contests)} {'part was' if len(contests) == 1 else 'parts were'} built by "
+                         "two models and judged blind; " + ", ".join(f"{m} won {n}" for m, n in wins.items()) + ".")
+        moved = self.store.events("moved_up")
+        if moved:
+            lines.append(f"- {len(moved)} {'part' if len(moved) == 1 else 'parts'} moved up from the workhorse to the "
+                         "manager after two unsuccessful checks.")
         share = tiers.shares(self.store)
         if share["total"]:
             lines += ["", "## How the work was shared (tokens)"]

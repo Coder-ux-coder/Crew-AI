@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 
 from crewlib import claude_cli, config as cfgmod, connections, usage as usage_log
 from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, _kill_tree, _popen, _toml_str, child_env, codex_effort,
-                            copy_claude_session, default_codex_home, which)
+                            copy_claude_session, default_claude_home, default_codex_home, which)
 from crewlib.util import atomic_write, clip, crew_home, load_env_file, now
 
 from . import settings as settings_mod
@@ -215,6 +215,9 @@ class Session:
         self.model, self.effort = chat.get("model"), chat.get("effort") or "auto"
         self.mode = chat.get("mode") or "auto"
         self.account = None
+        self.chosen = chat.get("account") or ""  # the subscription the owner chose for this chat ("" = automatic)
+        self.holder = next((m["meta"].get("account") for m in reversed(chat.get("messages") or [])
+                            if m.get("role") == "assistant" and (m.get("meta") or {}).get("account")), "")
         self.proc = None
         self.busy = False
         self.interrupted = False
@@ -322,7 +325,11 @@ class ClaudeSession(Session):
         app = settings_mod.load()
         cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
         cfg.models.check(self.model)
-        self.account = account or self.m.pick_account(cfg, "claude")
+        before = self.account.name if self.account else self.holder
+        self.account = account or self.m.pick_account(cfg, "claude", prefer=self.chosen)
+        self._bring_conversation(cfg)
+        if self.chosen and self.account and before and self.account.name != before and account is None:
+            self.publish("notice", {"text": f"Now using {self.account.name}.", "kind": "account"})
         files = self.workspace() / ".crew"
         files.mkdir(exist_ok=True)
         (files / "system.md").write_text(self._system_text() + "\n\n" + PLAN_NOTE, encoding="utf-8")
@@ -363,12 +370,26 @@ class ClaudeSession(Session):
         threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
         threading.Thread(target=lambda p=self.proc: [None for _ in p.stderr], daemon=True).start()
 
+    def _bring_conversation(self, cfg) -> None:
+        """Before resuming, make sure the chosen subscription holds this conversation: bring it from whichever
+        Claude subscription has it (the owner switched, or Crew restarted and picked another one)."""
+        if not self.session_id or self.account is None:
+            return
+        home = self.account.profile_dir() or default_claude_home()
+        if list((home / "projects").glob(f"*/{self.session_id}.jsonl")):
+            return
+        for other in cfg.accounts_for("claude"):
+            if other.name != self.account.name and copy_claude_session(self.session_id, other, self.account):
+                return
+
     def send(self, prompt: str, model: str, effort: str, mode: str, account=None) -> None:
         with self._lock:
             if self.busy:
                 raise RuntimeError("Still answering the last message.")
-            if self.alive() and (model != self.model or effort != self.effort):
-                self.stop_process()  # a new model or effort: resume the same conversation in a fresh process
+            switched = bool(self.chosen and self.account and self.chosen != self.account.name)
+            if self.alive() and (model != self.model or effort != self.effort or switched or
+                                 (account is not None and self.account and account.name != self.account.name)):
+                self.stop_process()  # a new model, effort or subscription: resume the conversation in a fresh process
             self.model, self.effort, self.mode = model, effort, mode
             if not self.alive():
                 self._start(account)
@@ -613,14 +634,33 @@ class CodexSession(Session):
                 raise RuntimeError("Codex (for ChatGPT) is not installed. Run the Crew installer and answer Yes to "
                                    "ChatGPT.")
             cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
-            self.account = account or self.m.pick_account(cfg, "codex")
-            if self.account is None:
+            holder = self.account or next((a for a in cfg.accounts_for("codex") if a.name == self.holder), None)
+            if account is None and self.session_id and holder is not None and (not self.chosen or self.chosen == holder.name):
+                account = holder  # a ChatGPT conversation continues on the subscription that holds it
+            new = account or self.m.pick_account(cfg, "codex", prefer=self.chosen)
+            if new is None:
                 raise RuntimeError("Add your ChatGPT subscription first: Settings → Subscriptions → Add → ChatGPT.")
+            if self.session_id and holder is not None and new.name != holder.name:
+                # ChatGPT conversations cannot move between subscriptions: continue from a summary of this one.
+                self.session_id = None
+                self.m.db.x("UPDATE chats SET session_id=NULL WHERE id=?", (self.chat_id,))
+                prompt = self._recap() + prompt
+                self.publish("notice", {"text": f"Now using {new.name}. A ChatGPT conversation cannot move to "
+                                                "another subscription, so it continues from a summary of this one.",
+                                        "kind": "account"})
+            self.account = new
             self.model, self.effort, self.mode = model, effort, mode
             self.busy, self.turn, self.last_prompt = True, Turn(), prompt
         self.publish("start", {"engine": "codex", "model": model or "", "effort": effort, "mode": mode,
                                "account": self.account.name})
         threading.Thread(target=self._turn, args=(exe, prompt), daemon=True).start()
+
+    def _recap(self) -> str:
+        chat = self.m.get(self.chat_id) or {}
+        lines = [f"{'Owner' if m['role'] == 'user' else 'You'}: {clip(m['text'], 700)}"
+                 for m in (chat.get("messages") or [])[-13:-1] if m.get("text")]  # the newest is sent as the prompt
+        return ("The conversation so far (it moved to another ChatGPT subscription, so here is a recap; continue "
+                "from it):\n" + "\n".join(lines) + "\n\n---\n\n") if lines else ""
 
     def _args(self) -> list[str]:
         import sys
@@ -811,8 +851,9 @@ class ChatManager:
 
     # ------------------------------------------------------------ accounts
 
-    def pick_account(self, cfg, vendor: str, avoid: str | None = None):
-        """The subscription with the most room (from the limits Claude and Codex report), the owner's choice first."""
+    def pick_account(self, cfg, vendor: str, avoid: str | None = None, prefer: str | None = None):
+        """The subscription for a chat: the one the owner chose for it (unless it is at its limit), else the
+        default chosen in Settings, else the one with the most room (from the limits Claude and Codex report)."""
         accounts = [a for a in cfg.accounts_for(vendor) if a.name != avoid]
         if not accounts:
             return None
@@ -825,6 +866,10 @@ class ChatManager:
                 return 2.0
             return max(float(lim.get("five_util") or 0), float(lim.get("week_util") or 0) * 0.8)
 
+        if prefer:
+            chosen = next((a for a in accounts if a.name == prefer and load(a) < 2.0), None)  # 2.0: at its limit
+            if chosen:
+                return chosen
         chosen = next((a for a in accounts if a.name == preferred and load(a) < 0.9), None)
         return chosen or min(accounts, key=load)
 
@@ -911,7 +956,7 @@ class ChatManager:
                          "ORDER BY pinned DESC, updated DESC LIMIT 300")
 
     def create(self, engine: str | None = None, model: str | None = None, effort: str | None = None,
-               mode: str | None = None) -> dict:
+               mode: str | None = None, account: str | None = None) -> dict:
         app = settings_mod.load()["app"]
         engine = engine if engine in ENGINES else app.get("chat_engine", "claude")
         if engine == "codex":
@@ -922,9 +967,19 @@ class ChatManager:
             effort = effort or app["chat_effort"]
         mode = mode if mode in MODES else "auto"
         cid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
-        self.db.x("INSERT INTO chats(id,title,created,updated,model,effort,engine,mode) VALUES(?,?,?,?,?,?,?,?)",
-                  (cid, "New chat", now(), now(), model, effort, engine, mode))
+        self.db.x("INSERT INTO chats(id,title,created,updated,model,effort,engine,mode,account) VALUES(?,?,?,?,?,?,?,?,?)",
+                  (cid, "New chat", now(), now(), model, effort, engine, mode, self._valid_account(engine, account)))
         return self.get(cid)
+
+    @staticmethod
+    def _valid_account(engine: str, name: str | None) -> str:
+        """The owner's choice of subscription for a chat: one of theirs for that product, or '' (automatic)."""
+        if not name:
+            return ""
+        cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
+        if not any(a.name == name for a in cfg.accounts_for(engine)):
+            raise ValueError(f"There is no {ENGINES.get(engine, engine)} subscription called {name}.")
+        return name
 
     def get(self, cid: str) -> dict | None:
         rows = self.db.q("SELECT * FROM chats WHERE id=?", (cid,))
@@ -952,7 +1007,8 @@ class ChatManager:
         return s
 
     def send(self, cid: str, text: str, model: str | None = None, effort: str | None = None,
-             attachments: list[str] | None = None, mode: str | None = None, engine: str | None = None) -> dict:
+             attachments: list[str] | None = None, mode: str | None = None, engine: str | None = None,
+             account: str | None = None) -> dict:
         chat = self.get(cid)
         if chat is None:
             raise KeyError(cid)
@@ -976,9 +1032,13 @@ class ChatManager:
             cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
             cfg.models.check(model)  # a banned or unknown model is refused before anything is recorded
         chat["engine"] = engine
+        if account is not None:
+            chat["account"] = self._valid_account(engine, account)
+            self.db.x("UPDATE chats SET account=? WHERE id=?", (chat["account"], cid))
         session = self.session(chat)
         if session.busy:
             raise ValueError("Still answering the last message. Press stop first, or wait a moment.")
+        session.chosen = chat.get("account") or ""
         self.db.x("INSERT INTO messages(chat_id,role,text,ts,meta) VALUES(?,?,?,?,?)",
                   (cid, "user", text, now(), json.dumps({"attachments": attachments or [], "mode": mode})))
         words = " ".join(text.split())

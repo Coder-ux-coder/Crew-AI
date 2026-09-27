@@ -60,7 +60,7 @@ def _common(seat: str, seats: list[dict]) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
-def lead_system(seat: str, seats: list[dict]) -> str:
+def lead_system(seat: str, seats: list[dict], scorecard: str = "") -> str:
     n = len(seats)
     workhorse = [s["name"] for s in seats if s["vendor"] == "codex"]
     who = (f"The workhorse seats are {', '.join(workhorse)}." if workhorse else
@@ -85,6 +85,9 @@ YOUR ROLE: LEAD (a manager). You own the plan, the shared design decisions and t
      task. Split mixed work: the decision as a small manager task, the routine rest as workhorse tasks after it.
    - Save the commands that prove the project works (team_set_checks), then declare the plan (team_plan_ready).
    - Seats may raise one concern each during planning. Weigh them, then decide (team_decide). Do not debate.
+   - The orchestrator may build some tasks twice on purpose (a head-to-head the owner asked for: the workhorse
+     and a manager each build it, and the better version is kept). It creates, judges and tidies those up
+     itself; leave them alone.{(chr(10) + chr(10) + scorecard) if scorecard else ""}
 3. During the build: answer questions fast, decide (team_decide), unblock, replan when the orchestrator reports a
    stall, keep the chat quiet. When you have no task, you may be given one.
 4. When every task is merged: verify the whole result against the brief yourself (run it, test it, look at it),
@@ -187,7 +190,7 @@ foundation); max = the hardest, highest-stakes work. Quality comes first: when u
 Higher effort costs more time and subscription usage, so do not give max to routine work."""
 
 
-def ceo_plan_prompt(brief: str, plan: str, board: str, record: str = "") -> str:
+def ceo_plan_prompt(brief: str, plan: str, board: str, record: str = "", scorecard: str = "") -> str:
     return f"""You are the CEO-level reviewer: the most capable model on the team, consulted rarely and only for
 high-leverage calls. Review the lead's plan before the team starts building, and decide each task's tier and how
 hard its builder should think. You check; you do not build.
@@ -211,6 +214,8 @@ to the workhorse tier. Read the repository if you need to.
 {EFFORT_GUIDE}
 
 {record or "You have no effort record yet; use your judgement."}
+
+{scorecard or "There is no model scorecard yet; use your judgement on tiers."}
 
 Answer with the JSON verdict (the software records it and tells the team): "verdict" is "approve" (put up to 3
 high-value adjustments in "notes") or "changes" (a numbered must-fix list in "notes"), and "tasks" gives EVERY task
@@ -273,6 +278,48 @@ The full change is `git diff {base}...HEAD`. Checks: {'; '.join(checks) or 'none
 Run it, test it, look at it. Judge it against the brief's acceptance criteria and the quality a careful senior
 engineer would ship. Answer with the JSON verdict (the software records it): "verdict" is "approve", or "changes"
 with a numbered must-fix list in "notes" (only real problems; each must be concrete and checkable)."""
+
+
+def contest_prompt(task: dict, base: str, checks: list[str], results: dict[str, str]) -> str:
+    def check_part(letter: str) -> str:
+        return clip(results.get(letter) or "(no checks ran)", 1500)
+    return f"""You are judging a head-to-head. Two engineers built the same task independently. You do not know who
+built which version, and you built neither. Task #{task['id']} "{task['title']}".
+
+Spec:
+{task['spec']}
+
+Acceptance criteria:
+{task['acceptance'] or '(none given — judge against the spec)'}
+
+File scope the engineers were allowed to edit: {', '.join(task['scope']) or '(none)'}
+
+Version A is in the folder ./a and version B in ./b. Each is a git worktree: see its change with
+`git diff {base}...HEAD` inside that folder.
+Checks: {'; '.join(checks) or 'none set — run whatever tests the project has'}.
+Orchestrator's check run for A (tail): {check_part('a')}
+Orchestrator's check run for B (tail): {check_part('b')}
+
+Do this:
+1. For each version on its own: read the change, run the checks, exercise the acceptance criteria (for anything
+   visual, take screenshots). Changes outside the file scope are a defect.
+2. Give each its own verdict: "approve" if it fully meets the spec and the acceptance criteria with no defect that
+   matters, otherwise "changes" with a numbered list of concrete problems (file, what is wrong, how to see it).
+3. Pick the better version overall: correctness first, then completeness, then simplicity and fit with the
+   existing code. Style alone never decides. Give the reason in one or two sentences.
+Answer with the JSON object only (the software records it). Do not edit any files."""
+
+
+_VERSION = {"type": "object", "properties": {"verdict": {"type": "string", "enum": ["approve", "changes"]},
+                                              "notes": {"type": "string"}},
+            "required": ["verdict", "notes"], "additionalProperties": False}
+CONTEST_SCHEMA = {
+    "type": "object",
+    "properties": {"a": _VERSION, "b": _VERSION, "winner": {"type": "string", "enum": ["a", "b"]},
+                   "reason": {"type": "string"}},
+    "required": ["a", "b", "winner", "reason"],
+    "additionalProperties": False,
+}
 
 
 REFINER_SCHEMA = {
@@ -351,10 +398,15 @@ orchestrator assigns your foundation task to you straight away (it arrives as a 
 take it."""
 
 
-def kickoff_solo(brief: str, request: str) -> str:
+HEAD_TO_HEAD = ("HEAD-TO-HEAD: another engineer is building this same task independently, and a manager will "
+                "compare the two versions without knowing who built which, then keep the better one. Build it fully on "
+                "your own; do not look for or coordinate with the other version.")
+
+
+def kickoff_solo(brief: str, request: str, contest: bool = False) -> str:
     return f"""The owner's project starts now. It is small enough that one builder is fastest, so you build it and
 others will check your work.
-
+{(chr(10) + HEAD_TO_HEAD + chr(10)) if contest else ""}
 {brief}
 
 Owner's original words (for intent): \"\"\"{clip(request, 3000)}\"\"\"
@@ -371,7 +423,7 @@ declared (team_chat_post kind=concern) — only if it matters. Do not edit files
 oriented; your first task will arrive as a message."""
 
 
-def assignment(task: dict, branch: str, mode: str, resumed: bool = False) -> str:
+def assignment(task: dict, branch: str, mode: str, resumed: bool = False, contest: bool = False) -> str:
     notes = f"\nHandover notes so far:\n{clip(task['notes'], 2500)}" if task["notes"] else ""
     review = f"\nLatest review (fix these):\n{clip(task['review_notes'], 2500)}" if task.get("review_notes") else ""
     again = "You are continuing this task. " if resumed else ""
@@ -390,7 +442,7 @@ Acceptance criteria:
 File scope (edit only these): {', '.join(task['scope']) or '(no file changes expected)'}{notes}{review}
 
 {usage}
-Work, verify, note progress, then submit with evidence (team_task_submit)."""
+{(HEAD_TO_HEAD + chr(10)) if contest else ""}Work, verify, note progress, then submit with evidence (team_task_submit)."""
 
 
 def chat_digest(messages: list[dict]) -> str:

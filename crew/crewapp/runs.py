@@ -61,7 +61,8 @@ class RunManager:
                                 stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **kwargs)
         self.procs[run_id] = proc
 
-    def start(self, request: str, repo: str | None = None, mode: str | None = None, hours=None) -> str:
+    def start(self, request: str, repo: str | None = None, mode: str | None = None, hours=None,
+              head_to_head: str | None = None, accounts: list[str] | None = None) -> str:
         request = (request or "").strip()
         if len(request) < 3:
             raise ValueError("Tell the team what you want first.")
@@ -77,6 +78,11 @@ class RunManager:
             hours = 0.0
         if hours > 0:  # only when the owner set a timer; otherwise the team works until it is done
             args += ["--max-hours", f"{min(hours, 168):g}"]
+        if head_to_head in ("off", "some", "all"):
+            args += ["--head-to-head", head_to_head]
+        names = [a for a in (accounts or []) if isinstance(a, str) and re.fullmatch(r"[\w.@+-]+", a)]
+        if names:
+            args += ["--accounts", ",".join(names)]
         self._spawn(run_id, args)
         (runs_dir() / "LATEST").write_text(run_id)
         return run_id
@@ -142,7 +148,12 @@ class RunManager:
         data.update(id=run_id, running=running, raw_phase=phase, mode=st.get("mode") or "", preview=self.preview(run_id),
                     folder=str(self.project_dir(run_id) or ""), started=st.get("started_at"),
                     request=st.get("goal", ""), timer=float(st.get("max_hours") or 0),
-                    agents=agents_view(st), estimate=estimate(st, tasks, running), shares=tiers.shares(st))
+                    agents=agents_view(st), estimate=estimate(st, tasks, running), shares=tiers.shares(st),
+                    contests=[{"task": e["task_id"], "winner": tiers.model_label(e["data"].get("winner") or ""),
+                               "loser": tiers.model_label(e["data"].get("loser") or ""),
+                               "both_passed": bool(e["data"].get("winner_passed") and e["data"].get("loser_passed")),
+                               "reason": e["data"].get("reason") or ""} for e in st.events("contest", limit=50)],
+                    head_to_head=st.get("head_to_head") or "", accounts_chosen=st.get("accounts_chosen") or [])
         by_id = {t["id"]: t for t in tasks}
         seats = {s["name"]: s for s in st.seats()}
         for t in data["tasks"]:
@@ -150,6 +161,7 @@ class RunManager:
             builder = seats.get(full.get("owner") or "") or {}
             t.update(effort=full.get("effort") or "", size=full.get("size") or "", kind=full.get("kind") or "",
                      tokens=full.get("tokens") or 0, raw=full.get("status") or "", tier=full.get("tier") or "",
+                     twin=full.get("twin"),
                      model=tiers.model_label(builder.get("model") or "") if builder else "")
         return data
 
@@ -205,6 +217,8 @@ def agent_title(name: str, role: str, task=None) -> str:
         return "CEO" + (f" · {what}" if what else "")
     if n.startswith("reviewer"):
         return "Reviewer" + (f" · task #{task}" if task else "")
+    if n.startswith("judge"):
+        return "Head-to-head judge" + (f" · task #{task}" if task else "")
     if n == "refiner":
         return "Brief writer"
     return (name or "").replace("-", " ").strip().capitalize()

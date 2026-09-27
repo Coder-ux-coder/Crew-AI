@@ -1,16 +1,32 @@
 // Usage: how much of each subscription is used — Claude's 5-hour and weekly limits, tokens per day — and the
-// Claude Code version on this computer.
+// Claude Code version on this computer. The second tab is the model scorecard.
 
 import { h, icon, btn, api, toast, fail, store, bus, tokens, pct, inTime, whenAt, clear } from '../ui.js';
+import { scorecardView } from './scorecard.js';
 
-export function usagePage(view) {
+function tabs(on) {
+  return h('div', { class: 'seg', role: 'tablist', style: { marginBottom: '16px' } },
+    [['usage', 'Limits', '#/usage'], ['scorecard', 'Model scorecard', '#/usage/scorecard']].map(([k, label, href]) => h('button', {
+      type: 'button', role: 'tab', class: k === on ? 'on' : '', 'aria-selected': String(k === on), onclick: () => { location.hash = href; },
+    }, label)));
+}
+
+export function usagePage(view, params = []) {
+  if (params[0] === 'scorecard') {
+    const box = h('div');
+    store.setTop(null, [btn('Refresh', () => scorecardView(box), { cls: 'sm ghost', ic: 'reload' })]);
+    view.append(h('div', { class: 'page' },
+      h('div', { class: 'page-head' }, h('div', { class: 't' }, h('h1', null, 'Model scorecard'))), tabs('scorecard'), box));
+    scorecardView(box);
+    return null;
+  }
   const cards = h('div', { class: 'grid-2' });
   const cli = h('div', { class: 'card' });
   store.setTop(null, [btn('Refresh', () => load(), { cls: 'sm ghost', ic: 'reload' })]);
   view.append(h('div', { class: 'page' },
     h('div', { class: 'page-head' }, h('div', { class: 't' }, h('h1', null, 'Usage'),
       h('p', null, 'How much of each subscription is used. Crew spreads work across your subscriptions and moves to another when one reaches its limit.'))),
-    cards, cli));
+    tabs('usage'), cards, cli));
 
   async function load() {
     try {

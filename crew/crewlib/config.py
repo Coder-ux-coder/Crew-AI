@@ -109,6 +109,7 @@ class TeamSettings:
     checks_timeout_minutes: float = 15.0
     web_port: int = 8765
     workhorse_seats: int = 2  # GPT-6 Sol seats per ChatGPT subscription (they do most tasks by count)
+    head_to_head: str = "off"  # off | some | all: parts built by both tiers' models, judged blind (feeds the scorecard)
 
 
 @dataclass
@@ -118,6 +119,24 @@ class Config:
     accounts: list[Account]
     seats: list[SeatSpec]
     source: Path | None = None
+    explicit_seats: bool = False
+
+    def restrict(self, names: list[str]) -> "Config":
+        """Only these subscriptions for one project (the owner's choice). The seats follow the subscriptions."""
+        keep = [a for a in self.accounts if a.name in set(names)]
+        missing = sorted(set(names) - {a.name for a in keep})
+        if missing:
+            raise ConfigError(f"unknown subscription(s): {', '.join(missing)}")
+        if not any(a.vendor == "claude" for a in keep):
+            raise ConfigError("choose at least one Claude subscription: the team's lead runs on Claude")
+        chosen = {a.name for a in keep}
+        seats = [s for s in self.seats if s.account in chosen] if self.explicit_seats else \
+            _default_seats(keep, None, int(self.team.workhorse_seats))
+        if not any(s.role == "lead" for s in seats):
+            lead = next(s for s in seats if s.vendor == "claude")
+            lead.role = "lead"
+        self.accounts, self.seats = keep, seats
+        return self
 
     def account(self, name: str) -> Account:
         for acc in self.accounts:
@@ -160,6 +179,8 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
         raise ConfigError('team.deliver must be "merge", "branch" or "push"')
     if not 1 <= int(team.workhorse_seats) <= 6:
         raise ConfigError("team.workhorse_seats must be between 1 and 6")
+    if team.head_to_head not in ("off", "some", "all"):
+        raise ConfigError('team.head_to_head must be "off", "some" or "all"')
 
     accounts = [Account(**_known(Account, a)) for a in data.get("account", [])]
     if not accounts:
@@ -186,7 +207,8 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
         if acc is None or acc.vendor != spec.vendor:
             raise ConfigError(f"seat {spec.name}: account '{spec.account}' missing or wrong vendor")
 
-    return Config(team=team, models=models, accounts=accounts, seats=seat_specs, source=path)
+    return Config(team=team, models=models, accounts=accounts, seats=seat_specs, source=path,
+                  explicit_seats=bool(data.get("seat")))
 
 
 def _default_seats(accounts: list[Account], count: int | None, workhorse_seats: int = 2) -> list[SeatSpec]:

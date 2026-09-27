@@ -112,9 +112,16 @@ export function workflowsPage(view) {
     }, icon(PRODUCTS[p].ic), PRODUCTS[p].name)));
     const effortSel = h('select', { style: { width: 'auto' } });
     const effortRow = h('label', { class: 'field' }, h('span', null, 'Effort'), effortSel, h('small', null, 'auto lets the model decide. The team’s CEO sets efforts itself.'));
+    const accountSel = h('select', { style: { width: 'auto' } });
+    const accountRow = h('label', { class: 'field' }, h('span', null, 'Subscription'), accountSel,
+      h('small', null, 'Automatic uses whichever has the most room, and moves on if one runs out.'));
     const drawEffort = () => {
       effortRow.classList.toggle('hidden', engine === 'team');
       clear(effortSel, ...efforts(engine).map((e) => h('option', { value: e, selected: e === (src.effort || 'auto') }, e)));
+      const mine = ((store.overview && store.overview.accounts) || []).filter((a) => a.vendor === engine);
+      accountRow.classList.toggle('hidden', engine === 'team' || mine.length < 2);
+      clear(accountSel, h('option', { value: '' }, 'Automatic'),
+        ...mine.map((a) => h('option', { value: a.name, selected: a.name === (src.account || '') }, a.name)));
     };
     drawEffort();
     const kind = h('select', null, [['manual', 'Only when I run it'], ['daily', 'Every day'], ['weekdays', 'Weekdays (Monday to Friday)'], ['weekly', 'Every week, on chosen days'],
@@ -142,6 +149,7 @@ export function workflowsPage(view) {
       h('label', { class: 'field' }, h('span', null, 'What it does'), prompt),
       h('div', { class: 'field' }, h('span', null, 'Who does it'), engineSeg),
       effortRow,
+      accountRow,
       h('div', { class: 'field' }, h('span', null, 'When'), kind, when));
     const v = await dialog({
       title: w ? 'Edit workflow' : 'New workflow', wide: true, body,
@@ -157,7 +165,8 @@ export function workflowsPage(view) {
                   : k === 'once' ? { kind: 'once', at: at.value } : { kind: 'manual' };
           if (k === 'weekly' && !chosen.size) { toast('Choose at least one day.', { bad: true }); return undefined; }
           if (k === 'once' && !at.value) { toast('Choose the date and time.', { bad: true }); return undefined; }
-          return { name: name.value.trim(), prompt: prompt.value.trim(), engine, effort: engine === 'team' ? 'auto' : effortSel.value, schedule };
+          return { name: name.value.trim(), prompt: prompt.value.trim(), engine, effort: engine === 'team' ? 'auto' : effortSel.value,
+            account: engine === 'team' ? '' : accountSel.value, schedule };
         },
       }],
     });

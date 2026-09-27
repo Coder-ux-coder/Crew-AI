@@ -28,6 +28,7 @@ from crewlib.store import Store  # noqa: E402
 
 TOML = """
 [team]
+{team_extra}
 max_hours = 0.1
 stall_minutes = {stall}
 ledger_minutes = 1.5
@@ -44,7 +45,7 @@ work = "claude-opus-5-5"
 """
 
 
-def make_run(scenario: dict, accounts: list[tuple[str, str]], stall: float = 0.5):
+def make_run(scenario: dict, accounts: list[tuple[str, str]], stall: float = 0.5, team_extra: str = ""):
     home = Path(tempfile.mkdtemp(prefix="crew-e2e-home-"))
     os.environ["CREW_HOME"] = str(home)
     os.environ["CREW_FAKE_STATE"] = tempfile.mkdtemp(prefix="crew-e2e-state-")
@@ -52,7 +53,7 @@ def make_run(scenario: dict, accounts: list[tuple[str, str]], stall: float = 0.5
     os.environ["CREW_CLAUDE_BIN"] = str(FAKES / "fake_claude")
     os.environ["CREW_CODEX_BIN"] = str(FAKES / "fake_codex")
     blocks = "\n".join(f'[[account]]\nname = "{n}"\nvendor = "{v}"\n' for n, v in accounts)
-    (home / "crew.toml").write_text(TOML.format(stall=stall, accounts=blocks))
+    (home / "crew.toml").write_text(TOML.format(stall=stall, accounts=blocks, team_extra=team_extra))
     cfg = config.load(str(home / "crew.toml"))
     os.environ["CREW_FAKE_SEATS"] = ",".join(f"{s.name}:{s.vendor}" for s in cfg.seats)
     repo = gitops.ensure_repo(Path(tempfile.mkdtemp(prefix="crew-e2e-proj-")))
@@ -233,6 +234,62 @@ class E2E(unittest.TestCase):
         self.assertIn("waits for its check", chat)
         self.assertNotIn("needs changes", chat)
         self.assertEqual(len([r for r in self.oneoffs(st) if r["seat"] == "reviewer-2"]), 3)  # both limits, then the check
+
+    def test_head_to_head_keeps_the_better_version(self):
+        """Both features are built twice (GPT-6 Sol and Opus 5.5); the judge compares each pair blind and the better
+        version is merged under the original task's number. The scorecard records every result."""
+        cfg, run_dir, repo, rid = make_run({"tasks": 2}, [("claude-1", "claude"), ("claude-2", "claude"),
+                                                          ("codex-1", "codex")], team_extra='head_to_head = "all"')
+        orch = run_orch(cfg, run_dir, repo, rid)
+        self.assert_finished(orch, repo, 2)
+        st = orch.store
+        vendor = {s["name"]: s["vendor"] for s in st.seats()}
+        contests = st.events("contest")
+        self.assertEqual(len(contests), 2, dump_chat(st))
+        self.assertTrue(all(e["data"]["winner"] == "gpt-6-sol" for e in contests))  # the judge preferred Sol's
+        merged = {t["title"]: t for t in st.tasks() if t["status"] == "merged"}
+        self.assertEqual(sorted(merged), ["Feature 1", "Feature 2", "Foundation"])
+        self.assertEqual(sum(1 for t in st.tasks() if t["status"] == "cancelled"), 2)  # the two losing versions
+        self.assertEqual(vendor[merged["Feature 2"]["owner"]], "codex")  # a manager task, won by Sol's version
+        judges = [r for r in self.oneoffs(st) if r["seat"].startswith("judge-")]
+        self.assertTrue(judges and all(r["model"] == "claude-opus-5-5" for r in judges))
+        from crewlib import scorecard
+        models = scorecard.stats()["models"]
+        self.assertEqual((models["gpt-6-sol"]["wins"], models["claude-opus-5-5"]["losses"]), (2, 2))
+        self.assertIn("Head-to-head", (orch.run_dir / "REPORT.md").read_text())
+
+    def test_solo_head_to_head(self):
+        cfg, run_dir, repo, rid = make_run({"tasks": 2, "size": "small", "parts": 1, "contest_winner": "claude"},
+                                           [("claude-1", "claude"), ("claude-2", "claude"), ("codex-1", "codex")],
+                                           team_extra='head_to_head = "some"')
+        orch = run_orch(cfg, run_dir, repo, rid)
+        self.assert_finished(orch, repo, 2)
+        st = orch.store
+        self.assertEqual(st.get("mode"), "solo")
+        self.assertEqual((st.get("solo_builder"), st.get("solo_rival")), ("curie", "boole"))
+        contest = st.events("contest")
+        self.assertEqual([e["data"]["winner"] for e in contest], ["claude-opus-5-5"])
+        kept = st.task(1)
+        self.assertEqual((kept["status"], kept["owner"]), ("merged", "boole"))  # the rival's version was kept
+        turns = {s["name"]: s["turns"] for s in st.seats()}
+        self.assertEqual(turns["dijkstra"], 0)
+
+    def test_workhorse_task_moves_up_after_two_failed_checks(self):
+        cfg, run_dir, repo, rid = make_run({"tasks": 1, "reject_twice": [2]},
+                                           [("claude-1", "claude"), ("claude-2", "claude"), ("codex-1", "codex")])
+        orch = run_orch(cfg, run_dir, repo, rid)
+        self.assert_finished(orch, repo, 1)
+        st = orch.store
+        vendor = {s["name"]: s["vendor"] for s in st.seats()}
+        task = st.task(2)
+        self.assertEqual((task["tier"], vendor[task["owner"]], task["review_rounds"]), ("manager", "claude", 1))
+        self.assertTrue(st.events("moved_up"))
+        self.assertIn("moves up to Opus 5.5", dump_chat(st))
+        from crewlib import scorecard
+        models = scorecard.stats()["models"]
+        self.assertEqual(models["gpt-6-sol"]["moved_up"], 1)
+        self.assertEqual(models["gpt-6-sol"]["by_kind"]["build S"]["passed"], 0)
+        self.assertEqual(models["claude-opus-5-5"]["by_kind"]["build S"]["passed"], 1)  # the moved task, first time
 
     def test_ceo_falls_back_to_its_claude_backup(self):
         cfg, run_dir, repo, rid = make_run({"tasks": 2, "codex_ceo_fails": True},

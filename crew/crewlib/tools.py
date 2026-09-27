@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from . import lessons as lessons_mod
+from . import scorecard
 from .store import KINDS, SIZES, Store, StoreError
 from .tiers import TIERS, model_label, seat_tier
 from .util import clip, hhmm, now
@@ -165,8 +166,17 @@ def _task_line(t: dict) -> str:
     deps = f" after #{','.join(map(str, t['depends_on']))}" if t["depends_on"] else ""
     owner = f" [{t['owner']}]" if t["owner"] else (f" (suggested: {t['suggested_owner']})" if t.get("suggested_owner") else "")
     scope = ", ".join(t["scope"][:4]) + (" …" if len(t["scope"]) > 4 else "")
+    twin = f" (head-to-head with #{t['twin']})" if t.get("twin") else ""
     return (f"#{t['id']} {t['status']:<11} {t['size']} {t['kind']:<10} {t.get('tier') or '-':<9} {t['title']}{owner}{deps}"
-            f"  files: {scope or '-'}")
+            f"{twin}  files: {scope or '-'}")
+
+
+def _tier_models(ctx: Ctx) -> tuple[str, str]:
+    """The models the run's workhorse and manager seats use (for the scorecard)."""
+    seats = ctx.store.seats()
+    workhorse = next((s["model"] for s in seats if s["vendor"] == "codex" and s.get("model")), "")
+    manager = next((s["model"] for s in seats if s["vendor"] == "claude" and s.get("model")), "")
+    return workhorse, manager
 
 
 def _check_owner_tier(ctx: Ctx, owner: str | None, tier: str | None) -> None:
@@ -252,6 +262,12 @@ def task_create(ctx: Ctx, a: dict) -> str:
     tier = a.get("tier") or None
     if tier and tier not in TIERS:
         raise ToolError(f"tier must be one of {TIERS}")
+    moved = ""
+    if tier == "workhorse":  # the record decides: a kind of work the workhorse keeps failing goes to the manager
+        workhorse, manager = _tier_models(ctx)
+        tier, moved = scorecard.route_tier(a.get("kind", "build"), a.get("size", "M"), tier, workhorse, manager)
+        if moved and owner and (ctx.store.seat(owner) or {}).get("vendor") == "codex":
+            owner = None
     _check_owner_tier(ctx, owner, tier)
     try:
         task_id = ctx.store.create_task(
@@ -267,7 +283,8 @@ def task_create(ctx: Ctx, a: dict) -> str:
         seat = ctx.store.seat(owner) or {}
         ctx.store.update_task(task_id, tier=seat_tier(seat.get("vendor") or "claude"))
         task = ctx.store.task(task_id) or {}
-    return f"Created task #{task_id} ({task.get('tier', 'manager')} tier)."
+    return f"Created task #{task_id} ({task.get('tier', 'manager')} tier)." + (
+        f" It goes to the manager tier: {moved}." if moved else "")
 
 
 def task_edit(ctx: Ctx, a: dict) -> str:

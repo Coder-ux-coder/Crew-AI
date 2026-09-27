@@ -23,7 +23,7 @@ const ROUTES = [
   [/^\/library$/, libraryPage, 'library'],
   [/^\/skills$/, skillsPage, 'skills'],
   [/^\/connections$/, connectionsPage, 'connections'],
-  [/^\/usage$/, usagePage, 'usage'],
+  [/^\/usage(?:\/(scorecard))?$/, usagePage, 'usage'],
   [/^\/settings(?:\/(\w+))?$/, settingsPage, 'settings'],
   [/^\/browser$/, browserPage, 'browser'],
   [/^\/phone$/, phonePage, 'phone'],

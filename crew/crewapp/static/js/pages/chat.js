@@ -3,8 +3,8 @@
 // context is. One composer for everything: pick Claude, ChatGPT or the Team; the model; the effort (named
 // exactly as Anthropic and OpenAI name them); plan mode; slash commands.
 
-import { h, icon, btn, api, stream, opened, toast, fail, confirmBox, ask, store, bus, markdown, ago, autosize, isSmall, copyText,
-  bytes, menu, closeMenu, tokens, greeting, PRODUCTS, productBadge, clear } from '../ui.js';
+import { h, icon, btn, api, stream, opened, toast, fail, confirmBox, ask, dialog, store, bus, markdown, ago, autosize, isSmall, copyText,
+  bytes, menu, closeMenu, tokens, greeting, PRODUCTS, productBadge, clear, pct, whenAt } from '../ui.js';
 import { dictate, canDictate, canSpeak, speech, conversation, stopDictation } from '../voice.js';
 
 // ------------------------------------------------------------------ choices
@@ -50,6 +50,18 @@ export function modelOptions(product = 'claude') {
 const modelLabel = (product, id) => (modelOptions(product).find((m) => m.value === (id || '')) || { label: id || 'ChatGPT' }).label;
 const LEGACY_EFFORT = { minimal: 'low' };  // chats started before GPT-6, which has no "minimal"
 
+// The owner's subscriptions of one product, with how much of each is used (for choosing one).
+function subscriptions(vendor) {
+  const accs = ((store.overview && store.overview.accounts) || []).filter((a) => !vendor || a.vendor === vendor);
+  const usage = Object.fromEntries(((store.usage && store.usage.accounts) || []).map((u) => [u.name, u.limits || {}]));
+  return accs.map((a) => {
+    const lim = usage[a.name] || {};
+    const hint = lim.status === 'rejected' && lim.five_reset ? `At its limit until ${whenAt(lim.five_reset)}`
+      : lim.five_util != null ? `${pct(Number(lim.five_util))} of its 5-hour limit used` : 'Not used yet today';
+    return { name: a.name, vendor: a.vendor, hint };
+  });
+}
+
 // Slash commands. `run` ones act in the app; the rest go to Claude Code, which runs them itself.
 const APP_COMMANDS = [
   { cmd: '/plan', hint: 'Plan first: nothing changes until you approve', app: 'plan' },
@@ -84,6 +96,9 @@ class Composer {
     this.model = opts.model ?? (this.product === 'codex' ? app.codex_model || '' : app.chat_model || 'claude-opus-5-5');
     this.effort = opts.effort || (this.product === 'codex' ? app.codex_effort : app.chat_effort) || 'auto';
     this.effort = LEGACY_EFFORT[this.effort] || this.effort;
+    this.account = opts.account || '';  // the subscription chosen for this chat ('' = automatic)
+    this.teamAccounts = null;           // the subscriptions a team project may use (null = all of them)
+    this.headToHead = null;             // head-to-head comparisons for this project (null = the Settings default)
     this.mode = opts.mode || 'auto';
     this.teamMode = 'auto';
     this.hours = 0;
@@ -110,6 +125,7 @@ class Composer {
     this.prodBtn = h('button', { class: 'chip-btn plain', type: 'button', title: 'Who answers, and with which model', onclick: () => this.productMenu() });
     this.effortBtn = h('button', { class: 'chip-btn plain', type: 'button', title: 'How hard it thinks', onclick: () => this.effortMenu() });
     this.timerBtn = h('button', { class: 'chip-btn plain', type: 'button', title: 'An optional time limit for the team', onclick: () => this.timerMenu() });
+    this.acctBtn = h('button', { class: 'chip-btn plain acct-btn', type: 'button', title: 'Which subscription does the work', onclick: () => this.accountMenu() });
     this.ring = h('div', { class: 'ctx-ring hidden', title: '' });
     this.mic = h('button', { class: 'icon-btn sm mic', type: 'button', title: 'Speak instead of typing', 'aria-label': 'Speak', onclick: () => dictate(this.ta, this.mic) }, icon('mic'));
     if (!canDictate) this.mic.classList.add('hidden');
@@ -118,7 +134,7 @@ class Composer {
     this.sendBtn = h('button', { class: 'send-btn idle', type: 'button', title: 'Send', 'aria-label': 'Send', onclick: () => (this.busy ? this.o.onStop() : this.submit()) }, icon('send2'));
     this.banner = h('div', { class: 'mode-banner hidden' }, icon('map'), h('span', null, 'Plan mode — it looks into things and writes a plan. Nothing changes until you approve it.'));
     this.el = h('div', { class: 'composer' }, this.banner, this.atts, this.ta,
-      h('div', { class: 'c-row' }, this.plusBtn, this.fileIn, this.planBtn, this.prodBtn, this.effortBtn, this.timerBtn,
+      h('div', { class: 'c-row' }, this.plusBtn, this.fileIn, this.planBtn, this.prodBtn, this.effortBtn, this.acctBtn, this.timerBtn,
         h('div', { class: 'c-end' }, this.ring, this.mic, this.talkBtn, this.sendBtn)));
     // Drop files onto the composer
     let depth = 0;
@@ -136,6 +152,13 @@ class Composer {
     const info = PRODUCTS[p];
     const label = p === 'team' ? (TEAM_MODES.find((m) => m.value === this.teamMode) || TEAM_MODES[0]).label : modelLabel(p, this.model);
     clear(this.prodBtn, icon(info.ic, 'prod-' + p), h('span', null, p === 'team' ? `Team · ${label}` : (p === 'codex' && !this.model ? 'ChatGPT' : `${p === 'codex' ? 'ChatGPT · ' : ''}${label}`)), icon('down', 'down'));
+    const subs = subscriptions(p === 'team' ? null : p);
+    this.acctBtn.classList.toggle('hidden', subs.length < 2 || (p === 'team' && !this.o.allowTeam));
+    const acctLabel = p === 'team' ? (this.teamAccounts ? `${this.teamAccounts.length} of ${subs.length} subscriptions` : 'All subscriptions')
+      : (this.account || 'Automatic');
+    clear(this.acctBtn, icon('key'), h('span', { class: 'acct-tag' }, acctLabel), icon('down', 'down'));
+    this.acctBtn.title = p === 'team' ? `Subscriptions this project may use: ${this.teamAccounts ? this.teamAccounts.join(', ') : 'all'}`
+      : this.account ? `Runs on ${this.account}` : 'Which subscription does the work (automatic: the one with the most room)';
     clear(this.effortBtn, icon('brain'), h('span', { class: 'hide-sm' }, 'Effort: '), h('span', null, this.effort), icon('down', 'down'));
     this.effortBtn.classList.toggle('hidden', p === 'team');
     clear(this.timerBtn, icon('clock'), h('span', null, this.hours ? `${this.hours} h limit` : 'No time limit'), icon('down', 'down'));
@@ -170,6 +193,7 @@ class Composer {
     const app = (store.overview && store.overview.app) || {};
     if (p !== this.product) {
       this.product = p;
+      this.account = '';  // a subscription belongs to one product
       if (p === 'codex') { this.model = app.codex_model || ''; this.effort = app.codex_effort || 'auto'; }
       if (p === 'claude') { this.model = app.chat_model || 'claude-opus-5-5'; this.effort = app.chat_effort || 'auto'; }
       if (!efforts(p).includes(this.effort)) this.effort = 'auto';
@@ -203,13 +227,21 @@ class Composer {
         for (const m of TEAM_MODES) items.push({ label: m.label, hint: m.hint, ic: 'users', checked: this.product === 'team' && this.teamMode === m.value, value: { p, team: m.value } });
         continue;
       }
-      items.push({ section: p === 'claude' ? 'Claude' : 'ChatGPT' });
+      items.push({ section: p === 'claude' ? 'Claude — by Anthropic' : 'ChatGPT — by OpenAI' });
       for (const m of modelOptions(p)) items.push({ label: m.label, hint: m.hint, ic: PRODUCTS[p].ic, checked: this.product === p && (this.model || '') === m.value, value: { p, model: m.value } });
+    }
+    if (this.product === 'team' && this.o.allowTeam) {
+      const dflt = ((store.overview && store.overview.team) || {}).head_to_head || 'off';
+      const h2h = this.headToHead || dflt;
+      items.push({ section: 'Head-to-head — both models build some parts; the better is kept' },
+        ...[['off', 'Off', 'Each part is built once'], ['some', 'A few parts', 'Up to two parts, where the scorecard knows least'], ['all', 'Every part', 'Uses the most tokens']]
+          .map(([v, label, hint]) => ({ label, hint: v === dflt ? `${hint} · your default` : hint, ic: 'users', checked: h2h === v, value: { headToHead: v } })));
     }
     if (this.fixed) items.push('sep', { label: 'Use another product…', hint: 'Starts a new chat', ic: 'plus', value: { newChat: true } });
     menu(this.prodBtn, items, {
       above: true, minWidth: 260, onPick: (v) => {
         if (v.newChat) { location.hash = '#/new'; return; }
+        if (v.headToHead) { this.headToHead = v.headToHead; this.sync(); return; }
         this.setProduct(v.p);
         if (v.team) this.teamMode = v.team;
         if (v.model !== undefined) this.model = v.model;
@@ -217,6 +249,41 @@ class Composer {
         this.o.onChange && this.o.onChange();
       },
     });
+  }
+
+  accountMenu() {
+    if (this.product === 'team') { this.chooseTeamAccounts(); return; }
+    const mine = subscriptions(this.product);
+    menu(this.acctBtn, [{ section: `Subscription — ${PRODUCTS[this.product].name}` },
+      { label: 'Automatic', hint: 'The one with the most room; moves on if one runs out', ic: 'gauge', checked: !this.account, value: '' },
+      ...mine.map((a) => ({ label: a.name, hint: a.hint, ic: 'key', checked: this.account === a.name, value: a.name }))], {
+      above: true, minWidth: 280, onPick: (v) => {
+        this.account = v;
+        this.sync();
+        if (v) toast(`This chat runs on ${v}. If it reaches its limit, Crew moves on to another and says so.`);
+        this.o.onChange && this.o.onChange();
+      },
+    });
+  }
+
+  async chooseTeamAccounts() {
+    const all = subscriptions();
+    const chosen = new Set(this.teamAccounts || all.map((a) => a.name));
+    const rows = all.map((a) => [a, h('input', { type: 'checkbox', checked: chosen.has(a.name) })]);
+    const names = await dialog({
+      title: 'Subscriptions for this project',
+      body: h('div', { class: 'stack' },
+        h('p', { class: 'muted small', style: { margin: 0 } }, 'The team uses only the subscriptions you tick. Keep at least one Claude subscription: the lead runs on Claude.'),
+        ...rows.map(([a, cb]) => h('label', { class: 'check-row' }, cb, h('span', { class: 'grow' }, h('b', null, a.name), h('small', null, `${a.vendor === 'codex' ? 'ChatGPT' : 'Claude'} · ${a.hint}`))))),
+      actions: [{ label: 'Cancel', value: null }, { label: 'Use these', primary: true, value: () => {
+        const picked = rows.filter(([, cb]) => cb.checked).map(([a]) => a);
+        if (!picked.some((a) => a.vendor === 'claude')) { toast('Tick at least one Claude subscription: the lead runs on Claude.', { bad: true }); return undefined; }
+        return picked.map((a) => a.name);
+      } }],
+    });
+    if (!names) return;
+    this.teamAccounts = names.length === all.length ? null : names;
+    this.sync();
   }
 
   effortMenu() {
@@ -334,7 +401,8 @@ class Composer {
     stopDictation();
     speech.stop();
     const atts = this.attachments;
-    this.o.onSend(text, atts, { product: this.product, model: this.model, effort: this.effort, mode: this.mode, teamMode: this.teamMode, hours: this.hours });
+    this.o.onSend(text, atts, { product: this.product, model: this.model, effort: this.effort, mode: this.mode, teamMode: this.teamMode, hours: this.hours,
+      account: this.account, accounts: this.teamAccounts, headToHead: this.headToHead });
   }
 
   clear() {
@@ -553,7 +621,7 @@ class AiTurn {
     const usage = meta.usage || {};
     const total = (usage.input || 0) + (usage.output || 0) + (usage.cache_read || 0) + (usage.cache_write || 0);
     const bits = [
-      meta.model !== undefined && meta.engine ? (meta.engine === 'codex' ? (meta.model || 'ChatGPT') : modelLabel('claude', meta.model)) : '',
+      meta.model !== undefined && meta.engine ? (meta.engine === 'codex' ? `ChatGPT · ${modelLabel('codex', meta.model)}` : `Claude · ${modelLabel('claude', meta.model)}`) : '',
       meta.effort && meta.engine ? `effort ${meta.effort}` : '',
       meta.seconds ? `${Math.round(meta.seconds)}s` : '',
       usage.output ? `${tokens(usage.output)} tokens written` : '',
@@ -704,6 +772,7 @@ class ChatView {
     cm.fixed = c.messages.length > 0;
     cm.model = c.model ?? cm.model;
     cm.effort = c.effort || 'auto';
+    cm.account = c.account || '';
     cm.mode = c.mode || 'auto';
     cm.sync();
     cm.context(c.context);
@@ -858,7 +927,7 @@ class ChatView {
   async ensureChat() {
     if (this.id) return this.id;
     const cm = this.composer;
-    const c = await api('/api/chats', { method: 'POST', body: { engine: cm.product === 'team' ? 'claude' : cm.product, model: cm.model, effort: cm.effort, mode: cm.mode } });
+    const c = await api('/api/chats', { method: 'POST', body: { engine: cm.product === 'team' ? 'claude' : cm.product, model: cm.model, effort: cm.effort, mode: cm.mode, account: cm.product === 'team' ? '' : cm.account } });
     this.id = c.id;
     this.chat = c;
     if (!this.home) history.replaceState(null, '', '#/chat/' + c.id);
@@ -888,7 +957,7 @@ class ChatView {
     if (this.chat && /^New (chat|conversation)$/.test(this.chat.title) && text && !text.startsWith('/')) { this.chat.title = text.slice(0, 60); this.drawTop(); }
     try {
       await api(`/api/chats/${this.id}/send`, {
-        method: 'POST', body: { text, model: s.model, effort: s.effort, mode: s.mode, engine: s.product, attachments: atts.map((a) => a.path).filter(Boolean) },
+        method: 'POST', body: { text, model: s.model, effort: s.effort, mode: s.mode, engine: s.product, account: s.account || '', attachments: atts.map((a) => a.path).filter(Boolean) },
       });
       if (this.chat) { this.chat.mode = s.mode; this.chat.engine = s.product; }
     } catch (e) {
@@ -898,7 +967,7 @@ class ChatView {
 
   async startProject(text, s) {
     try {
-      const r = await api('/api/runs', { method: 'POST', body: { request: text, mode: s.teamMode, hours: s.hours || 0 } });
+      const r = await api('/api/runs', { method: 'POST', body: { request: text, mode: s.teamMode, hours: s.hours || 0, accounts: s.accounts || null, head_to_head: s.headToHead || null } });
       this.composer.clear();
       bus.emit('runs');
       location.hash = '#/projects/' + r.id;

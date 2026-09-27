@@ -21,6 +21,18 @@ screens unless you ask.
 - **Effort chosen for you:** the CEO sets each task's effort at plan review
   and learns, project by project, which effort suits which work; for small
   jobs the manager decides, so the CEO is kept for checking.
+- **A model scorecard that steers the work:** every finished piece is scored —
+  which model built it, whether it passed the manager's first check, time and
+  tokens. **Usage & scorecard → Model scorecard** shows each model's record by
+  kind of work. A kind of work the workhorse keeps failing moves up to the
+  manager automatically; a routine task that fails its check twice moves up at
+  once; where the workhorse does as well as the manager, the lead and the CEO
+  are told. Optional **head-to-head** comparisons (Settings → The team, or per
+  project) have both models build the same part; a manager compares the two
+  versions without knowing which is which and keeps the better one.
+- **You choose the subscription when you want to:** each chat has a
+  subscription button (Automatic, or e.g. claude-2); a team project can be
+  limited to the subscriptions you tick; each workflow can name one.
 - **No clock watching:** no default time limit — set a timer per project only
   if you want one.
 - **Usage spread out:** work goes to whichever subscription has the most room;
@@ -61,7 +73,7 @@ To remove Crew, run **Uninstall Crew.cmd**.
 | **Library** | Files made for you in chats, and your screenshots and recordings (draw on them, or ask Claude about one). |
 | **Skills** | Anthropic's official skills (Word, Excel, PowerPoint, PDF, design, writing — installed automatically), Claude Code's built-in ones, and Crew's and your own. |
 | **Connections** | Any API key (Hunter.io, Google, OpenAI, …) and connected services (MCP servers), with one-click import from the Claude desktop app. Keys stay on your computer and are hidden from every chat, log and report. |
-| **Usage** | Each subscription's 5-hour and weekly limits with reset times, tokens per day, and the Claude Code version. |
+| **Usage & scorecard** | Each subscription's 5-hour and weekly limits with reset times, tokens per day, and the Claude Code version. The **Model scorecard** tab: each model's first-check pass rate overall and by kind of work, typical time and tokens, head-to-head results, and the routing rules Crew applies. |
 | **Browser · Phone · Computer** | A real browser you and Claude share, your Samsung, and your Windows screen — side by side with your work, in a panel you can widen by dragging. |
 | **Settings** | The few choices that matter, with technical ones under **Advanced**: subscriptions, models and effort, how the team works, instructions, voice (including Urdu), look (light/dark, colour, book or plain type), phone pairing, lessons learned (the team's, and the CEO's own record of which effort works for what), updates and check-up. |
 

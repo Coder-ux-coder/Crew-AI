@@ -100,6 +100,9 @@ class Workflows:
             CREATE TABLE IF NOT EXISTS workflow_runs (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT,
                 started REAL, finished REAL, status TEXT, chat_id TEXT, run_id TEXT, summary TEXT, trigger TEXT);
         """)
+        have = {r[1] for r in self.db.db.execute("PRAGMA table_info(workflows)")}
+        if "account" not in have:  # the subscription the owner chose for this workflow ("" = automatic)
+            self.db.db.execute("ALTER TABLE workflows ADD COLUMN account TEXT DEFAULT ''")
         self._running: set[str] = set()
         self._lock = threading.Lock()
         self._stop = False
@@ -137,17 +140,21 @@ class Workflows:
         schedule = body.get("schedule", cur.get("schedule")) or {"kind": "manual"}
         if schedule.get("kind") not in ("manual", "daily", "weekly", "hourly", "once"):
             raise ValueError("Unknown schedule.")
+        account = body.get("account", cur.get("account")) or ""
+        if account and engine != "team":
+            self.app.chats._valid_account(engine, account)  # a subscription of that product, or an error
         return {"name": name, "prompt": prompt, "engine": engine,
                 "model": body.get("model", cur.get("model")) or "", "effort": body.get("effort", cur.get("effort")) or "auto",
-                "schedule": schedule, "enabled": bool(body.get("enabled", cur.get("enabled", True)))}
+                "schedule": schedule, "enabled": bool(body.get("enabled", cur.get("enabled", True))),
+                "account": "" if engine == "team" else account}
 
     def create(self, body: dict) -> dict:
         w = self._clean(body)
         wid = uuid.uuid4().hex[:10]
-        self.db.x("INSERT INTO workflows(id,name,prompt,engine,model,effort,schedule,enabled,created,updated,next_run) "
-                  "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        self.db.x("INSERT INTO workflows(id,name,prompt,engine,model,effort,schedule,enabled,created,updated,next_run,"
+                  "account) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                   (wid, w["name"], w["prompt"], w["engine"], w["model"], w["effort"], json.dumps(w["schedule"]),
-                   int(w["enabled"]), now(), now(), next_run(w["schedule"])))
+                   int(w["enabled"]), now(), now(), next_run(w["schedule"]), w["account"]))
         return self.get(wid)
 
     def update(self, wid: str, body: dict) -> dict:
@@ -156,9 +163,9 @@ class Workflows:
             raise KeyError(wid)
         w = self._clean(body, cur)
         self.db.x("UPDATE workflows SET name=?,prompt=?,engine=?,model=?,effort=?,schedule=?,enabled=?,updated=?,"
-                  "next_run=? WHERE id=?",
+                  "next_run=?,account=? WHERE id=?",
                   (w["name"], w["prompt"], w["engine"], w["model"], w["effort"], json.dumps(w["schedule"]),
-                   int(w["enabled"]), now(), next_run(w["schedule"]) if w["enabled"] else None, wid))
+                   int(w["enabled"]), now(), next_run(w["schedule"]) if w["enabled"] else None, w["account"], wid))
         return self.get(wid)
 
     def delete(self, wid: str) -> bool:
@@ -189,7 +196,8 @@ class Workflows:
                 self.db.x("UPDATE workflow_runs SET run_id=? WHERE id=?", (run_id, rid))
                 threading.Thread(target=self._watch_project, args=(wid, rid, run_id), daemon=True).start()
                 return {"run": rid, "project": run_id}
-            chat = self.app.chats.create(engine=w["engine"], model=w["model"] or None, effort=w["effort"] or None)
+            chat = self.app.chats.create(engine=w["engine"], model=w["model"] or None, effort=w["effort"] or None,
+                                         account=w.get("account") or None)
             self.app.chats.rename(chat["id"], f"{w['name']} · {time.strftime('%d %b %H:%M')}")
             self.app.chats.db.x("UPDATE chats SET kind='workflow' WHERE id=?", (chat["id"],))
             self.db.x("UPDATE workflow_runs SET chat_id=? WHERE id=?", (chat["id"], rid))

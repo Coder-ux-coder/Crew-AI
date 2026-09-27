@@ -42,7 +42,10 @@ function toggle(checked, onchange, label = '') {
 }
 
 function select(options, value, onchange) {
-  return h('select', { onchange: (e) => onchange(e.target.value) }, options.map(([v, label]) => h('option', { value: v, selected: v === value }, label)));
+  // options: [value, label] pairs, or { group, options } for labelled groups (e.g. ChatGPT and Claude models)
+  const opt = ([v, label]) => h('option', { value: v, selected: v === value }, label);
+  return h('select', { onchange: (e) => onchange(e.target.value) }, options.map((o) => (Array.isArray(o) ? opt(o)
+    : h('optgroup', { label: o.group }, o.options.map(opt)))));
 }
 
 function number(value, { min = 0, max = 1000, step = 1 } = {}, onchange) {
@@ -222,7 +225,8 @@ const RENDER = {
           tierRow('manager', 'M', 'Manager', 'Plans the work, checks every workhorse task, and builds what needs high intelligence: security, design plans, shared foundations, hard problems.',
             select(claudeModels, m.work, (v) => save({ models: { work: v } }))),
           tierRow('ceo', 'C', 'CEO', 'Used sparingly: reviews the plan (each task’s tier and effort) and gives the final approval. If its model cannot run, the backup below takes over.',
-            select(withCurrent([...codexModels, ...claudeModels], m.ceo), m.ceo, (v) => save({ models: { ceo: v } })))),
+            select([{ group: 'ChatGPT (OpenAI)', options: codexModels }, { group: 'Claude (Anthropic)', options: claudeModels },
+              ...(m.ceo && ![...codexModels, ...claudeModels].some(([x]) => x === m.ceo) ? [[m.ceo, m.ceo]] : [])], m.ceo, (v) => save({ models: { ceo: v } })))),
         advanced(
           row('CEO backup', 'Runs when the CEO’s model cannot (no ChatGPT subscription, a usage limit, an error)', select(claudeModels, m.ceo_backup, (v) => save({ models: { ceo_backup: v } }))),
           row('Workhorse agents per ChatGPT subscription', 'How many work at the same time on each ChatGPT subscription', select([['1', '1'], ['2', '2 (recommended)'], ['3', '3'], ['4', '4']], String(s.team.workhorse_seats || 2), (v) => save({ team: { workhorse_seats: Number(v) } }))),
@@ -240,6 +244,8 @@ const RENDER = {
       card('How the team works', '',
         row('Who builds', TEAM_MODES.find((x) => x.value === t.mode)?.hint || '', select(TEAM_MODES.map((x) => [x.value, x.label]), t.mode, (v) => save({ team: { mode: v } }))),
         row('Final approval by the CEO', 'One last look at the whole result before it is handed over', toggle(t.ceo_reviews, (v) => save({ team: { ceo_reviews: v } }))),
+        row('Head-to-head comparisons', 'The workhorse and a manager each build the same part; a manager compares the two versions without knowing which is which and keeps the better one. Fills the model scorecard; uses more tokens.',
+          select([['off', 'Off'], ['some', 'A few parts per project'], ['all', 'Every part that can be compared']], t.head_to_head || 'off', (v) => save({ team: { head_to_head: v } }))),
         row('When the work is finished', '', select([['merge', 'Put it in the project folder'], ['branch', 'Keep it as a separate version for me to check'], ['push', 'Put it in the folder and upload it online']], t.deliver, (v) => save({ team: { deliver: v } }))),
         row('Let agents act without asking', 'On: fully automatic. Off: a safety check approves each action.',
           toggle(t.permission_mode === 'bypassPermissions', (v) => save({ team: { permission_mode: v ? 'bypassPermissions' : 'auto' } }))),
