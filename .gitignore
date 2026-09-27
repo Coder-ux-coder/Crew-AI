@@ -3,15 +3,3 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-
-# Analysis output
-*.features.json
-/out/
-/scratch/
-
-# Node (browser tests only)
-node_modules/
-package-lock.json
-
-# Screenshots
-/shots/

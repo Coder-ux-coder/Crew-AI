@@ -1,9 +1,0 @@
-# Hard requirements
-numpy>=1.24
-scipy>=1.10
-soundfile>=0.12
-
-# Optional but strongly recommended: Praat-grade F0, formants, jitter,
-# shimmer and harmonicity. Every one has a numpy/scipy fallback, so the
-# pipeline runs without it -- just less precisely.
-praat-parselmouth>=0.4.3

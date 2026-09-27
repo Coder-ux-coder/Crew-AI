@@ -22,8 +22,8 @@ from pathlib import Path
 from crewlib.util import atomic_write, crew_home
 
 ROOT = Path(__file__).resolve().parent.parent  # the installed "crew" folder
-REPO = os.environ.get("CREW_UPDATE_REPO", "Coder-ux-coder/claude")
-BRANCH = os.environ.get("CREW_UPDATE_BRANCH", "claude/nice-ramanujan-saysts")
+REPO = os.environ.get("CREW_UPDATE_REPO", "Coder-ux-coder/Crew-AI")
+BRANCH = os.environ.get("CREW_UPDATE_BRANCH", "Crew-AI")
 SKIP = {"__pycache__", ".git", "tests"}
 MANIFEST = "installed-files.json"
 PROGRAM_DIRS = {"crewlib", "crewapp", "install"}
