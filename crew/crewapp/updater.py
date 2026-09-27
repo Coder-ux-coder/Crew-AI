@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent  # the installed "crew" folder
 REPO = os.environ.get("CREW_UPDATE_REPO", "Coder-ux-coder/claude")
 BRANCH = os.environ.get("CREW_UPDATE_BRANCH", "claude/nice-ramanujan-saysts")
 SKIP = {"__pycache__", ".git", "tests"}
+MANIFEST = "installed-files.json"
+PROGRAM_DIRS = {"crewlib", "crewapp", "install"}
 
 
 def current() -> dict:
@@ -87,6 +89,11 @@ def install() -> dict:
     old_requirements = (ROOT / "requirements-app.txt").read_text(encoding="utf-8") if (ROOT / "requirements-app.txt").is_file() else ""
     if ROOT.resolve() == source.resolve():
         raise RuntimeError("Nothing to update.")
+    try:
+        previous = set(json.loads((ROOT / MANIFEST).read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        previous = set()
+    installed = []
     for path in source.rglob("*"):
         rel = path.relative_to(source)
         if any(part in SKIP for part in rel.parts):
@@ -99,6 +106,13 @@ def install() -> dict:
             tmp_target = target.with_name(target.name + ".new")
             shutil.copy2(path, tmp_target)
             os.replace(tmp_target, target)
+            installed.append(rel.as_posix())
+    # Program files an older version had and this one no longer ships (never anything of the owner's).
+    for rel in sorted(previous - set(installed)):
+        old_file = (ROOT / rel).resolve()
+        if ROOT.resolve() in old_file.parents and old_file.is_file() and rel.split("/")[0] in PROGRAM_DIRS:
+            old_file.unlink(missing_ok=True)
+    atomic_write(ROOT / MANIFEST, json.dumps(sorted(installed)))
     new_requirements = (source / "requirements-app.txt").read_text(encoding="utf-8") if (source / "requirements-app.txt").is_file() else ""
     shutil.rmtree(tmp, ignore_errors=True)
     if new_requirements and new_requirements != old_requirements:

@@ -387,6 +387,17 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(updater.current()["version"], "2.1.0")
         self.assertEqual(secrets.read_text(), "HUNTER_API_KEY=keep-me\n")
         self.assertFalse(updater.check()["available"])
+        # the next version no longer ships crewapp/extra.py: it goes; the owner's files stay
+        (self.root / "crewapp" / "mine.txt").write_text("keep")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("claude-branch/crew/crewlib/cli.py", "NEWER")
+            zf.writestr("claude-branch/crew/VERSION.json", json.dumps({"version": "2.2.0"}))
+        self.zip = buf.getvalue()
+        updater.install()
+        self.assertFalse((self.root / "crewapp" / "extra.py").exists())
+        self.assertEqual((self.root / "crewapp" / "mine.txt").read_text(), "keep")
+        self.assertEqual((self.root / "crewlib" / "cli.py").read_text(), "NEWER")
         secrets.unlink()
 
     def test_the_program_folder_is_what_updates_replace(self):
