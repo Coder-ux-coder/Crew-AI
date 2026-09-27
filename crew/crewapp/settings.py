@@ -22,15 +22,18 @@ KNOWN_MODELS = [
     {"id": "claude-opus-5-5", "label": "Opus 5.5", "note": "Best for everyday work", "engine": "claude"},
     {"id": "claude-fable-5-1", "label": "Fable 5.1", "note": "Most capable, tighter limits", "engine": "claude"},
     {"id": "claude-opus-5", "label": "Opus 5", "note": "Previous Opus", "engine": "claude"},
+    {"id": "gpt-6-sol", "label": "GPT-6 Sol", "note": "Workhorse for coding and everyday work", "engine": "codex"},
+    {"id": "gpt-6-astra", "label": "GPT-6 Astra", "note": "Frontier intelligence for the most demanding work",
+     "engine": "codex"},
 ]
 EFFORTS = list(cfgmod.EFFORT_CHOICES)
-CODEX_EFFORTS = ["auto", "minimal", "low", "medium", "high", "xhigh"]
+CODEX_EFFORTS = ["auto", "low", "medium", "high", "xhigh", "max", "ultra"]  # GPT-6's own names (no "minimal")
 APP_DEFAULTS = {
     "chat_engine": "claude",
     "chat_model": "claude-opus-5-5",
     "chat_effort": "auto",
     "chat_account": "",
-    "codex_model": "",
+    "codex_model": "gpt-6-sol",
     "codex_effort": "auto",
     "start_with_windows": False,
     "voice_name": "",
@@ -42,7 +45,7 @@ APP_DEFAULTS = {
     "font": "serif",
     "owner_name": "",
     "phone_enabled": False,
-    "settings_version": 2,
+    "settings_version": 3,
 }
 
 
@@ -61,21 +64,31 @@ def _raw() -> dict:
     return tomllib.loads(p.read_text(encoding="utf-8"))
 
 
-SETTINGS_VERSION = 2
-# Values an older Crew wrote as defaults, and what they became (only exact old defaults are changed).
-_OLD_DEFAULTS = [("models", "effort_work", "high", "auto"), ("models", "effort_light", "medium", "auto"),
-                 ("models", "effort_ceo", "high", "max"), ("team", "max_hours", 3.0, 0.0),
-                 ("app", "chat_effort", "high", "auto"), ("app", "accent", "green", "clay")]
+SETTINGS_VERSION = 3
+# Each settings version: values an older Crew wrote as its defaults, and what they became. Only an exact old
+# default is changed, and each step runs once, so a choice the owner made afterwards is never overwritten.
+MIGRATIONS = {
+    2: [("models", "effort_work", "high", "auto"), ("models", "effort_light", "medium", "auto"),
+        ("models", "effort_ceo", "high", "max"), ("team", "max_hours", 3.0, 0.0),
+        ("app", "chat_effort", "high", "auto"), ("app", "accent", "green", "clay")],
+    # 2.1: the three-tier team (GPT-6 Sol workhorse, Opus 5.5 manager, GPT-6 Astra CEO); GPT-6 has no "minimal"
+    3: [("models", "ceo", "claude-fable-5-1", "gpt-6-astra"), ("models", "codex", "", "gpt-6-sol"),
+        ("app", "codex_model", "", "gpt-6-sol"), ("app", "codex_effort", "minimal", "low")],
+}
 
 
 def _migrate(raw: dict) -> dict:
     """Bring a settings file from an older Crew up to date without losing anything the owner chose."""
-    if int((raw.get("app") or {}).get("settings_version") or 1) >= SETTINGS_VERSION:
+    have = int((raw.get("app") or {}).get("settings_version") or 1)
+    if have >= SETTINGS_VERSION:
         return raw
-    for section, key, old, new in _OLD_DEFAULTS:
-        sec = raw.get(section)
-        if isinstance(sec, dict) and key in sec and sec[key] == old:
-            sec[key] = new
+    for version in sorted(MIGRATIONS):
+        if version <= have:
+            continue
+        for section, key, old, new in MIGRATIONS[version]:
+            sec = raw.get(section)
+            if isinstance(sec, dict) and key in sec and sec[key] == old:
+                sec[key] = new
     raw.setdefault("app", {})["settings_version"] = SETTINGS_VERSION
     return raw
 

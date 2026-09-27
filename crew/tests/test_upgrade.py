@@ -218,7 +218,7 @@ class UpgradeTests(unittest.TestCase):
         s = self.s
         st = s.api("GET", "/api/settings")
         self.assertEqual(st["efforts"], ["auto", "low", "medium", "high", "xhigh", "max"])
-        self.assertEqual(st["codex_efforts"], ["auto", "minimal", "low", "medium", "high", "xhigh"])
+        self.assertEqual(st["codex_efforts"], ["auto", "low", "medium", "high", "xhigh", "max", "ultra"])  # GPT-6
         self.assertEqual((st["models"]["effort_ceo"], st["models"]["effort_work"]), ("max", "auto"))
         from crewlib.config import TeamSettings
         self.assertEqual(TeamSettings().max_hours, 0)  # no timer unless the owner sets one
@@ -228,6 +228,32 @@ class UpgradeTests(unittest.TestCase):
         s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "effort": "xhigh"})
         _, done = collect_turn(ev)
         self.assertEqual(done["meta"]["effort"], "xhigh")
+
+    def test_chatgpt_chats_use_gpt6_names(self):
+        """A ChatGPT chat runs GPT-6 Sol by default; a chat saved with the old "minimal" level runs at "low"."""
+        s = self.s
+        before = s.api("GET", "/api/settings")
+        calls = STATE / "codex-calls.jsonl"
+        calls.unlink(missing_ok=True)
+        try:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"] + [{"name": "chatgpt-1", "vendor": "codex",
+                                                                               "profile": ""}]})
+            known = {m["id"]: m["engine"] for m in s.api("GET", "/api/settings")["known_models"]}
+            self.assertEqual((known["gpt-6-sol"], known["gpt-6-astra"]), ("codex", "codex"))
+            cid, ev = self.new_chat(engine="codex", effort="minimal")
+            self.assertEqual(s.api("GET", f"/api/chats/{cid}")["model"], "gpt-6-sol")
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "hi"})
+            _, done = collect_turn(ev)
+            self.assertEqual((done["meta"]["engine"], done["meta"]["effort"]), ("codex", "low"))
+            call = [json.loads(x) for x in calls.read_text().splitlines()][-1]
+            self.assertEqual((call["model"], call["effort"]), ("gpt-6-sol", "low"))
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "think hard", "effort": "ultra"})
+            _, done = collect_turn(ev)
+            self.assertEqual([json.loads(x) for x in calls.read_text().splitlines()][-1]["effort"], "ultra")
+            err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "gpt-6-luna"}, expect=400)
+            self.assertIn("banned", err["error"])
+        finally:
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"]})
 
     # ------------------------------------------------------------ connections
 
@@ -485,10 +511,36 @@ class SettingsMigrationTests(unittest.TestCase):
             self.assertEqual(st["app"]["theme"], "dark")  # the owner's own choices are kept
             self.assertEqual([a["name"] for a in st["accounts"]], ["claude-1"])
             again = settings_mod.load()
-            self.assertEqual(again["app"]["settings_version"], 2)
+            self.assertEqual(again["app"]["settings_version"], 3)
             # a choice made after the upgrade is not "migrated" again
             settings_mod.save({"models": {"effort_work": "high"}})
             self.assertEqual(settings_mod.load()["models"]["effort_work"], "high")
+        finally:
+            os.environ["CREW_HOME"] = saved or ""
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_version_2_moves_to_the_three_tiers_and_keeps_later_choices(self):
+        home = Path(tempfile.mkdtemp(prefix="crew-migrate-"))
+        saved = os.environ.get("CREW_HOME")
+        os.environ["CREW_HOME"] = str(home)
+        try:
+            # What Crew 2.0 wrote: its defaults, plus one choice the owner made after that upgrade.
+            (home / "crew.toml").write_text(
+                '[team]\nmax_hours = 3.0\n\n[models]\nwork = "claude-opus-5-5"\nceo = "claude-fable-5-1"\ncodex = ""\n'
+                'effort_work = "high"\neffort_ceo = "max"\n\n[app]\ncodex_model = ""\ncodex_effort = "minimal"\n'
+                'settings_version = 2\n\n[[account]]\nname = "claude-1"\nvendor = "claude"\n')
+            st = settings_mod.load()
+            m = st["models"]
+            self.assertEqual((m["codex"], m["work"], m["ceo"], m["ceo_backup"]),
+                             ("gpt-6-sol", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-1"))
+            self.assertEqual((st["app"]["codex_model"], st["app"]["codex_effort"]), ("gpt-6-sol", "low"))
+            self.assertEqual(m["effort_work"], "high")  # chosen after 2.0: the 2.0 step does not run again
+            self.assertEqual(st["team"]["max_hours"], 3.0)
+            self.assertEqual(st["team"]["workhorse_seats"], 2)
+            self.assertEqual(st["app"]["settings_version"], 3)
+            self.assertTrue((home / "crew.toml").read_text().count("gpt-6-astra"))
+            settings_mod.save({"models": {"ceo": "claude-fable-5-1"}})  # the owner may still choose Fable
+            self.assertEqual(settings_mod.load()["models"]["ceo"], "claude-fable-5-1")
         finally:
             os.environ["CREW_HOME"] = saved or ""
             shutil.rmtree(home, ignore_errors=True)

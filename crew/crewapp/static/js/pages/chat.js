@@ -14,9 +14,11 @@ export const EFFORT_HINTS = {
     auto: 'Claude decides how hard to think', low: 'Quickest, light thinking', medium: 'Balanced speed and depth',
     high: 'Thinks carefully', xhigh: 'Thinks very carefully', max: 'Deepest thinking — uses the most of your limits',
   },
-  codex: {
-    auto: 'ChatGPT decides how hard to think', minimal: 'Quickest, almost no thinking', low: 'Light thinking',
-    medium: 'Balanced speed and depth', high: 'Thinks carefully', xhigh: 'Deepest thinking — uses the most',
+  codex: {  // OpenAI's own descriptions of GPT-6's levels
+    auto: 'ChatGPT decides how hard to think', low: 'Fast responses with lighter reasoning',
+    medium: 'Balances speed and reasoning depth for everyday tasks', high: 'Greater reasoning depth for complex problems',
+    xhigh: 'Extra high reasoning depth for complex problems', max: 'Maximum reasoning depth for the hardest problems',
+    ultra: 'Maximum reasoning, and it hands parts of the job to helpers — uses the most',
   },
 };
 export const TEAM_MODES = [
@@ -28,15 +30,17 @@ const TIMERS = [[0, 'No time limit'], [1, '1 hour'], [2, '2 hours'], [4, '4 hour
 
 export function efforts(product) {
   const ov = store.overview || {};
-  if (product === 'codex') return ov.codex_efforts || ['auto', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+  if (product === 'codex') return ov.codex_efforts || ['auto', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
   return ov.efforts || ['auto', 'low', 'medium', 'high', 'xhigh', 'max'];
 }
 
 export function modelOptions(product = 'claude') {
   const ov = store.overview || {};
   if (product === 'codex') {
+    const known = (ov.known_models || []).filter((m) => m.engine === 'codex').map((m) => ({ value: m.id, label: m.label, hint: m.note }));
     const custom = ov.app && ov.app.codex_model;
-    return [{ value: '', label: 'ChatGPT', hint: 'Its best model (recommended)' }, ...(custom ? [{ value: custom, label: custom, hint: 'Chosen in Settings' }] : [])];
+    const extra = custom && !known.some((m) => m.value === custom) ? [{ value: custom, label: custom, hint: 'Chosen in Settings' }] : [];
+    return known.length ? [...known, ...extra] : [{ value: '', label: 'ChatGPT', hint: 'Its best model' }, ...extra];
   }
   const known = (ov.known_models || []).filter((m) => (m.engine || 'claude') === 'claude');
   const allowed = ov.models && ov.models.allowed && ov.models.allowed.length ? ov.models.allowed : known.map((m) => m.id);
@@ -44,6 +48,7 @@ export function modelOptions(product = 'claude') {
 }
 
 const modelLabel = (product, id) => (modelOptions(product).find((m) => m.value === (id || '')) || { label: id || 'ChatGPT' }).label;
+const LEGACY_EFFORT = { minimal: 'low' };  // chats started before GPT-6, which has no "minimal"
 
 // Slash commands. `run` ones act in the app; the rest go to Claude Code, which runs them itself.
 const APP_COMMANDS = [
@@ -78,6 +83,7 @@ class Composer {
     this.fixed = !!opts.fixedProduct;
     this.model = opts.model ?? (this.product === 'codex' ? app.codex_model || '' : app.chat_model || 'claude-opus-5-5');
     this.effort = opts.effort || (this.product === 'codex' ? app.codex_effort : app.chat_effort) || 'auto';
+    this.effort = LEGACY_EFFORT[this.effort] || this.effort;
     this.mode = opts.mode || 'auto';
     this.teamMode = 'auto';
     this.hours = 0;

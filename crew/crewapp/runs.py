@@ -11,6 +11,7 @@ import sys
 import threading
 from pathlib import Path
 
+from crewlib import tiers
 from crewlib.cli import new_run_id
 from crewlib.store import Store
 from crewlib.util import crew_home, now
@@ -141,12 +142,15 @@ class RunManager:
         data.update(id=run_id, running=running, raw_phase=phase, mode=st.get("mode") or "", preview=self.preview(run_id),
                     folder=str(self.project_dir(run_id) or ""), started=st.get("started_at"),
                     request=st.get("goal", ""), timer=float(st.get("max_hours") or 0),
-                    agents=agents_view(st), estimate=estimate(st, tasks, running))
+                    agents=agents_view(st), estimate=estimate(st, tasks, running), shares=tiers.shares(st))
         by_id = {t["id"]: t for t in tasks}
+        seats = {s["name"]: s for s in st.seats()}
         for t in data["tasks"]:
             full = by_id.get(t["id"]) or {}
+            builder = seats.get(full.get("owner") or "") or {}
             t.update(effort=full.get("effort") or "", size=full.get("size") or "", kind=full.get("kind") or "",
-                     tokens=full.get("tokens") or 0, raw=full.get("status") or "")
+                     tokens=full.get("tokens") or 0, raw=full.get("status") or "", tier=full.get("tier") or "",
+                     model=tiers.model_label(builder.get("model") or "") if builder else "")
         return data
 
     @staticmethod
@@ -201,6 +205,8 @@ def agent_title(name: str, role: str, task=None) -> str:
         return "CEO" + (f" · {what}" if what else "")
     if n.startswith("reviewer"):
         return "Reviewer" + (f" · task #{task}" if task else "")
+    if n == "refiner":
+        return "Brief writer"
     return (name or "").replace("-", " ").strip().capitalize()
 ROLES = {"lead": "Lead", "member": "Builder", "reviewer": "Reviewer", "ceo": "CEO", "refiner": "Brief writer"}
 SIZE_WEIGHT = {"S": 1, "M": 2, "L": 4}
@@ -221,6 +227,7 @@ def agents_view(st: Store) -> list[dict]:
     for s in st.seats():
         mine = [h for h in helpers.values() if h["seat"] == s["name"]]
         out.append({"name": s["name"], "title": agent_title(s["name"], s["role"]), "role": ROLES.get(s["role"], s["role"] or "Builder"),
+                    "tier": tiers.seat_tier(s["vendor"] or "claude"),
                     "product": PRODUCTS.get(s["vendor"], s["vendor"] or ""), "model": s["model"] or "",
                     "account": s["account"] or "", "effort": s.get("effort") or "auto", "status": s["status"],
                     "doing": friendly_activity(s["note"] or "", s["status"]), "task": s["current_task"],
@@ -233,10 +240,12 @@ def agents_view(st: Store) -> list[dict]:
         if d.get("state") == "start":
             oneoffs[ev["seat"]] = {"name": ev["seat"], "title": agent_title(ev["seat"], d.get("role"), ev["task_id"]),
                                    "role": ROLES.get(d.get("role"), d.get("role") or ""),
+                                   "tier": "ceo" if d.get("role") == "ceo" else tiers.seat_tier(d.get("vendor") or "claude"),
                                    "product": PRODUCTS.get(d.get("vendor"), d.get("vendor") or ""),
                                    "model": d.get("model") or "", "account": d.get("account") or "",
                                    "effort": d.get("effort") or "auto", "status": "working", "task": ev["task_id"],
-                                   "doing": "thinking it through" if d.get("role") == "ceo" else "checking the work",
+                                   "doing": {"ceo": "thinking it through", "refiner": "writing the brief"}.get(
+                                       d.get("role"), "checking the work"),
                                    "tokens": 0, "turns": 1, "started": ev["ts"], "helpers": [], "helpers_total": 0,
                                    "standing": False}
         elif ev["seat"] in oneoffs:

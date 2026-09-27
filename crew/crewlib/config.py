@@ -1,7 +1,10 @@
 """Settings: accounts (subscriptions), seats (workers), model policy, team limits.
 
 Everything has a default, so a run works with no settings file at all: one
-Claude account (your normal login) and two seats.
+Claude account (your normal login) and one seat.
+
+The team has three tiers (see tiers.py): GPT-6 Sol is the workhorse (Codex seats),
+Opus 5.5 the manager (Claude seats, the lead among them), GPT-6 Astra the CEO.
 """
 
 from __future__ import annotations
@@ -12,10 +15,12 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .tiers import vendor_of
 from .util import crew_home
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EFFORT_CHOICES = ("auto",) + EFFORTS  # auto: the model decides (assistant), or the CEO decides per task (team)
+CEO_EFFORT_CHOICES = EFFORT_CHOICES + ("ultra",)  # GPT-6's deepest level; a Claude CEO runs it as max
 VENDORS = ("claude", "codex")
 
 
@@ -25,9 +30,10 @@ class ConfigError(ValueError):
 
 @dataclass
 class ModelPolicy:
-    work: str = "claude-opus-5-5"
-    ceo: str = "claude-fable-5-1"
-    codex: str = ""  # empty: Codex uses its own default (its best model)
+    work: str = "claude-opus-5-5"        # the manager: plans, reviews, builds the hard parts (Claude seats)
+    ceo: str = "gpt-6-astra"             # the CEO: plan review, final approval, rulings
+    ceo_backup: str = "claude-fable-5-1"  # the CEO when its model cannot run (no ChatGPT, a limit, an error)
+    codex: str = "gpt-6-sol"             # the workhorse: routine work (Codex seats); empty = Codex's default
     allowed: list[str] = field(default_factory=lambda: ["claude-opus-5-5", "claude-fable-5-1"])
     banned: list[str] = field(default_factory=lambda: ["haiku", "sonnet", "terra", "luna"])
     effort_work: str = "auto"   # auto: the CEO sets each task's effort when it reviews the plan
@@ -48,12 +54,21 @@ class ModelPolicy:
         return m
 
     def validate(self) -> None:
-        for name in ("effort_work", "effort_light", "effort_ceo"):
+        for name in ("effort_work", "effort_light"):
             if getattr(self, name) not in EFFORT_CHOICES:
                 raise ConfigError(f"models.{name} must be one of {EFFORT_CHOICES}")
+        if self.effort_ceo not in CEO_EFFORT_CHOICES:
+            raise ConfigError(f"models.effort_ceo must be one of {CEO_EFFORT_CHOICES}")
         self.check(self.work)
-        if self.ceo:
-            self.check(self.ceo)
+        if vendor_of(self.work) != "claude":
+            raise ConfigError("models.work (the manager, who leads the team) must be a Claude model")
+        for name in ("ceo", "ceo_backup", "codex"):
+            if getattr(self, name):
+                self.check(getattr(self, name))
+        if self.ceo_backup and vendor_of(self.ceo_backup) != "claude":
+            raise ConfigError("models.ceo_backup must be a Claude model (it runs when ChatGPT cannot)")
+        if self.codex and vendor_of(self.codex) != "codex":
+            raise ConfigError("models.codex (the workhorse) must be a ChatGPT model, such as gpt-6-sol")
 
 
 @dataclass
@@ -93,6 +108,7 @@ class TeamSettings:
     max_review_rounds: int = 2
     checks_timeout_minutes: float = 15.0
     web_port: int = 8765
+    workhorse_seats: int = 2  # GPT-6 Sol seats per ChatGPT subscription (they do most tasks by count)
 
 
 @dataclass
@@ -142,6 +158,8 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
         raise ConfigError('team.review must be "cross", "same" or "off"')
     if team.deliver not in ("merge", "branch", "push"):
         raise ConfigError('team.deliver must be "merge", "branch" or "push"')
+    if not 1 <= int(team.workhorse_seats) <= 6:
+        raise ConfigError("team.workhorse_seats must be between 1 and 6")
 
     accounts = [Account(**_known(Account, a)) for a in data.get("account", [])]
     if not accounts:
@@ -157,7 +175,7 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
 
     seat_specs = [SeatSpec(**_known(SeatSpec, s)) for s in data.get("seat", [])]
     if not seat_specs:
-        seat_specs = _default_seats(accounts, seats or data.get("team", {}).get("seats"))
+        seat_specs = _default_seats(accounts, seats or data.get("team", {}).get("seats"), int(team.workhorse_seats))
     if sum(1 for s in seat_specs if s.role == "lead") != 1:
         raise ConfigError("exactly one seat must have role = \"lead\"")
     lead = next(s for s in seat_specs if s.role == "lead")
@@ -171,19 +189,20 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
     return Config(team=team, models=models, accounts=accounts, seats=seat_specs, source=path)
 
 
-def _default_seats(accounts: list[Account], count: int | None) -> list[SeatSpec]:
-    """One seat per account; with a seat count, extra seats share accounts round-robin."""
+def _default_seats(accounts: list[Account], count: int | None, workhorse_seats: int = 2) -> list[SeatSpec]:
+    """One manager seat per Claude account (the first leads) and `workhorse_seats` GPT-6 Sol seats per ChatGPT
+    account. With an explicit seat count, seats share the accounts round-robin instead."""
     claude = [a for a in accounts if a.vendor == "claude"]
     if not claude:
         raise ConfigError("at least one Claude account is needed (the lead runs on Claude)")
-    ordered = claude + [a for a in accounts if a.vendor != "claude"]
-    total = max(int(count or len(ordered)), 1)
-    seats = []
-    for i in range(total):
-        acc = ordered[i % len(ordered)]
-        role = "lead" if i == 0 else "member"
-        seats.append(SeatSpec(name=_seat_name(i, acc.vendor), vendor=acc.vendor, account=acc.name, role=role))
-    return seats
+    codex = [a for a in accounts if a.vendor != "claude"]
+    if count:
+        ordered = claude + codex
+        plan = [ordered[i % len(ordered)] for i in range(max(int(count), 1))]
+    else:
+        plan = claude + [acc for acc in codex for _ in range(max(1, int(workhorse_seats or 1)))]
+    return [SeatSpec(name=_seat_name(i, acc.vendor), vendor=acc.vendor, account=acc.name,
+                     role="lead" if i == 0 else "member") for i, acc in enumerate(plan)]
 
 
 _NAMES = ["ada", "boole", "curie", "dijkstra", "euler", "fermi", "gauss", "hopper", "ibn-sina", "jabir"]

@@ -7,21 +7,24 @@ max_hours = 0            # 0 = no time limit; or a number of hours to stop after
 stall_minutes = 8        # an agent silent this long is nudged, then restarted
 ledger_minutes = 12      # no task moving for this long -> the lead must replan
 chat_budget = 8          # chat messages per agent per task (blockers are always allowed)
-review = "cross"         # "cross" = reviewed by the other company's model when possible; "same"; "off"
+review = "cross"         # the manager model checks every piece, on another account than its author's; "off" = no review
 ceo_reviews = true       # the CEO model reviews the plan and the final result
 deliver = "merge"        # "merge" into your project, "branch" (leave it separate), or "push" to GitHub
 permission_mode = "bypassPermissions"   # agents act without asking (default). Safer: "auto"
 web_port = 8765
+workhorse_seats = 2      # GPT-6 Sol seats per ChatGPT subscription (the workhorse does most tasks by count)
 
+# Three tiers. Token targets: manager 60-70%, CEO about 5%, workhorse the rest.
 [models]
-work = "claude-opus-5-5"         # does ~90% of the work: lead, engineers, reviewers, all sub-agents
-ceo = "claude-fable-5-1"         # used rarely: plan review, rulings, final review
-codex = ""                       # Codex model; empty = Codex's own best default
+work = "claude-opus-5-5"         # the manager: plans, reviews every workhorse task, builds what needs high intelligence
+codex = "gpt-6-sol"              # the workhorse: routine, fully specified work (runs in Codex on your ChatGPT plan)
+ceo = "gpt-6-astra"              # the CEO, used sparingly: plan review, rulings, final approval
+ceo_backup = "claude-fable-5-1"  # the CEO when ChatGPT cannot run it (no subscription, a limit, an error)
 allowed = ["claude-opus-5-5", "claude-fable-5-1"]
 banned = ["haiku", "sonnet", "terra", "luna"]
 effort_work = "auto"             # auto (the CEO decides per task) | low | medium | high | xhigh | max
 effort_light = "auto"            # small jobs such as refining your request
-effort_ceo = "max"               # the CEO always thinks hardest
+effort_ceo = "max"               # the CEO always thinks hardest (GPT-6 also offers "ultra")
 
 # One block per subscription. profile = "default" uses the normal sign-in of that tool;
 # other accounts get their own folder under ~/.crew/accounts and are signed in by `crew setup`.
@@ -43,7 +46,8 @@ name = "codex-1"
 vendor = "codex"
 profile = "default"
 
-# Seats (the agents) default to one per account, and the first is the lead.
+# Seats (the agents) default to one manager seat per Claude account (the first is the lead)
+# and `workhorse_seats` GPT-6 Sol seats per ChatGPT account.
 # To choose yourself, add blocks like:
 # [[seat]]
 # name = "ada"

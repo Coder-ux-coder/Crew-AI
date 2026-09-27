@@ -77,6 +77,7 @@ class ProjectView {
     if (!canDictate) mic.classList.add('hidden');
     const sendBtn = h('button', { class: 'send-btn', type: 'button', title: 'Send', onclick: () => this.send() }, icon('send2'));
     this.estimate = h('div', { class: 'estimate' });
+    this.shares = h('div', { class: 'card pad-sm shares' });
     this.agents = h('div', { class: 'stack', style: { gap: '8px' } });
     this.tasks = h('div', { class: 'card pad-sm' });
     this.accounts = h('div', { class: 'card pad-sm stack' });
@@ -86,6 +87,9 @@ class ProjectView {
           h('span', { class: 'muted small' }, 'The team chat — everything they say, as it happens'), h('span', { class: 'grow' }), mic, sendBtn))))),
       h('div', { class: 'col side' },
         h('div', { class: 'side-title' }, icon('clock'), h('span', { class: 'grow' }, 'Estimates')), this.estimate,
+        h('div', { class: 'side-title' }, icon('layers'), h('span', { class: 'grow' }, 'Who did the work'),
+          h('small', { class: 'muted', title: 'Share of all tokens this project used, against the targets you set' }, 'share of tokens')),
+        this.shares,
         h('div', { class: 'side-title' }, icon('bot'), h('span', { class: 'grow' }, 'Agents and helpers')), this.agents,
         h('div', { class: 'side-title' }, icon('listcheck'), h('span', { class: 'grow' }, 'The plan')), this.tasks,
         h('div', { class: 'side-title' }, icon('gauge'), h('span', { class: 'grow' }, 'Subscriptions')), this.accounts));
@@ -166,6 +170,20 @@ class ProjectView {
       e('Tokens used', tokens(est.tokens_used || 0)),
       e('Tokens to go', est.tokens_left ? `~${tokens(est.tokens_left)}` : '—', 'Estimated from the parts finished so far.'));
 
+    // who did the work: each tier's share of the tokens, against the owner's targets
+    const sh = s.shares || {};
+    const shareTiers = sh.tiers || [];
+    const total = sh.total || 0;
+    clear(this.shares,
+      h('div', { class: 'sbar', role: 'img', 'aria-label': shareTiers.map((x) => `${x.name} ${Math.round(x.pct)}%`).join(', ') },
+        ...shareTiers.map((x) => h('i', { class: 't-' + x.tier, style: { width: (total ? x.pct : 0) + '%' }, title: `${x.name}: ${x.pct}%` }))),
+      ...shareTiers.map((x) => h('div', { class: 'srow' + (total && !x.on_target ? ' off' : '') },
+        h('span', { class: 'sdot t-' + x.tier }),
+        h('span', { class: 'grow' }, h('b', null, x.name), ' ', h('small', { class: 'muted' }, tierModel(x.tier))),
+        h('b', { class: 'spct' }, total ? `${Math.round(x.pct)}%` : '—'),
+        h('small', { class: 'muted starget', title: 'Your target for this tier' }, x.target[0] ? `${x.target[0]}–${x.target[1]}%` : `~${x.target[1]}%`))),
+      total ? null : h('div', { class: 'muted small' }, 'Fills in as the team works.'));
+
     // agents
     const agents = s.agents || [];
     clear(this.agents, ...(agents.length ? agents.map((a) => agentCard(a, phase)) : [h('div', { class: 'muted small' }, 'The team is starting…')]));
@@ -174,7 +192,8 @@ class ProjectView {
     const tasks = s.tasks || [];
     clear(this.tasks, ...(tasks.length ? tasks.map((x) => h('div', { class: 'task-line' },
       h('span', { class: 'num' }, `#${x.id}`),
-      h('div', { class: 'grow' }, h('span', null, x.title), h('small', null, [x.who ? cap(x.who) : '', x.effort ? `effort ${x.effort}` : '', x.tokens ? `${tokens(x.tokens)} tokens` : ''].filter(Boolean).join(' · '))),
+      h('div', { class: 'grow' }, h('span', null, x.title), h('small', null, [x.who ? cap(x.who) : '', x.model || '', x.effort ? `effort ${x.effort}` : '', x.tokens ? `${tokens(x.tokens)} tokens` : ''].filter(Boolean).join(' · '))),
+      x.tier ? h('span', { class: 'pill t-' + x.tier, title: TIER_HINT[x.tier] || '' }, TIER_LABEL[x.tier] || x.tier) : null,
       h('span', { class: 'pill ' + (TASK_PILL[x.status] || '') }, x.status))) : [h('div', { class: 'muted small' }, 'The plan is being made…')]));
 
     // subscriptions
@@ -242,7 +261,21 @@ const cap = (s) => String(s || '').charAt(0).toUpperCase() + String(s || '').sli
 
 const modelName = (id) => {
   const k = ((store.overview && store.overview.known_models) || []).find((m) => m.id === id);
-  return k ? k.label : String(id || '').replace(/^claude-/, '');
+  if (k) return k.label;
+  if (!id || id === 'codex-default') return 'ChatGPT';
+  return String(id).replace(/^claude-/, '');
+};
+
+// The team's three tiers, as the owner set them (Settings → Team).
+const TIER_LABEL = { workhorse: 'Workhorse', manager: 'Manager', ceo: 'CEO' };
+const TIER_HINT = {
+  workhorse: 'Routine, fully specified work for the workhorse model',
+  manager: 'Work that needs high intelligence, for the manager model',
+  ceo: 'Plan review and final approval',
+};
+const tierModel = (tier) => {
+  const m = (store.overview && store.overview.models) || {};
+  return modelName({ workhorse: m.codex, manager: m.work, ceo: m.ceo }[tier] || '');
 };
 
 function agentCard(a, phase) {
@@ -257,6 +290,7 @@ function agentCard(a, phase) {
       h('div', { class: 'a-name' }, h('b', null, a.title || cap(a.name)), h('small', null, [a.title && a.title.startsWith(a.role) ? '' : a.role, a.account].filter(Boolean).join(' · '))),
       a.status === 'done' ? h('span', { class: 'pill ok' }, 'Done') : a.status === 'failed' ? h('span', { class: 'pill bad' }, 'Stopped') : busy ? h('span', { class: 'pill live' }, 'Working') : h('span', { class: 'pill' }, STATE[a.status] || a.status || 'Ready')),
     h('div', { class: 'a-tags' }, productBadge(product, a.product || 'Claude'), a.model ? h('span', { class: 'pill outline' }, modelName(a.model)) : null,
+      a.tier ? h('span', { class: 'pill t-' + a.tier, title: TIER_HINT[a.tier] || '' }, TIER_LABEL[a.tier] || a.tier) : null,
       h('span', { class: 'pill accent', title: 'Effort — set by the CEO for each job' }, icon('brain'), a.effort || 'auto')),
     a.doing && !['stopped', 'finished', 'ready'].includes(String(a.doing).toLowerCase()) ? h('div', { class: 'a-doing' }, busy ? h('span', { class: 'spinner' }) : null, h('span', null, cap(a.doing) + (a.task ? ` · task #${a.task}` : ''))) : null,
     h('div', { class: 'a-stats' }, h('span', null, `${tokens(a.tokens || 0)} tokens`), a.turns ? h('span', null, `${a.turns} turn${a.turns === 1 ? '' : 's'}`) : null,

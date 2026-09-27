@@ -16,6 +16,7 @@ from typing import Callable
 
 from . import lessons as lessons_mod
 from .store import KINDS, SIZES, Store, StoreError
+from .tiers import TIERS, model_label, seat_tier
 from .util import clip, hhmm, now
 
 EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
@@ -164,7 +165,25 @@ def _task_line(t: dict) -> str:
     deps = f" after #{','.join(map(str, t['depends_on']))}" if t["depends_on"] else ""
     owner = f" [{t['owner']}]" if t["owner"] else (f" (suggested: {t['suggested_owner']})" if t.get("suggested_owner") else "")
     scope = ", ".join(t["scope"][:4]) + (" …" if len(t["scope"]) > 4 else "")
-    return f"#{t['id']} {t['status']:<11} {t['size']} {t['kind']:<10} {t['title']}{owner}{deps}  files: {scope or '-'}"
+    return (f"#{t['id']} {t['status']:<11} {t['size']} {t['kind']:<10} {t.get('tier') or '-':<9} {t['title']}{owner}{deps}"
+            f"  files: {scope or '-'}")
+
+
+def _check_owner_tier(ctx: Ctx, owner: str | None, tier: str | None) -> None:
+    """A suggested owner must be able to do the task: workhorse seats take workhorse tasks, manager seats the rest."""
+    if not owner or not tier:
+        return
+    seat = ctx.store.seat(owner) or {}
+    if not seat:
+        return
+    has_workhorse = any(s["vendor"] == "codex" for s in ctx.store.seats())
+    if tier == "manager" and seat.get("vendor") == "codex":
+        raise ToolError(f"{owner} is a workhorse seat ({model_label(seat.get('model') or '')}); manager tasks need a "
+                        "manager seat. Suggest a Claude seat, or make the task tier=workhorse if it is routine.")
+    if tier == "workhorse" and seat.get("vendor") != "codex" and has_workhorse:
+        raise ToolError(f"{owner} is a manager seat. Workhorse tasks go to the workhorse seats "
+                        f"({', '.join(s['name'] for s in ctx.store.seats() if s['vendor'] == 'codex')}); leave "
+                        "suggested_owner empty or pick one of them, or make the task tier=manager if it needs judgement.")
 
 
 def tasks_view(ctx: Ctx, a: dict) -> str:
@@ -230,28 +249,40 @@ def task_create(ctx: Ctx, a: dict) -> str:
     owner = a.get("suggested_owner")
     if owner and not ctx.store.seat(owner):
         raise ToolError(f"suggested_owner '{owner}' is not a seat. Seats: {[s['name'] for s in ctx.store.seats()]}")
+    tier = a.get("tier") or None
+    if tier and tier not in TIERS:
+        raise ToolError(f"tier must be one of {TIERS}")
+    _check_owner_tier(ctx, owner, tier)
     try:
         task_id = ctx.store.create_task(
             title=a.get("title", ""), spec=a.get("spec", ""), acceptance=a.get("acceptance", ""),
             scope=a.get("scope") or [], depends_on=a.get("depends_on") or [], size=a.get("size", "M"),
-            kind=a.get("kind", "build"), suggested_owner=owner, created_by=ctx.seat,
+            kind=a.get("kind", "build"), suggested_owner=owner, created_by=ctx.seat, tier=tier,
         )
     except StoreError as exc:
         raise ToolError(str(exc)) from exc
     ctx.store.event("task_created", seat=ctx.seat, task_id=task_id)
-    return f"Created task #{task_id}."
+    task = ctx.store.task(task_id) or {}
+    if not tier and owner:  # the default tier must not strand a task with an owner who cannot take it
+        seat = ctx.store.seat(owner) or {}
+        ctx.store.update_task(task_id, tier=seat_tier(seat.get("vendor") or "claude"))
+        task = ctx.store.task(task_id) or {}
+    return f"Created task #{task_id} ({task.get('tier', 'manager')} tier)."
 
 
 def task_edit(ctx: Ctx, a: dict) -> str:
     t = _require_task(ctx, a["task_id"], owner_only=False)
     if t["status"] not in ("todo", "blocked", "changes"):
         raise ToolError(f"Task #{t['id']} is {t['status']}; only to-do, blocked or returned tasks can be edited.")
-    fields = {k: a[k] for k in ("spec", "acceptance", "size", "suggested_owner") if a.get(k)}
+    fields = {k: a[k] for k in ("spec", "acceptance", "size", "suggested_owner", "tier") if a.get(k)}
     if "scope" in a:
         from .store import normalize_glob
         fields["scope"] = [normalize_glob(p) for p in a["scope"]]
     if "size" in fields and fields["size"] not in SIZES:
         raise ToolError(f"size must be one of {SIZES}")
+    if "tier" in fields and fields["tier"] not in TIERS:
+        raise ToolError(f"tier must be one of {TIERS}")
+    _check_owner_tier(ctx, fields.get("suggested_owner", t.get("suggested_owner")), fields.get("tier", t.get("tier")))
     if t["status"] == "blocked" and a.get("unblock"):
         fields.update(status="todo" if not t["owner"] else "in_progress", block_reason=None)
     if not fields:
@@ -272,6 +303,8 @@ def task_cancel(ctx: Ctx, a: dict) -> str:
 
 
 def set_checks(ctx: Ctx, a: dict) -> str:
+    if ctx.role != "lead" and ctx.store.get("solo_builder") != ctx.seat:
+        raise ToolError("Only the lead (or the builder of a one-builder job) sets the checks.")
     cmds = [c.strip() for c in (a.get("commands") or []) if c.strip()]
     if not cmds:
         raise ToolError("Give at least one shell command (for example: 'python -m pytest -q').")
@@ -399,11 +432,24 @@ def verdict(ctx: Ctx, a: dict) -> str:
         for item in a.get("efforts") or []:
             try:
                 tid, effort = int(item.get("task_id")), str(item.get("effort", "")).lower()
+                tier = str(item.get("tier") or "").lower()
             except (TypeError, ValueError, AttributeError):
                 continue
-            if effort in EFFORT_LEVELS and ctx.store.task(tid):
-                ctx.store.update_task(tid, effort=effort)
-                set_efforts.append(f"#{tid} {effort}")
+            task = ctx.store.task(tid)
+            if task is None or task["status"] in ("merged", "cancelled"):
+                continue
+            fields = {}
+            if effort in EFFORT_LEVELS:
+                fields["effort"] = effort
+            if tier in TIERS and tier != task.get("tier"):
+                fields["tier"] = tier
+                owner = ctx.store.seat(task.get("suggested_owner") or "") or {}
+                if owner and seat_tier(owner.get("vendor") or "claude") != tier:
+                    fields["suggested_owner"] = None  # the old suggestion cannot take the task any more
+            if fields:
+                ctx.store.update_task(tid, **fields)
+                set_efforts.append(f"#{tid} {fields.get('effort', task.get('effort') or 'auto')} "
+                                   f"({fields.get('tier', task.get('tier'))})")
     ctx.store.set(f"verdict:{kind}", {"verdict": value, "notes": notes, "by": ctx.seat, "at": now()})
     label = {"plan": "Plan review", "final": "Final review"}[kind]
     extra = f" Effort per task: {', '.join(set_efforts)}." if set_efforts else ""
@@ -465,22 +511,27 @@ TOOLS: list[Tool] = [
     Tool("team_task_create",
          "LEAD ONLY. Create a task. Give a precise spec, acceptance criteria, the file scope it may edit "
          "(paths/globs; tasks with overlapping scopes never run at the same time), dependencies, size "
-         "(S ≈ <15 min, M ≈ <45 min, L = split it if you can) and optionally a suggested owner.",
+         "(S ≈ <15 min, M ≈ <45 min, L = split it if you can), the tier (workhorse = routine, fully specified work "
+         "for the workhorse seats; manager = work that needs high intelligence, for the manager seats) and "
+         "optionally a suggested owner of that tier.",
          _obj({"title": S, "spec": S, "acceptance": S, "scope": LIST_S, "depends_on": LIST_I,
                "size": {"type": "string", "enum": list(SIZES)}, "kind": {"type": "string", "enum": list(KINDS)},
-               "suggested_owner": S}, ["title", "spec", "acceptance", "scope"]),
+               "tier": {"type": "string", "enum": list(TIERS)}, "suggested_owner": S},
+              ["title", "spec", "acceptance", "scope"]),
          task_create, roles=("lead",)),
-    Tool("team_task_edit", "LEAD ONLY. Change a to-do/blocked/returned task (spec, acceptance, scope, size, owner, unblock).",
+    Tool("team_task_edit", "LEAD ONLY. Change a to-do/blocked/returned task (spec, acceptance, scope, size, tier, owner, "
+         "unblock).",
          _obj({"task_id": I, "spec": S, "acceptance": S, "scope": LIST_S,
-               "size": {"type": "string", "enum": list(SIZES)}, "suggested_owner": S, "unblock": {"type": "boolean"}},
+               "size": {"type": "string", "enum": list(SIZES)}, "tier": {"type": "string", "enum": list(TIERS)},
+               "suggested_owner": S, "unblock": {"type": "boolean"}},
               ["task_id"]),
          task_edit, roles=("lead",)),
     Tool("team_task_cancel", "LEAD ONLY. Cancel a task that is no longer needed.",
          _obj({"task_id": I, "reason": S}, ["task_id", "reason"]), task_cancel, roles=("lead",)),
     Tool("team_set_checks",
-         "LEAD ONLY. Set the shell commands that prove the project works (tests, build, lint). "
-         "The orchestrator runs them before each review and after each merge.",
-         _obj({"commands": LIST_S}, ["commands"]), set_checks, roles=("lead",)),
+         "LEAD (or the builder of a one-builder job) ONLY. Set the shell commands that prove the project works "
+         "(tests, build, lint). The orchestrator runs them before each review and after each merge.",
+         _obj({"commands": LIST_S}, ["commands"]), set_checks, roles=("lead", "member")),
     Tool("team_plan_ready", "LEAD ONLY. Declare the plan complete (after creating the tasks) with a short summary.",
          _obj({"summary": S}, ["summary"]), plan_ready, roles=("lead",)),
     Tool("team_decide", "LEAD or CEO ONLY. Record a binding decision and send it to everyone.",
@@ -508,12 +559,13 @@ TOOLS: list[Tool] = [
               ["task_id", "verdict", "notes"]),
          review_submit, roles=("reviewer", "ceo")),
     Tool("team_verdict", "CEO ONLY. Record your plan or final review verdict (posted to the chat). With a plan "
-         "verdict, also set how hard each task's builder should think: efforts=[{task_id, effort}], effort one of "
-         "low, medium, high, xhigh, max.",
+         "verdict, also set each task's tier and how hard its builder should think: "
+         "efforts=[{task_id, effort, tier}], effort one of low, medium, high, xhigh, max; tier workhorse or manager.",
          _obj({"kind": {"type": "string", "enum": ["plan", "final"]},
                "verdict": {"type": "string", "enum": ["approve", "changes"]}, "notes": S,
                "efforts": {"type": "array", "items": {"type": "object", "properties": {
-                   "task_id": I, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]}},
+                   "task_id": I, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"]},
+                   "tier": {"type": "string", "enum": list(TIERS)}},
                    "required": ["task_id", "effort"], "additionalProperties": False}}},
               ["kind", "verdict", "notes"]),
          verdict, roles=("ceo",)),

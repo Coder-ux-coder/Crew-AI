@@ -38,6 +38,13 @@ def _db() -> sqlite3.Connection:
     db.execute("""CREATE TABLE IF NOT EXISTS effort_outcomes (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, project TEXT, kind TEXT, size TEXT, effort TEXT,
         rounds INTEGER, first_pass INTEGER, minutes REAL, tokens INTEGER)""")
+    have = {row[1] for row in db.execute("PRAGMA table_info(effort_outcomes)")}
+    for column in ("tier", "model"):  # added with the three-tier team; older rows count as the manager's
+        if column not in have:
+            try:
+                db.execute(f"ALTER TABLE effort_outcomes ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError:  # another process added it at the same moment
+                pass
     return db
 
 
@@ -153,31 +160,36 @@ def render_for_agents(limit: int = 25) -> str:
 # ------------------------------------------------------------------ the CEO's effort record
 
 def record_effort_outcome(kind: str, size: str, effort: str, rounds: int, minutes: float, tokens: int,
-                          project: str = "") -> None:
-    """One finished task: how hard its builder thought, and how it went (first-time approval, time, tokens)."""
+                          project: str = "", tier: str = "manager", model: str = "") -> None:
+    """One finished task: who built it (tier), how hard it thought, and how it went (first-time approval,
+    time, tokens)."""
     if effort not in EFFORT_ORDER:
         return
     db = _db()
     try:
-        db.execute("INSERT INTO effort_outcomes(ts,project,kind,size,effort,rounds,first_pass,minutes,tokens) "
-                   "VALUES(?,?,?,?,?,?,?,?,?)",
+        db.execute("INSERT INTO effort_outcomes(ts,project,kind,size,effort,rounds,first_pass,minutes,tokens,tier,"
+                   "model) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                    (now(), project, kind or "build", size or "M", effort, int(rounds or 0), int((rounds or 0) == 0),
-                    round(float(minutes or 0), 1), int(tokens or 0)))
+                    round(float(minutes or 0), 1), int(tokens or 0), tier or "manager", model or ""))
     finally:
         db.close()
 
 
 def effort_stats() -> list[dict]:
-    """Per (kind, size, effort): how many tasks, share approved first time, typical minutes and tokens."""
+    """Per (tier, kind, size, effort): how many tasks, share approved first time, typical minutes and tokens."""
     db = _db()
     try:
         rows = [dict(r) for r in db.execute(
-            "SELECT kind, size, effort, COUNT(*) AS n, AVG(first_pass) AS first_pass, AVG(minutes) AS minutes, "
-            "AVG(tokens) AS tokens, AVG(rounds) AS rounds FROM effort_outcomes GROUP BY kind, size, effort")]
+            "SELECT COALESCE(tier, 'manager') AS tier, kind, size, effort, COUNT(*) AS n, AVG(first_pass) AS first_pass, "
+            "AVG(minutes) AS minutes, AVG(tokens) AS tokens, AVG(rounds) AS rounds FROM effort_outcomes "
+            "GROUP BY COALESCE(tier, 'manager'), kind, size, effort")]
     finally:
         db.close()
-    rows.sort(key=lambda r: (r["kind"], r["size"], EFFORT_ORDER.index(r["effort"])))
+    rows.sort(key=lambda r: (r["tier"] != "workhorse", r["kind"], r["size"], EFFORT_ORDER.index(r["effort"])))
     return rows
+
+
+TIER_WORDS = {"workhorse": "workhorse (GPT-6 Sol)", "manager": "manager (Opus 5.5)"}
 
 
 def render_for_ceo(limit: int = 12) -> str:
@@ -185,12 +197,12 @@ def render_for_ceo(limit: int = 12) -> str:
     lines = []
     stats = effort_stats()
     if stats:
-        lines.append("Your record so far (task kind, size, effort → tasks, approved first time, typical minutes, "
-                     "typical tokens):")
+        lines.append("Your record so far (who built it, task kind, size, effort → tasks, approved first time, "
+                     "typical minutes, typical tokens):")
         for r in stats:
-            lines.append(f"- {r['kind']} {r['size']} at {r['effort']}: {r['n']} task(s), "
-                         f"{round(100 * (r['first_pass'] or 0))}% first time, ~{round(r['minutes'] or 0)} min, "
-                         f"~{int(r['tokens'] or 0) // 1000}k tokens")
+            lines.append(f"- {TIER_WORDS.get(r['tier'], r['tier'])}: {r['kind']} {r['size']} at {r['effort']}: "
+                         f"{r['n']} task(s), {round(100 * (r['first_pass'] or 0))}% first time, "
+                         f"~{round(r['minutes'] or 0)} min, ~{int(r['tokens'] or 0) // 1000}k tokens")
     own = top(limit, categories=("ceo",))
     if own:
         lines.append("Your lessons:")
@@ -201,24 +213,26 @@ def render_for_ceo(limit: int = 12) -> str:
 def derive_ceo_lessons(min_tasks: int = 3) -> list[str]:
     """Turn the effort record into plain lessons for the CEO (reinforced as evidence accumulates)."""
     stats = effort_stats()
-    by_group: dict[tuple[str, str], list[dict]] = {}
+    by_group: dict[tuple[str, str, str], list[dict]] = {}
     for r in stats:
-        by_group.setdefault((r["kind"], r["size"]), []).append(r)
+        by_group.setdefault((r["tier"], r["kind"], r["size"]), []).append(r)
     written = []
-    for (kind, size), rows in by_group.items():
+    for (tier, kind, size), rows in by_group.items():
         solid = [r for r in rows if r["n"] >= min_tasks]
+        who = TIER_WORDS.get(tier, tier)
         for r in solid:
             rate = r["first_pass"] or 0
             if rate < 0.6:
-                text = (f"{kind} tasks of size {size} at {r['effort']} effort were approved first time only "
-                        f"{round(100 * rate)}% of the time ({r['n']} tasks): give such work more effort.")
+                text = (f"{kind} tasks of size {size} built by the {who} at {r['effort']} effort were approved first "
+                        f"time only {round(100 * rate)}% of the time ({r['n']} tasks): give such work more effort"
+                        + (", or the manager tier if it needs judgement." if tier == "workhorse" else "."))
             elif rate >= 0.9:
                 lower = [x for x in solid if EFFORT_ORDER.index(x["effort"]) < EFFORT_ORDER.index(r["effort"])
                          and (x["first_pass"] or 0) >= 0.9]
                 if lower:
                     continue  # a lower effort already does as well; that lesson is written for it
-                text = (f"{kind} tasks of size {size} at {r['effort']} effort were approved first time "
-                        f"{round(100 * rate)}% of the time ({r['n']} tasks, ~{round(r['minutes'] or 0)} min): "
+                text = (f"{kind} tasks of size {size} built by the {who} at {r['effort']} effort were approved first "
+                        f"time {round(100 * rate)}% of the time ({r['n']} tasks, ~{round(r['minutes'] or 0)} min): "
                         f"{r['effort']} is enough for this kind of work.")
             else:
                 continue

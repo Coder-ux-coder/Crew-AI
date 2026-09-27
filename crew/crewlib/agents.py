@@ -474,16 +474,19 @@ def _toml_str(value: str) -> str:
     return json.dumps(value)  # a JSON string is a valid TOML basic string
 
 
-CODEX_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+GPT6_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")  # GPT-6 Sol and Astra (no "minimal")
+OLDER_CODEX_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")  # earlier OpenAI models
 
 
-def codex_effort(effort: str | None) -> str | None:
-    """OpenAI's own effort names; a Claude level maps to the nearest one. None: Codex decides (auto)."""
+def codex_effort(effort: str | None, model: str | None = "") -> str | None:
+    """The effort name the chosen OpenAI model accepts; a level it lacks maps to the nearest one.
+    None: the model decides (auto). An empty model is Codex's own default, a GPT-6 model."""
     if not effort or effort == "auto":
         return None
-    if effort in CODEX_EFFORTS:
-        return effort
-    return {"max": "xhigh"}.get(effort, effort if effort in CODEX_EFFORTS else "high")
+    m = (model or "").strip().lower()
+    if not m or m.startswith("gpt-6") or m == "codex-default":
+        return {"minimal": "low"}.get(effort, effort if effort in GPT6_EFFORTS else "high")
+    return {"max": "xhigh", "ultra": "xhigh"}.get(effort, effort if effort in OLDER_CODEX_EFFORTS else "high")
 
 
 def _codex_config_args(setup: CodexSetup, seat: str, role: str, task_id: int | None, read_only: bool) -> list[str]:
@@ -492,7 +495,7 @@ def _codex_config_args(setup: CodexSetup, seat: str, role: str, task_id: int | N
     if task_id is not None:
         team_env["CREW_TASK"] = str(task_id)
     env_table = "{" + ", ".join(f"{k} = {_toml_str(v)}" for k, v in team_env.items()) + "}"
-    effort = codex_effort(setup.effort)
+    effort = codex_effort(setup.effort, setup.model)
     args = [
         "-c", f"mcp_servers.crew_team.command={_toml_str(sys.executable)}",
         "-c", 'mcp_servers.crew_team.args=["-m", "crewlib.mcp_server"]',
@@ -821,20 +824,30 @@ def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, work
 
 def run_once_codex(prompt: str, *, seat: str, role: str, account: Account, workdir: Path, setup: CodexSetup,
                    redact: Redactor, task_id: int | None = None, read_only: bool = True,
-                   timeout: float = 1800) -> RunResult:
+                   timeout: float = 1800, json_schema: dict | None = None) -> RunResult:
+    """A fresh, single-purpose Codex session (reviewer, CEO). With a schema, the final answer is JSON in that shape."""
     exe = which("codex")
     if not exe:
         return RunResult(is_error=True, text="Codex is not installed")
     config = _codex_config_args(setup, seat, role, task_id, read_only=read_only)
+    log_path = setup.run_dir / "logs" / f"{seat}.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_file = None
+    if json_schema is not None:
+        schema_file = setup.run_dir / "logs" / f"{seat}.schema.json"
+        schema_file.write_text(json.dumps(json_schema), encoding="utf-8")
+        config += ["--output-schema", str(schema_file)]
     cmd = [exe, "exec", "--json", "--skip-git-repo-check", "--ephemeral", *config, "-C", str(workdir), "-"]
     env = dict(setup.extra_env)
     prof = account.profile_dir()
     if prof is not None:
         prof.mkdir(parents=True, exist_ok=True)
         env["CODEX_HOME"] = str(prof)
-    log_path = setup.run_dir / "logs" / f"{seat}.jsonl"
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    return _drive_codex(cmd, prompt, workdir, child_env(env), log_path, redact, timeout=timeout)
+    res = _drive_codex(cmd, prompt, workdir, child_env(env), log_path, redact, timeout=timeout)
+    if json_schema is not None and not res.is_error and res.text:
+        res.structured = _extract_json(res.text)
+    usage_log.record_tokens(account.name, {"input_tokens": res.tokens})
+    return res
 
 
 def _extract_json(text: str) -> dict | None:

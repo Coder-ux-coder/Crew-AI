@@ -14,6 +14,14 @@ injected through CREW_FAKE_SCENARIO (JSON):
   outside_scope_task: [ids]  owner also edits shared.txt (forces a merge conflict)
   plan_changes: true         CEO requires plan changes once
   tasks: N                   number of feature tasks the lead creates (default 3)
+  builder_tier: workhorse    the brief's choice of builder for one-builder jobs (default workhorse)
+  codex_ceo_fails: true      the CEO on Codex (GPT-6 Astra) errors, so its Claude backup must take over
+  review_limit_task: [ids]   the reviewer of these tasks hits its usage limit once on every Claude account
+  limit_seconds: N           how long a usage limit lasts (default 3600)
+
+With a Codex account in the run, the lead makes odd-numbered features workhorse tasks (GPT-6 Sol) and even ones
+manager tasks. A CEO asked for a JSON answer (--output-schema / --json-schema) on Codex answers in JSON only,
+so the orchestrator records the verdict itself; on Claude it also calls its team tool, as before.
 """
 
 from __future__ import annotations
@@ -86,8 +94,13 @@ def write_and_commit(files: dict[str, str], message: str) -> None:
 
 
 class Brain:
-    def __init__(self, emit, mcp: Mcp | None, seat: str, role: str):
+    def __init__(self, emit, mcp: Mcp | None, seat: str, role: str, schema: dict | None = None, vendor: str = "claude"):
         self.emit, self.mcp, self.seat, self.role = emit, mcp, seat, role
+        self.schema, self.vendor = schema, vendor
+
+    def json_only(self) -> bool:
+        """The CEO on Codex with an output schema answers in JSON and leaves the recording to the orchestrator."""
+        return self.vendor == "codex" and self.schema is not None
 
     def tool(self, name: str, **args) -> tuple[str, bool]:
         self.emit("tool_use", f"mcp__crew_team__{name}", args)
@@ -103,16 +116,27 @@ class Brain:
         if "CEO-level reviewer: the most capable model" in text:
             want = SCEN.get("plan_changes") and once("ceo-plan-changes")
             if want:
+                if self.json_only():
+                    return json.dumps({"verdict": "changes", "notes": "1. Split task 2 into smaller pieces.", "tasks": []})
                 self.tool("team_verdict", kind="plan", verdict="changes", notes="1. Split task 2 into smaller pieces.")
             else:
-                ids = [int(x) for x in re.findall(r"^#(\d+) ", text, re.M)]
-                efforts = [{"task_id": i, "effort": ("xhigh" if n == 0 else "high")} for n, i in enumerate(ids)]
+                rows = re.findall(r"^#(\d+) .*? tier (\w+)", text, re.M)
+                efforts = [{"task_id": int(i), "effort": ("xhigh" if n == 0 else "high"),
+                            "tier": tier if tier in ("workhorse", "manager") else "manager"}
+                           for n, (i, tier) in enumerate(rows)]
+                if self.json_only():
+                    return json.dumps({"verdict": "approve", "notes": "Sound plan.", "tasks": efforts})
                 self.tool("team_verdict", kind="plan", verdict="approve", notes="", efforts=efforts)
             return "verdict given"
         if "final acceptance review" in text:
+            if self.json_only():
+                return json.dumps({"verdict": "approve", "notes": "Meets the brief."})
             self.tool("team_verdict", kind="final", verdict="approve", notes="")
             return "final verdict"
         if "CEO-level decision maker" in text:
+            if self.json_only():
+                return json.dumps({"decision": "Keep the current plan and split the stuck task.",
+                                   "reason": "Smaller tasks finish and can be verified."})
             self.tool("team_decide", text="Ruling: keep the current plan, split the stuck task.")
             return "ruled"
         if "You are the lead." in text or "owner's project starts now. You are the lead" in text:
@@ -143,16 +167,23 @@ class Brain:
 
     def plan(self) -> str:
         n = int(SCEN.get("tasks", 3))
-        seats = [s.strip() for s in os.environ.get("CREW_FAKE_SEATS", "").split(",") if s.strip()]
-        members = [s for s in seats if s != self.seat] or [self.seat]
+        pairs = []
+        for item in (s.strip() for s in os.environ.get("CREW_FAKE_SEATS", "").split(",")):
+            if item:
+                name, _, vendor = item.partition(":")
+                pairs.append((name, vendor or "claude"))
+        managers = [name for name, vendor in pairs if vendor == "claude" and name != self.seat] or [self.seat]
+        workhorse = [name for name, vendor in pairs if vendor == "codex"]
         t, _ = self.tool("team_task_create", title="Foundation", spec="Create the package skeleton.",
                          acceptance="package imports", scope=["app/__init__.py"], size="S", kind="foundation",
-                         suggested_owner=self.seat)
+                         suggested_owner=self.seat, tier="manager")
         found = int(re.search(r"#(\d+)", t).group(1))
         for i in range(1, n + 1):
+            tier = "workhorse" if workhorse and i % 2 == 1 else "manager"
+            owner = workhorse[(i // 2) % len(workhorse)] if tier == "workhorse" else managers[(i - 1) % len(managers)]
             self.tool("team_task_create", title=f"Feature {i}", spec=f"Implement feature {i}.",
                       acceptance=f"feat{i}() returns {i}", scope=[f"app/feat{i}.py", f"tests/test_feat{i}.py"],
-                      depends_on=[found], size="S", suggested_owner=members[(i - 1) % len(members)])
+                      depends_on=[found], size="S", tier=tier, suggested_owner=owner)
         self.tool("team_set_checks", commands=[f"{sys.executable} -m unittest discover -s tests -q"])
         self.tool("team_plan_ready", summary=f"Foundation then {n} independent features.")
         return "planned"
@@ -199,6 +230,8 @@ class Brain:
 
     def review(self, text: str) -> str:
         tid = int(re.search(r"Review task #(\d+)", text).group(1))
+        if tid in SCEN.get("review_limit_task", []) and once(f"review-limit-{tid}-{os.environ.get('CREW_FAKE_ACCOUNT')}"):
+            return "LIMIT"
         if tid in SCEN.get("reject_task", []) and once(f"reject-{tid}"):
             self.tool("team_review_submit", task_id=tid, verdict="changes",
                       notes="1. app/feat.py: add a docstring and handle the edge case; re-run the tests.")
@@ -524,6 +557,7 @@ def claude_main(argv: list[str]) -> int:
 
     brain = Brain(emit, mcp, seat, role)
     account = home.name
+    os.environ["CREW_FAKE_ACCOUNT"] = account
     util_file = STATE / f"util-{account}"
 
     def run_turn(text: str) -> None:
@@ -533,12 +567,13 @@ def claude_main(argv: list[str]) -> int:
         util = float(util_file.read_text()) if util_file.exists() else 0.1
         result = brain.turn(text)
         if result == "LIMIT":
+            resets = int(time.time()) + int(SCEN.get("limit_seconds", 3600))
             out({"type": "rate_limit_event", "rate_limit_info": {
-                "status": "rejected", "resetsAt": int(time.time()) + 3600, "rateLimitType": "five_hour",
-                "utilization": 1.0, "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": int(time.time()) + 3600}}},
+                "status": "rejected", "resetsAt": resets, "rateLimitType": "five_hour",
+                "utilization": 1.0, "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": resets}}},
                 "session_id": sid})
             out({"type": "result", "subtype": "error_during_execution", "is_error": True,
-                 "result": "Claude AI usage limit reached|" + str(int(time.time()) + 3600), "session_id": sid})
+                 "result": "Claude AI usage limit reached|" + str(resets), "session_id": sid})
             return
         util = min(0.95, util + 0.02)
         util_file.write_text(str(util))
@@ -550,14 +585,17 @@ def claude_main(argv: list[str]) -> int:
         payload = {"type": "result", "subtype": "success", "is_error": False, "result": result,
                    "usage": {"input_tokens": 1200, "output_tokens": 300, "cache_creation_input_tokens": 500},
                    "total_cost_usd": 0.02, "num_turns": 1, "duration_ms": 50, "session_id": sid}
-        if schema and '"effort"' in schema:
-            payload["structured_output"] = {"effort": SCEN.get("solo_effort", "high"), "reason": "a small, clear job"}
-        elif schema:
+        if schema and '"builder_tier"' in schema:
             payload["structured_output"] = {
                 "title": "Feature pack", "goal": "Build a small package of features with tests.",
                 "deliverables": ["app package"], "acceptance_criteria": ["all tests pass"],
                 "constraints": [], "assumptions": ["Python standard library only"],
-                "size": SCEN.get("size", "medium"), "independent_parts": int(SCEN.get("parts", 3))}
+                "size": SCEN.get("size", "medium"), "independent_parts": int(SCEN.get("parts", 3)),
+                "builder_tier": SCEN.get("builder_tier", "workhorse"), "builder_effort": SCEN.get("solo_effort", "medium")}
+        elif schema and '"verdict"' in schema:
+            payload["structured_output"] = {"verdict": "approve", "notes": "Recorded with the team tool.", "tasks": []}
+        elif schema and '"decision"' in schema:
+            payload["structured_output"] = {"decision": "Recorded with the team tool.", "reason": "-"}
         out(payload)
 
     if stream_in:
@@ -616,7 +654,18 @@ def codex_main(argv: list[str]) -> int:
             out({"type": "item.started", "item": {"id": uuid.uuid4().hex[:8], "type": "mcp_tool_call", "tool": name}})
 
     text = sys.stdin.read()
-    result = Brain(emit, mcp, seat, role).turn(text)
+    schema = None
+    if "--output-schema" in argv:
+        schema = json.loads(Path(argv[argv.index("--output-schema") + 1]).read_text())
+    model = argv[argv.index("-m") + 1] if "-m" in argv else ""
+    with (STATE / "codex-calls.jsonl").open("a") as fh:  # what the tests check: model, effort, role, schema
+        effort = next((c.split("=", 1)[1].strip('"') for c in configs if c.startswith("model_reasoning_effort=")), "")
+        fh.write(json.dumps({"seat": seat, "role": role, "model": model, "effort": effort,
+                             "schema": bool(schema)}) + "\n")
+    if role == "ceo" and SCEN.get("codex_ceo_fails"):
+        out({"type": "turn.failed", "error": {"message": "The model gpt-6-astra is not available on your plan."}})
+        return 1
+    result = Brain(emit, mcp, seat, role, schema=schema, vendor="codex").turn(text)
     if result == "LIMIT":
         out({"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again later."}})
         return 1

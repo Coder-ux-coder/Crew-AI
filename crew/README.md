@@ -2,14 +2,25 @@
 
 Crew turns your subscriptions (several Claude accounts and a ChatGPT account)
 into one workspace that looks and works like Claude. Chat with **Claude** or
-**ChatGPT** on their own, or hand a bigger job to the **Team**: a CEO model plans
-and approves, builders work in parallel, every piece is checked with fresh eyes,
-and you get the finished result. You never see code or technical screens unless
-you ask.
+**ChatGPT** on their own, or hand a bigger job to the **Team**: a manager plans,
+builders work in parallel, every piece is checked with fresh eyes, a CEO model
+approves, and you get the finished result. You never see code or technical
+screens unless you ask.
 
-- **Top-model quality:** Claude Opus 5.5 does the work; the CEO (Claude Fable
-  5.1) always thinks at maximum effort, sets everyone else's effort per job and
-  learns which effort suits which work. Haiku and Sonnet are never used.
+- **Three tiers, each model doing what it is best at:**
+
+  | Tier | Model | Does | Share of tokens (target) |
+  |---|---|---|---|
+  | Workhorse | GPT-6 Sol | Routine, fully specified work — research, text and styling changes, small design tweaks, repetitive edits. Most tasks by count. | the rest (about 25–35%) |
+  | Manager | Claude Opus 5.5 | Plans, checks every workhorse task, builds what needs high intelligence — security, design plans, shared foundations, hard problems. | 60–70% |
+  | CEO | GPT-6 Astra | Used sparingly: reviews the plan (each task's tier and effort) and gives the final approval. Checks rather than builds. | about 5% |
+
+  Each project shows how its tokens were actually shared against these targets.
+  Without a ChatGPT subscription the managers do everything and Claude Fable
+  5.1 stands in as CEO. Haiku, Sonnet, GPT-6 Luna and Terra are never used.
+- **Effort chosen for you:** the CEO sets each task's effort at plan review
+  and learns, project by project, which effort suits which work; for small
+  jobs the manager decides, so the CEO is kept for checking.
 - **No clock watching:** no default time limit — set a timer per project only
   if you want one.
 - **Usage spread out:** work goes to whichever subscription has the most room;
@@ -43,9 +54,9 @@ To remove Crew, run **Uninstall Crew.cmd**.
 
 | Screen | What it does |
 |---|---|
-| **New chat** | One box, like Claude. Choose **Claude**, **ChatGPT** or the **Team**; pick the model and the effort (named exactly as Anthropic and OpenAI name them: Claude *auto, low, medium, high, xhigh, max*; ChatGPT *auto, minimal, low, medium, high, xhigh*). **Plan** mode: it plans first and changes nothing until you press **Approve**. Type **/** for commands (/compact, /context, /usage, /plan, skills such as /docx or /xlsx). The ring shows how full the conversation's context is. |
+| **New chat** | One box, like Claude. Choose **Claude**, **ChatGPT** or the **Team**; pick the model and the effort (named exactly as Anthropic and OpenAI name them: Claude *auto, low, medium, high, xhigh, max*; ChatGPT (GPT-6 Sol or Astra) *auto, low, medium, high, xhigh, max, ultra*). **Plan** mode: it plans first and changes nothing until you press **Approve**. Type **/** for commands (/compact, /context, /usage, /plan, skills such as /docx or /xlsx). The ring shows how full the conversation's context is. |
 | **Chats** | Answers stream in with everything Claude Code shows: thinking, each step it takes, its to-do list, the helpers (sub-agents) it starts, files it makes (they open beside the chat), tokens and time. Attach files or pictures; the microphone types for you; the sound-wave button starts a spoken conversation. |
-| **Projects** | The team at work: the team chat (you can write to them), and a panel with every agent and helper — product, model, effort, what it is doing, tokens — plus estimates of time and tokens left, the plan, and your subscriptions. Optional timer. Stop and continue any time. |
+| **Projects** | The team at work: the team chat (you can write to them), and a panel with every agent and helper — tier, product, model, effort, what it is doing, tokens — plus estimates of time and tokens left, **who did the work** (each tier's share of the tokens against your targets), the plan with each task's tier, and your subscriptions. Optional timer. Stop and continue any time. |
 | **Workflows** | Jobs you repeat — a morning briefing, a weekly investor round-up, a letter in your style — run with one click or on a schedule, by Claude, ChatGPT or the team. |
 | **Library** | Files made for you in chats, and your screenshots and recordings (draw on them, or ask Claude about one). |
 | **Skills** | Anthropic's official skills (Word, Excel, PowerPoint, PDF, design, writing — installed automatically), Claude Code's built-in ones, and Crew's and your own. |
@@ -74,7 +85,10 @@ both devices.
   tested there end to end with a real browser, simulated agents and a
   simulated phone. If a step fails, the installer says which one and how to
   fix it.
-- ChatGPT through Codex has not been tried with a real ChatGPT sign-in yet.
+- ChatGPT through Codex (GPT-6 Sol and Astra) has not been tried with a real
+  ChatGPT sign-in yet: the model names, effort levels and options were read
+  from the Codex program itself and tested with a simulated Codex. If GPT-6
+  Astra cannot run, the CEO's work passes automatically to Claude Fable 5.1.
 - Scheduled workflows run while Crew is running (Settings → General → Start
   Crew with Windows keeps it available).
 - Google may refuse sign-in inside automated browsers ("this browser may not be

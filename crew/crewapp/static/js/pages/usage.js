@@ -40,7 +40,7 @@ export function usagePage(view) {
     const u = Number(util || 0);
     const cls = u >= 0.9 ? 'bad' : u >= 0.7 ? 'warn' : 'accent';
     return h('div', { class: 'limit' },
-      h('div', { class: 'l-top' }, h('b', null, label), h('span', { class: 'muted' }, util == null ? 'no data yet' : `${pct(u)} used${reset ? ` · resets ${inTime(reset)} (${whenAt(reset)})` : ''}`)),
+      h('div', { class: 'l-top' }, h('b', null, label), h('span', { class: 'muted' }, util == null ? 'shows after its first use' : `${pct(u)} used${reset ? ` · resets ${inTime(reset)} (${whenAt(reset)})` : ''}`)),
       h('div', { class: 'bar' }, h('i', { class: cls, style: { width: Math.round(u * 100) + '%' } })));
   }
 

@@ -76,6 +76,7 @@ class App:
                 claude_cli.update_if_stale()
             except Exception as exc:
                 print(f"claude update: {exc}")
+            refresh_windows_icons()
             if not (crew_home() / "anthropic-skills.json").is_file() and settings.load()["accounts"]:
                 self.install_anthropic_skills()  # once: Anthropic's official skills for every Claude subscription
             try:
@@ -1046,6 +1047,34 @@ def set_start_with_windows(enabled: bool) -> str:
     subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
                    capture_output=True, timeout=60)
     return "Crew will start quietly when you sign in to Windows."
+
+
+ICON_VERSION = 2
+
+
+def refresh_windows_icons() -> None:
+    """Once per new app icon: point Crew's shortcuts at it again and refresh Windows' icon cache, so the desktop,
+    Start menu and taskbar stop showing the old icon after an update."""
+    flag = crew_home() / "icons.json"
+    try:
+        if os.name != "nt" or json.loads(flag.read_text(encoding="utf-8")).get("version") == ICON_VERSION:
+            return
+    except (OSError, ValueError):
+        pass
+    if os.name != "nt":
+        return
+    icon = Path(__file__).resolve().parent / "static" / "icons" / "crew.ico"
+    ps = ("$w=New-Object -ComObject WScript.Shell;"
+          "foreach($d in @([Environment]::GetFolderPath('Desktop'),[Environment]::GetFolderPath('Programs'),"
+          "[Environment]::GetFolderPath('Startup'))){$f=Join-Path $d 'Crew.lnk';"
+          f"if(Test-Path $f){{$l=$w.CreateShortcut($f);$l.IconLocation='{icon},0';$l.Save()}}}};"
+          "Start-Process -FilePath ie4uinit.exe -ArgumentList '-show' -WindowStyle Hidden")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                       capture_output=True, timeout=60)
+        atomic_write(flag, json.dumps({"version": ICON_VERSION, "at": time.time()}))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"icon refresh: {exc}")
 
 
 def open_path(path: Path) -> None:

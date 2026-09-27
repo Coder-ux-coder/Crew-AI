@@ -5,6 +5,7 @@ would otherwise be lost at the next reset.
 
 from __future__ import annotations
 
+from .tiers import seat_tier
 from .util import now
 
 FIVE_H = 5 * 3600
@@ -96,12 +97,24 @@ def _burn(acc: dict) -> float:
     return (u5 if u5 is not None else 0.3) + 0.5 * u7
 
 
+def tier_allows(seat: dict, task: dict, workhorse_usable: bool, manager_may_help: bool) -> bool:
+    """Workhorse seats (GPT-6 Sol) take only workhorse tasks; manager seats (Opus) take manager tasks, and
+    workhorse tasks only when no workhorse seat can run or when the manager may help (see the orchestrator)."""
+    tier = task.get("tier") or "manager"
+    if seat_tier(seat.get("vendor") or "claude") == "workhorse":
+        return tier == "workhorse" and task.get("kind") != "foundation"
+    return tier == "manager" or task.get("kind") == "foundation" or not workhorse_usable or manager_may_help
+
+
 def choose_task(seat: dict, ready: list[dict], acc: dict, mode: str, cost_model: dict, model: str,
-                idle_names: set[str], grace_until: dict[int, float]) -> dict | None:
-    """Best ready task for an idle seat, honouring the lead's suggested owners."""
+                idle_names: set[str], grace_until: dict[int, float], workhorse_usable: bool = False,
+                may_help: set[int] | None = None) -> dict | None:
+    """Best ready task for an idle seat: the right tier first, then the lead's suggested owners."""
     t = now()
     options = []
     for task in ready:
+        if not tier_allows(seat, task, workhorse_usable, task["id"] in (may_help or set())):
+            continue
         if not fits(task, acc, mode, cost_model, model):
             continue
         owner = task.get("suggested_owner")
@@ -111,8 +124,6 @@ def choose_task(seat: dict, ready: list[dict], acc: dict, mode: str, cost_model:
                 continue
             if owner in idle_names:
                 continue
-        if seat["vendor"] == "codex" and task["kind"] == "foundation":
-            continue  # shared decisions stay with Claude seats (usually the lead)
         mine = 0 if owner == seat["name"] else 1
         size = SIZE_UNITS.get(task["size"], 3)
         weight = -size if mode == "spend" else (size if mode == "conserve" else 0)

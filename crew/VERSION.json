@@ -1,14 +1,12 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "date": "2026-09-27",
   "notes": [
-    "A new, Claude-style look with the browser side by side",
-    "Choose Claude, ChatGPT or the whole team for any job",
-    "Plan mode, live thinking, steps and to-do lists",
-    "Usage limits, tokens and context at a glance",
-    "Workflows: run saved jobs on a schedule",
-    "Connections: any API key and MCP connectors",
-    "Effort chosen automatically; the CEO learns what works",
-    "One-click updates that keep all your data"
+    "The team now has three tiers: GPT-6 Sol does the routine work, Opus 5.5 plans, checks and builds the hard parts, GPT-6 Astra is the CEO",
+    "Small routine jobs are built by GPT-6 Sol and checked by Opus 5.5",
+    "Each project shows how its tokens were shared, against your targets",
+    "ChatGPT effort levels now match GPT-6: low to max, plus ultra",
+    "The sidebar collapses cleanly and Recents has room again",
+    "The new Crew icon shows on the desktop and taskbar"
   ]
 }

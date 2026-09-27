@@ -121,7 +121,7 @@ async function refreshMeters() {
       const worst = Math.max(five, week);
       const cls = worst >= 0.9 ? 'bad' : worst >= 0.7 ? 'warn' : 'accent';
       return h('div', { class: 'meter-line', title: `${a.name}: ${pct(five)} of the 5-hour limit, ${pct(week)} of the weekly limit` },
-        h('b', null, a.name), h('span', null, pct(five)), h('div', { class: 'bar' }, h('i', { class: cls, style: { width: Math.round(five * 100) + '%' } })));
+        h('b', null, a.name), h('div', { class: 'bar' }, h('i', { class: cls, style: { width: Math.round(five * 100) + '%' } })), h('span', null, pct(five)));
     });
     clear($('#meters'), ...lines);
     bus.emit('usage', u);

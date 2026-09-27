@@ -13,6 +13,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from .tiers import TIERS, default_tier
 from .util import dumps, loads, now
 
 SCHEMA = """
@@ -98,7 +99,8 @@ class Store:
         self.db.execute("PRAGMA busy_timeout=30000")
         with self._lock:
             self.db.executescript(SCHEMA)
-            for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT")):
+            for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT"),
+                                        ("tasks", "tier", "TEXT")):
                 have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
                 if column not in have:
                     try:
@@ -228,6 +230,7 @@ class Store:
         kind: str = "build",
         suggested_owner: str | None = None,
         created_by: str = "lead",
+        tier: str | None = None,
     ) -> int:
         title, spec = (title or "").strip(), (spec or "").strip()
         if not title or not spec:
@@ -236,6 +239,9 @@ class Store:
             raise StoreError(f"size must be one of {SIZES}")
         if kind not in KINDS:
             raise StoreError(f"kind must be one of {KINDS}")
+        tier = tier or default_tier(kind, size)
+        if tier not in TIERS:
+            raise StoreError(f"tier must be one of {TIERS}")
         scope = [normalize_glob(p) for p in (scope or []) if str(p).strip()]
         if not scope and kind not in NO_WRITE_KINDS:
             raise StoreError("a task that changes files must declare its file scope (paths or globs it may edit)")
@@ -249,9 +255,9 @@ class Store:
                     raise StoreError(f"depends_on refers to cancelled task #{dep}")
             cur = db.execute(
                 """INSERT INTO tasks(title,spec,acceptance,scope,depends_on,size,kind,suggested_owner,
-                   status,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,'todo',?,?)""",
+                   status,created_by,created_at,tier) VALUES(?,?,?,?,?,?,?,?,'todo',?,?,?)""",
                 (title, spec, acceptance or "", dumps(scope), dumps(deps), size, kind,
-                 suggested_owner, created_by, now()),
+                 suggested_owner, created_by, now(), tier),
             )
             return int(cur.lastrowid)
 
@@ -361,6 +367,8 @@ class Store:
 def _decode_task(row: dict) -> dict:
     row["scope"] = loads(row.get("scope"), []) or []
     row["depends_on"] = loads(row.get("depends_on"), []) or []
+    if not row.get("tier"):  # a task from an older run: the tier its kind and size imply
+        row["tier"] = default_tier(row.get("kind"), row.get("size"))
     return row
 
 

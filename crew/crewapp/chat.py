@@ -27,7 +27,8 @@ from .sse import hub
 
 ENGINES = {"claude": "Claude", "codex": "ChatGPT"}
 EFFORTS = {"claude": ("auto", "low", "medium", "high", "xhigh", "max"),
-           "codex": ("auto", "minimal", "low", "medium", "high", "xhigh")}
+           "codex": ("auto", "low", "medium", "high", "xhigh", "max", "ultra")}  # GPT-6's own names
+LEGACY_EFFORTS = {"minimal": "low"}  # chats started before GPT-6 (it has no "minimal")
 MODES = ("auto", "plan")
 
 DEFAULT_INSTRUCTIONS = """You are the owner's personal assistant inside the Crew app.
@@ -624,7 +625,7 @@ class CodexSession(Session):
     def _args(self) -> list[str]:
         import sys
         args = ["-c", 'approval_policy="never"']
-        effort = codex_effort(self.effort)
+        effort = codex_effort(self.effort, self.model)
         if effort:
             args += ["-c", f"model_reasoning_effort={_toml_str(effort)}"]
         if self.model:
@@ -967,10 +968,11 @@ class ChatManager:
                              ". Start a new conversation to use " + ENGINES[engine] + ".")
         model = chat["model"] if model is None else model
         effort = effort or chat.get("effort") or "auto"
+        effort = LEGACY_EFFORTS.get(effort, effort) if engine == "codex" else effort
         mode = mode if mode in MODES else (chat.get("mode") or "auto")
         if effort not in EFFORTS[engine]:
             raise ValueError(f"Unknown effort level for {ENGINES[engine]}: {effort}.")
-        if engine == "claude":
+        if engine == "claude" or model:
             cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
             cfg.models.check(model)  # a banned or unknown model is refused before anything is recorded
         chat["engine"] = engine

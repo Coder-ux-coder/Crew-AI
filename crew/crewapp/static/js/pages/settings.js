@@ -200,28 +200,35 @@ const RENDER = {
       draw();
       return box;
     };
-    const codexModel = h('input', { type: 'text', value: app.codex_model || '', placeholder: 'Its best model', style: { width: '200px' } });
-    codexModel.addEventListener('change', () => save({ app: { codex_model: codexModel.value.trim() } }));
+    const codexModels = modelOptions('codex').map((o) => [o.value, o.label]);
+    const withCurrent = (opts, v) => (v && !opts.some(([x]) => x === v) ? [...opts, [v, v]] : opts);
+    const isGpt = (id) => /^(gpt|o\d|codex)/i.test(id || '');
+    const ceoEfforts = efforts(isGpt(m.ceo) ? 'codex' : 'claude').filter((e) => e !== 'auto')
+      .map((e) => [e, `${e} — ${(EFFORT_HINTS[isGpt(m.ceo) ? 'codex' : 'claude'] || {})[e] || ''}`]);
+    const tierRow = (tier, badge, name, hint, control) => h('div', { class: 'tier-row' },
+      h('span', { class: 'tier-ico t-' + tier }, badge), h('div', null, h('b', null, name), h('small', null, hint)), control);
     return [
       card('Claude', 'The defaults for new chats with Claude. You can change them in any chat from the composer.',
         row('Model', '', select(claudeModels, app.chat_model, (v) => save({ app: { chat_model: v } }))),
         row('Effort', 'Anthropic’s own levels. auto lets Claude decide.', select(effortOpts('claude'), app.chat_effort || 'auto', (v) => save({ app: { chat_effort: v } }))),
         claudeAccounts.length > 1 ? row('Subscription', 'Which one chats use first (Crew switches when it runs low)', select([['', 'Whichever has the most room'], ...claudeAccounts.map((a) => [a.name, a.name])], app.chat_account || '', (v) => save({ app: { chat_account: v } }))) : null),
       card('ChatGPT', 'The defaults for new chats with ChatGPT (through Codex).',
-        row('Model', 'Leave empty for its best model', codexModel),
+        row('Model', '', select(withCurrent(codexModels, app.codex_model), app.codex_model || '', (v) => save({ app: { codex_model: v } }))),
         row('Effort', 'OpenAI’s own levels. auto lets ChatGPT decide.', select(effortOpts('codex'), app.codex_effort || 'auto', (v) => save({ app: { codex_effort: v } })))),
-      card('The team', 'The CEO always thinks at maximum effort, and decides the effort for every other agent and job — and learns from each project which effort works best.',
-        row('Main model', 'Plans, builds and checks', select(claudeModels, m.work, (v) => save({ models: { work: v } }))),
-        row('The CEO', 'Approves the plan, sets efforts, gives the final approval', select([...claudeModels, ['', 'Same as the main model']], m.ceo, (v) => save({ models: { ceo: v } }))),
+      card('The team’s three tiers', 'Routine work goes to the workhorse, anything that needs high intelligence to the manager, and the CEO checks rather than builds. Your targets for a project’s tokens: manager 60–70%, CEO about 5%, workhorse the rest. Each project shows how close it came.',
+        h('div', { class: 'tier-card' },
+          tierRow('workhorse', 'W', 'Workhorse', 'Most tasks by count: research, text and styling changes, small design tweaks, repetitive edits, docs. Runs on your ChatGPT subscription.',
+            select(withCurrent(codexModels, m.codex), m.codex, (v) => save({ models: { codex: v } }))),
+          tierRow('manager', 'M', 'Manager', 'Plans the work, checks every workhorse task, and builds what needs high intelligence: security, design plans, shared foundations, hard problems.',
+            select(claudeModels, m.work, (v) => save({ models: { work: v } }))),
+          tierRow('ceo', 'C', 'CEO', 'Used sparingly: reviews the plan (each task’s tier and effort) and gives the final approval. If its model cannot run, the backup below takes over.',
+            select(withCurrent([...codexModels, ...claudeModels], m.ceo), m.ceo, (v) => save({ models: { ceo: v } })))),
         advanced(
-          row('CEO’s effort', 'Recommended: max', select(effortOpts('claude'), m.effort_ceo, (v) => save({ models: { effort_ceo: v } }))),
-          row('Effort for building', 'auto: the CEO decides per job (recommended)', select(effortOpts('claude'), m.effort_work, (v) => save({ models: { effort_work: v } }))),
-          row('Effort for light jobs', 'Checking, notes, research. auto: the CEO decides', select(effortOpts('claude'), m.effort_light, (v) => save({ models: { effort_light: v } }))),
-          row('ChatGPT model for the team', 'Leave empty for its best model', (() => {
-            const inp = h('input', { type: 'text', value: m.codex || '', placeholder: 'Its best model', style: { width: '200px' } });
-            inp.addEventListener('change', () => save({ models: { codex: inp.value.trim() } }));
-            return inp;
-          })()),
+          row('CEO backup', 'Runs when the CEO’s model cannot (no ChatGPT subscription, a usage limit, an error)', select(claudeModels, m.ceo_backup, (v) => save({ models: { ceo_backup: v } }))),
+          row('Workhorse agents per ChatGPT subscription', 'How many work at the same time on each ChatGPT subscription', select([['1', '1'], ['2', '2 (recommended)'], ['3', '3'], ['4', '4']], String(s.team.workhorse_seats || 2), (v) => save({ team: { workhorse_seats: Number(v) } }))),
+          row('CEO’s effort', 'Recommended: max', select(withCurrent(ceoEfforts, m.effort_ceo), m.effort_ceo, (v) => save({ models: { effort_ceo: v } }))),
+          row('Effort for building', 'auto (recommended): the CEO decides for each task of a team project; the manager decides for small jobs', select(effortOpts('claude'), m.effort_work, (v) => save({ models: { effort_work: v } }))),
+          row('Effort for light jobs', 'Checking, notes, research. auto: decided per job', select(effortOpts('claude'), m.effort_light, (v) => save({ models: { effort_light: v } }))),
           row('Allowed Claude models', 'Only these may run', chips([...m.allowed], 'allowed')),
           row('Banned', 'Any model whose name contains one of these is refused everywhere', chips([...m.banned], 'banned', (x) => confirmBox(`Lift the ban on “${x}”?`, 'Your rule was to never use it. Lift the ban anyway?', { ok: 'Lift the ban', danger: true }))))),
     ];
@@ -238,7 +245,7 @@ const RENDER = {
           toggle(t.permission_mode === 'bypassPermissions', (v) => save({ team: { permission_mode: v ? 'bypassPermissions' : 'auto' } }))),
         advanced(
           row('Checking each piece', 'Every piece is checked by someone who did not build it',
-            select([['cross', 'A member on another subscription checks'], ['same', 'Any other member checks'], ['off', 'No checks (not recommended)']], t.review, (v) => save({ team: { review: v } }))),
+            select([['cross', 'The manager checks every piece (recommended)'], ['off', 'No checks (not recommended)']], t.review === 'off' ? 'off' : 'cross', (v) => save({ team: { review: v } }))),
           row('Default time limit (hours)', '0 = no limit (you can still set a timer per project)', number(t.max_hours, { min: 0, max: 168, step: 0.5 }, (v) => save({ team: { max_hours: v } }))),
           row('Spending limit (US$)', '0 = no limit (subscriptions are flat-rate)', number(t.max_cost_usd, { min: 0, max: 10000, step: 1 }, (v) => save({ team: { max_cost_usd: v } }))),
           row('Nudge a quiet member after (minutes)', '', number(t.stall_minutes, { min: 2, max: 60 }, (v) => save({ team: { stall_minutes: v } }))),
@@ -348,9 +355,9 @@ const RENDER = {
         l.weight > 1 ? h('span', { class: 'muted small' }, `confirmed ${l.weight}×`) : null)) : [h('p', { class: 'muted' }, 'The CEO writes its first effort lessons after a few projects.')]));
       const rows = r.effort_record || [];
       clear(record, ...(rows.length ? [h('table', { class: 'plain', style: { marginTop: '10px' } },
-        h('thead', null, h('tr', null, h('th', null, 'Kind of job'), h('th', null, 'Size'), h('th', null, 'Effort'), h('th', null, 'Jobs'), h('th', null, 'Passed first check'),
+        h('thead', null, h('tr', null, h('th', null, 'Built by'), h('th', null, 'Kind of job'), h('th', null, 'Size'), h('th', null, 'Effort'), h('th', null, 'Jobs'), h('th', null, 'Passed first check'),
           h('th', null, 'Typical time'), h('th', null, 'Typical tokens'))),
-        h('tbody', null, rows.map((x) => h('tr', null, h('td', null, humanize(x.kind)), h('td', null, x.size), h('td', null, x.effort), h('td', null, String(x.n)),
+        h('tbody', null, rows.map((x) => h('tr', null, h('td', null, x.tier === 'workhorse' ? 'Workhorse' : 'Manager'), h('td', null, humanize(x.kind)), h('td', null, x.size), h('td', null, x.effort), h('td', null, String(x.n)),
           h('td', null, `${Math.round(100 * (x.first_pass || 0))}%`), h('td', null, `${Math.round(x.minutes || 0)} min`),
           h('td', null, x.tokens ? Math.round(x.tokens).toLocaleString() : '—')))))] : []));
     }).catch(fail);
