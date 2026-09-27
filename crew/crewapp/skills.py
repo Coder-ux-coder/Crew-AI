@@ -146,5 +146,9 @@ def build_active_pack() -> Path:
                 if (d / "SKILL.md").is_file() and d.name not in disabled:
                     shutil.copytree(d, tmp / "skills" / d.name, dirs_exist_ok=True)
     shutil.rmtree(active, ignore_errors=True)
-    tmp.rename(active)
+    try:
+        tmp.rename(active)
+    except OSError:  # Windows: a file still open (antivirus scan, a running agent) blocks the swap
+        shutil.copytree(tmp, active, dirs_exist_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
     return active

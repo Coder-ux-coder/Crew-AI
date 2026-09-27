@@ -398,6 +398,54 @@ class AppTests(unittest.TestCase):
         self.assertIn("claude", [i["id"] for i in health["items"]])
 
 
+WINDOWLESS = """
+import runpy, sys
+sys.stdout = None   # what pythonw.exe (the desktop icon) gives a program: no console at all
+sys.stderr = None
+sys.argv = ["crewlib"] + sys.argv[1:]
+runpy.run_module("crewlib", run_name="__main__", alter_sys=True)
+"""
+
+
+class WindowlessStartTests(unittest.TestCase):
+    """Started from the desktop icon there is no console: Crew must still start, and must never fail silently."""
+
+    def launch(self, home: Path, *args: str) -> subprocess.Popen:
+        env = {**os.environ, **ENV, "CREW_HOME": str(home), "PYTHONPATH": str(ROOT)}
+        return subprocess.Popen([sys.executable, "-X", "utf8", "-c", WINDOWLESS, *args], cwd=str(ROOT), env=env,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def test_starts_without_a_console(self):
+        home = Path(tempfile.mkdtemp(prefix="crew-windowless-"))
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        proc = self.launch(home, "app", "--port", str(port), "--no-open")
+        try:
+            def healthy():
+                try:
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+                    conn.request("GET", "/api/health")
+                    return json.loads(conn.getresponse().read()).get("version")
+                except (OSError, ValueError):
+                    return None
+            self.assertTrue(until(healthy, timeout=60, step=0.5))
+            log = (home / "app.log").read_text(encoding="utf-8")
+            self.assertIn("Crew starting: app", log)
+            self.assertIn(f"Crew is running at http://localhost:{port}", log)
+        finally:
+            proc.terminate()
+            proc.wait(10)
+
+    def test_a_failure_is_written_down(self):
+        home = Path(tempfile.mkdtemp(prefix="crew-windowless-"))
+        proc = self.launch(home, "app", "--port", "not-a-number", "--no-open")
+        self.assertNotEqual(proc.wait(60), 0)
+        self.assertIn("invalid int value", (home / "app.log").read_text(encoding="utf-8"))
+        proc = self.launch(home, "no-such-command")
+        self.assertNotEqual(proc.wait(60), 0)
+
+
 class PictureTests(unittest.TestCase):
     def test_png_encoder(self):
         rgb = bytes(range(48))  # 4×4 pixels

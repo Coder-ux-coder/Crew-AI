@@ -200,19 +200,54 @@ if (Ask-YesNo 'Start Crew quietly when you sign in to Windows (so your phone can
 }
 Good 'Crew is on your desktop and in the Start menu.'
 
+# ------------------------------------------------------------------------------------------ check
+Write-Host ''
+Write-Host 'Checking that Crew starts...' -ForegroundColor Cyan
+Push-Location $Target
+$check = & $Py -X utf8 -c "import crewlib.cli, crewapp.server; print('CREW-READY')" 2>&1
+Pop-Location
+if ("$check" -notmatch 'CREW-READY') {
+  Write-Host ''
+  Write-Host 'Crew could not start. Please send a screenshot of this window:' -ForegroundColor Red
+  $check | Select-Object -Last 25 | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+  if (-not $Quiet) { Read-Host 'Press Enter to close' | Out-Null }
+  exit 1
+}
+Start-Process -FilePath $PyW -ArgumentList @('-X', 'utf8', '-m', 'crewlib', 'app') -WorkingDirectory $Target
+$running = $false
+for ($i = 0; $i -lt 45 -and -not $running; $i++) {
+  Start-Sleep -Seconds 1
+  foreach ($port in 8765..8774) {
+    try {
+      $client = New-Object System.Net.WebClient
+      $client.Proxy = $null
+      if ($client.DownloadString("http://127.0.0.1:$port/api/health") -match '"version"') { $running = $true; break }
+    } catch {}
+  }
+}
+
 # ------------------------------------------------------------------------------------------ done
 Write-Host ''
 if ($script:Notes.Count -gt 0) {
   Write-Host 'Finished, with these notes:' -ForegroundColor Yellow
   foreach ($n in $script:Notes) { Write-Host "  - $n" -ForegroundColor Yellow }
-} else {
-  Write-Host 'All done.' -ForegroundColor Green
+  Write-Host ''
 }
-Write-Host ''
-Write-Host 'Crew is opening now. On its Home page, press "Sign in" to connect your Claude subscription.' -ForegroundColor White
-Write-Host 'Add your other subscriptions in Settings > Subscriptions. To use Crew on your Samsung,' -ForegroundColor White
-Write-Host 'open Settings > Use on your phone and scan the code.' -ForegroundColor White
-Start-Process -FilePath $PyW -ArgumentList @('-X', 'utf8', '-m', 'crewlib', 'app') -WorkingDirectory $Target
+if ($running) {
+  Write-Host 'All done: Crew is running and its window is opening.' -ForegroundColor Green
+  Write-Host ''
+  Write-Host 'On its Home page, press "Sign in" to connect your Claude subscription.' -ForegroundColor White
+  Write-Host 'Add your other subscriptions in Settings > Subscriptions. To use Crew on your Samsung,' -ForegroundColor White
+  Write-Host 'open Settings > Use on your phone and scan the code.' -ForegroundColor White
+  Write-Host 'Next time, open Crew with the Crew icon on your desktop.' -ForegroundColor White
+} else {
+  Write-Host 'Crew was installed but did not answer. Please send a screenshot of this window.' -ForegroundColor Red
+  $log = Join-Path $CrewHome 'app.log'
+  if (Test-Path $log) {
+    Write-Host 'Last lines of its log:' -ForegroundColor Red
+    Get-Content $log -Tail 25 | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+  }
+}
 if (-not $Quiet) {
   Write-Host ''
   Read-Host 'Press Enter to close this window' | Out-Null

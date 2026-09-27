@@ -192,7 +192,7 @@ def _claude_common_args(setup: ClaudeSetup, seat: str, role: str, system_file: P
                         task_id: int | None = None, hooks: bool = True) -> tuple[list[str], dict[str, str]]:
     files = setup.run_dir / "agents" / seat
     files.mkdir(parents=True, exist_ok=True)
-    py = sys.executable
+    py = Path(sys.executable).as_posix()  # forward slashes: safe in both cmd.exe and the bash that runs hooks
     team_env = {"CREW_DB": str(setup.run_dir / "team.db"), "CREW_SEAT": seat, "CREW_ROLE": role,
                 "PYTHONPATH": str(CREW_ROOT)}
     if task_id is not None:
@@ -221,7 +221,7 @@ def _claude_common_args(setup: ClaudeSetup, seat: str, role: str, system_file: P
         },
         "tester": {
             "description": "Runs the project's tests/build and returns a concise pass/fail summary with the key failures.",
-            "prompt": "Run the commands you are given. Write full output to a log file under /tmp and report only: "
+            "prompt": "Run the commands you are given. Write full output to a temporary log file and report only: "
                       "pass/fail counts, each failing test with its one-line cause, and the log path.",
             "model": setup.work_model,
         },

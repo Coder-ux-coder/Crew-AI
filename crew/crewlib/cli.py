@@ -29,7 +29,7 @@ from .store import Store
 from .util import crew_home, hhmm, human_duration, load_env_file, now
 
 CREW_DIR = Path(__file__).resolve().parent.parent
-USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+USE_COLOR = bool(sys.stdout and sys.stdout.isatty()) and os.environ.get("NO_COLOR") is None  # no console: no colour
 
 
 def c(text: str, code: str) -> str:

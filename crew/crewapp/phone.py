@@ -45,13 +45,28 @@ class PhoneService:
         self.driver_at = 0.0
         self._stream: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._server_started = False
 
     # ------------------------------------------------------------------ adb
+
+    def _start_server(self, exe: str) -> None:
+        """Start adb's background helper on its own first. If it were started by a command whose output we
+        capture, it would inherit that output pipe and keep the command 'running' (a known Windows hang)."""
+        if self._server_started:
+            return
+        kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
+        try:
+            subprocess.run([exe, "start-server"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=30, **kwargs)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        self._server_started = True
 
     def _adb(self, *args: str, timeout: float = 25, binary: bool = False, device: bool = True):
         exe = adb_path()
         if not exe:
             raise PhoneError("The phone connector (Android platform tools) is not installed. Run the Crew installer.")
+        self._start_server(exe)
         cmd = [exe]
         if device:
             serial = self.serial or self._pick()
