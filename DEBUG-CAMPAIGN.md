@@ -24,9 +24,12 @@ never copy it onto the owner's computer.)
   check, and nothing ever stopped a task that keeps failing its checks (C14, C15; ledger). Also the
   cloud lint config missed the two triaged findings (fixed in the config).
 - Done in this continuation: C14, C15 fixed with tests that fail on the old code; full suite under
-  Python 3.12: 160 tests OK. API fuzzer written (`.github/campaign/fuzz_api.py`), not yet run.
-- Next: run the fuzzer, fix what it finds (tests first); prove the P1 tests against pre-fix code
-  (worktree of `ba081b8` ready in the scratchpad); browser sweep; C12; pipe ResourceWarnings; rounds 2–11.
+  Python 3.12: 160 tests OK; the cloud run on `d063bb5` was green (first green cloud run). P1 tests proven
+  against the pre-fix code (section 12, table and mutation checks). API fuzzer written and run (quick
+  values, 3,275 requests): A28–A36, A38, A39 fixed, each with a test that fails on the old code; full suite
+  171 tests OK (Python 3.11).
+- Next: the full-value fuzz as a check that nothing is left; the browser sweep (`.github/campaign/
+  browser_sweep.py`, written, not yet run); C12; pipe ResourceWarnings; rounds 2–11.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
   Version 2.3.1 and the installed-updater rehearsal require the owner's explicit approval.
 
@@ -410,6 +413,52 @@ Each test named here failed on the code before its fix and passes after it (both
   E2E tests looped: they pass on Python 3.12 now (full suite 160 OK under 3.12).
 - CI · the cloud lint step failed on the two findings triaged as noise in the handoff (S108 in __main__,
   B905 in orchestrator); both are now recorded in `.github/campaign/ruff.toml`.
+
+Found by the API fuzzer (`.github/campaign/fuzz_api.py`, round 1 dynamic sweep):
+
+- A28 · P2 · server._body/_json · half of a character pair ("\ud800", which a page can send) in any text: the
+  server dropped the connection without an answer (the error message itself could not be written), or kept
+  half a request (a chat message stored for a refused send) · JSON escapes decode to text no file, database
+  or answer can hold · refused at the door in plain words; answers never fail on a broken character (one
+  read from a damaged file shows as "?") · test_a28_a_broken_character_is_refused_plainly_and_changes_nothing.
+- A29 · P3 · runs._run_dir, captures.resolve, skills.get/delete · a very long project, capture or skill id
+  gave a 500 ("File name too long") · the id went to the file system unchecked · ids longer than any real
+  one are refused (100/200/64) · test_a29_a30_odd_project_and_capture_addresses.
+- A30 · P3 · server.api_run_state · `?after=` bigger than the database's numbers gave a 500 · clamped; text
+  means from the start · same test.
+- A31 · P2 · browser · a mistyped address, a site that does not answer, a click on text not on the page, an
+  unknown key: 500s showing Playwright's call log; x/y that are not numbers: 500 · Playwright errors crossed
+  the app untranslated · plain sentences (browser.plain, NET_ERRORS) for every browser call; positions
+  checked · test_a31_browser_problems_in_plain_words, test_a31_a32_the_shared_browser_… (live Chromium).
+- A32 · P1 · browser · a scroll by a number that is not finite (NaN) wedged the shared browser: every later
+  action by the owner or the assistant hung (seen in the fuzzer); a long text was typed key by key with 8 ms
+  per letter (by the code: 5,000 letters = 40 s, a long paste hours), holding the browser all that time ·
+  refused; texts over 300 letters are inserted at once · same test (5,000 letters now well under 20 s).
+- A33 · P3 · server.phone_action · a swipe without one of its points: the owner saw "'y1'" · KeyError ·
+  swipe explains it · test_a33_a_swipe_without_its_points_is_explained.
+- A34 · P2 · settings/config · Settings accepted values of the wrong kind and wrote them: max_hours "abc"
+  (every project then stopped at its start), stall_minutes 0 (every agent interrupted non-stop), "false" as
+  text for phone access (truthy: phone access on at every start), settings_version (the upgrades ran again
+  over the owner's choices, or the file could no longer be read); a list of numbers for the ban list: 500 ·
+  the engine never checked kinds, the app checked names only · every setting keeps the kind of its default,
+  numbers that stop the team are refused, settings_version cannot be changed; a hand-edited file with a
+  wrong kind is set aside like any damaged file (A1) · test_a34_settings_of_the_wrong_kind_…,
+  test_a34_a_hand_edited_setting_of_the_wrong_kind_is_set_aside.
+- A35 · P2 · settings._load · a damaged hand-written file in the old format (no settings_version, as from
+  crew.toml.example) was rewritten by the automatic upgrade before being found damaged: the copy kept was
+  Crew's rewrite, not the owner's file (their comments and layout lost) · upgrade wrote before validating ·
+  validated first; the file as it was is kept as .bak before the upgrade rewrites it ·
+  test_a35_a_damaged_file_in_the_old_format_is_kept_as_it_was.
+- A36 · P2 · settings.save · two settings changed at the same moment (the theme and the voice speed): a raw
+  error "settings file not found: .crew.toml.check", or one change silently undone · one shared check file,
+  and read-merge-write without a lock · a check file per save; saves one at a time ·
+  test_a36_two_settings_saved_at_the_same_moment_both_stay (failed on each of three runs of the old code).
+- A38 · P3 · server._text_fields · null for the words to type or the key to press (phone, browser): 500 ·
+  None passed through · null counts as not given · test_a38_null_for_the_words_to_type_or_press_…
+- A39 · P3 · connections.import_claude_desktop · an odd "args" in the Claude app's connectors file: 500 ·
+  list(5) · only the shapes Crew uses are imported · test_a39_an_odd_connectors_file_from_the_claude_app.
+- Not bugs (checked): GET /api/settings creates team_rules.md from the template when it is missing (by
+  design); anthropic-skills.json written by the background install of Anthropic's skills.
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
