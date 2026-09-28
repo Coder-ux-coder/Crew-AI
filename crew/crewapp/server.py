@@ -345,6 +345,10 @@ def route(method: str, pattern: str):
 class Handler(BaseHTTPRequestHandler):
     server_version = "Crew"
     app: App  # set on the class at startup
+    # A connection that sends nothing (or stops reading a live view) for this long is let go: with phone access
+    # on, anything on the home network could otherwise hold Crew's threads for ever. Work in progress is not
+    # affected; only waiting on the connection itself.
+    timeout = 120
 
     def log_message(self, *args):
         return

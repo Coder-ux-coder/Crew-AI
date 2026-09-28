@@ -1147,6 +1147,17 @@ class AppCampaignTests(unittest.TestCase):
             (captures.folder() / "20260928-000000-note.html").unlink()
         s.api("DELETE", f"/api/chats/{cid}")
 
+    def test_a51_a_connection_that_never_finishes_is_let_go(self):
+        """With phone access on, anything on the home network could open connections and never finish them: each
+        held one of Crew's threads for ever (and a live view whose reader stopped reading blocked for ever)."""
+        self.assertTrue(server.Handler.timeout and server.Handler.timeout <= 300)
+        with mock.patch.object(server.Handler, "timeout", 1):
+            with socket.create_connection(("127.0.0.1", self.s.port), timeout=10) as sock:
+                sock.sendall(b"GET /api/ping HTTP/1.1\r\nHost: 127.0.0.1\r\n")  # never finished
+                started = time.time()
+                self.assertEqual(sock.recv(1024), b"")  # Crew closed it
+                self.assertLess(time.time() - started, 8)
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"
