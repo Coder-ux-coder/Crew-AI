@@ -555,8 +555,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(403, "Outside the project.")
         if target.is_dir():
             target = target / "index.html"
-        active = target.suffix.lower() in (".html", ".htm", ".xhtml", ".svg", ".xml", ".js", ".mjs")
-        return self._file(target, sandbox=active)
+        # Anything a browser could run as a page (.html, .shtml, .xht, a feed with a stylesheet, a type Crew does not
+        # know …) is sandboxed; only pictures, sound, video, fonts and PDFs open as they are.
+        ctype = (mimetypes.guess_type(target.name)[0] or "").lower()
+        passive = ctype == "application/pdf" or (ctype.split("/")[0] in ("image", "audio", "video", "font")
+                                                 and "svg" not in ctype)
+        return self._file(target, sandbox=not passive)
 
     # -------------------------------------------------------------- pairing
 

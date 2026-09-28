@@ -48,7 +48,7 @@ def resolve(name: str) -> Path | None:
     if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", name) or name.strip(".") == "":
         return None
     path = folder() / name
-    return path if path.is_file() else None
+    return path if path.is_file() and path.suffix.lower() in TYPES else None  # a picture or a recording, nothing else
 
 
 def delete(name: str) -> bool:

@@ -1121,6 +1121,32 @@ class AppCampaignTests(unittest.TestCase):
             status, _, _ = s.request("GET", "/api/ping", headers={"Host": host})
             self.assertEqual(status, 200, host)
 
+    def test_a50_every_file_that_could_run_as_a_page_is_sandboxed(self):
+        """A page the assistant saved as .shtml or .xht, or a feed (.atom, .rss) that styles itself with a script,
+        ran with Crew's own rights when the owner opened it: only .html, .htm, .xhtml, .svg, .xml and .js were
+        sandboxed. A file that is not a capture was served from the captures folder too."""
+        s = self.s
+        cid, _ = self.new_chat()
+        folder = s.app.chats.workspace(cid)
+        page = "<html><script>fetch('/api/settings')</script></html>"
+        for name in ("a.shtml", "b.xht", "c.xhtm", "d.atom", "e.rss", "f.xsl", "g.unknownkind", "h.html", "i.svg"):
+            (folder / name).write_text(page, encoding="utf-8")
+            status, headers, _ = s.request("GET", f"/files/chat/{cid}/{name}")
+            self.assertEqual(status, 200, name)
+            self.assertIn("sandbox", headers.get("Content-Security-Policy", ""), name)
+        (folder / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (folder / "report.pdf").write_bytes(b"%PDF-1.4\n")
+        for name in ("photo.png", "report.pdf"):  # pictures and PDFs are not pages: they open as they are
+            status, headers, _ = s.request("GET", f"/files/chat/{cid}/{name}")
+            self.assertEqual((status, headers.get("Content-Security-Policy")), (200, None), name)
+        from crewapp import captures
+        (captures.folder() / "20260928-000000-note.html").write_text(page, encoding="utf-8")
+        try:
+            self.assertEqual(s.request("GET", "/captures/20260928-000000-note.html")[0], 404)
+        finally:
+            (captures.folder() / "20260928-000000-note.html").unlink()
+        s.api("DELETE", f"/api/chats/{cid}")
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"
