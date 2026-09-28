@@ -15,21 +15,24 @@ never copy it onto the owner's computer.)
 
 - Status: RUNNING — third continuation (Claude, cloud container, 2026-09-28). All work and execution in
   the cloud (the owner's requirement), on branch `claude/exciting-heisenberg-6w6gge`.
-- Round: 1, dynamic sweep. Baseline rerun here, before any change: full suite 157 tests OK, 0 skipped
-  (Python 3.11, Playwright + Chromium present); ruff (CI config) 2 findings, both triaged noise; eslint
-  0 problems on 17 files; `node --check` clean.
-- Found first: the second continuation's cloud run (36431557271) failed. Its E2E team tests looped until
-  their time limit. Cause: on Python 3.12 (the version the owner's installer sets up, and the cloud's)
-  `unittest` exits 5 when it finds no tests, so the fake project's first task could never pass its
-  check, and nothing ever stopped a task that keeps failing its checks (C14, C15; ledger). Also the
-  cloud lint config missed the two triaged findings (fixed in the config).
-- Done in this continuation: C14, C15 fixed with tests that fail on the old code; full suite under
-  Python 3.12: 160 tests OK; the cloud run on `d063bb5` was green (first green cloud run). P1 tests proven
-  against the pre-fix code (section 12, table and mutation checks). API fuzzer written and run (quick
-  values, 3,275 requests): A28–A36, A38, A39 fixed, each with a test that fails on the old code; full suite
-  171 tests OK (Python 3.11).
-- Next: the full-value fuzz as a check that nothing is left; the browser sweep (`.github/campaign/
-  browser_sweep.py`, written, not yet run); C12; pipe ResourceWarnings; rounds 2–11.
+- Baseline (before any change here): full suite 157 tests OK (Python 3.11, Playwright + Chromium present);
+  ruff 2 findings, triaged noise; eslint clean; `node --check` clean.
+- Round 1 done (section 11): C14, C15 (the cloud run's endless E2E loop); P1 tests proven against the
+  pre-fix code; API fuzzer (quick 3,275 requests, then full 8,203 requests, 38 minutes: its only later flag,
+  A41, fixed); browser sweep (120 screens, both sizes and themes: F7 fixed); A28–A41, C12, C16, C17.
+- The owner's request (mid-campaign): one-to-one chats move on to the next subscription at a usage limit
+  and keep the whole conversation. Done and pushed (A42–A48, C18, C19; tests/test_rollover.py, 14 tests, all
+  failing on the old code).
+- Round 2 (server, data files, security), in progress: A49 (DNS rebinding) pushed; A50 (sandbox by file
+  type), A51 (connection time limit), A52 (damaged databases), A53 (damaged project record), A54 (app.log
+  capped) fixed with tests that fail on the old code; being verified by the full suite before the push.
+- Still running: the clicking browser sweep (`sweep2`, every control of every screen), its laptop half is
+  clean apart from expected notices (empty phone form, deliberately missing pages, the blocked test
+  microphone).
+- Next: finish round 2 (the rest of the server route by route); rounds 3–11 (section 3); keep this section,
+  the ledger and section 11 current after every step.
+- Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
+  taskkill, a file held open during a conversation copy or a database set-aside, the message boxes.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
   Version 2.3.1 and the installed-updater rehearsal require the owner's explicit approval.
 
@@ -386,6 +389,12 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
 
 (One paragraph per completed round: what was checked, what was found, what was fixed, what is left.)
 
+- Round 1 (tooling, static sweep, whole-app dynamic sweep) — done 2026-09-28. Checked: ruff and eslint over
+  everything; the API fuzzer over every route (quick and full values); the browser sweep over every screen
+  at 1280x650 and 390x844 in light and dark; the P1 tests against the pre-fix code; the handoff's
+  follow-ups. Found and fixed: C12, C14–C17, A28–A41, F7 (each with a test that fails on the old code).
+  Left for later rounds: the clicking sweep's full run; the rest of section 3's plan.
+
 ---------------------------------------------------------------------------------------------------------------
 
 ## 12. Bug ledger
@@ -598,6 +607,11 @@ Round 2, data files (each database damaged on purpose in a scratch Crew folder, 
   test_a53_a_project_whose_record_is_damaged_is_still_shown_and_explained.
 - Checked, not a bug: a damaged app.json (it holds only the phone-pairing code) gets a new code; paired phones
   pair again, and nothing of the owner's is lost.
+- A54 · P3 · crewlib/__main__.py, server._log_when_windowless · started from the desktop icon (the owner's
+  usual way), every message went to app.log for as long as Crew was used; it was never trimmed · the log was
+  opened for appending, with no limit · a log over 5 MB starts afresh at the next start, and the last one is
+  kept as app.log.1 (a log held open by another Crew window on Windows is simply appended to) ·
+  test_a54_the_log_does_not_grow_for_ever.
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
