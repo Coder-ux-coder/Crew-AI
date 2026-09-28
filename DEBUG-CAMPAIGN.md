@@ -23,7 +23,10 @@ never copy it onto the owner's computer.)
 - Cloud setup: add a read-only GitHub-hosted Linux test job, isolated Crew home, fake agents,
   Chromium, the full suite, Python/JavaScript syntax checks and lint. The owner approved the necessary
   exception to the test-before-push rule for setting up and running these cloud checks.
-- Next: inspect the first cloud run; then prove the requested P1 tests against pre-fix revisions and
+- Cloud run 36431387344 was rejected before any job started: GitHub does not allow the runner context
+  in job-level environment expressions. Folder paths now use RUNNER_TEMP in an initialization step.
+  This was workflow setup, not an application test failure.
+- Next: inspect the corrected cloud run; then prove the requested P1 tests against pre-fix revisions and
   record individual results. Then build/run the route-derived API fuzzer and whole-app browser sweep,
   followed by rounds 2–11. C12 and Codex pipe cleanup remain open.
 - No application fixes made in this continuation yet. No new test results claimed.
