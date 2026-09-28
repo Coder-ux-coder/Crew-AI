@@ -44,7 +44,8 @@ def list_all() -> list[dict]:
 
 
 def resolve(name: str) -> Path | None:
-    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", name) or name.strip(".") == "":
+    # A capture's name is about 60 letters; a far longer one is not a capture (and too long a name for the computer).
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", name) or name.strip(".") == "":
         return None
     path = folder() / name
     return path if path.is_file() else None

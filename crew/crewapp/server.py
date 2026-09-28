@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import mimetypes
 import os
 import re
@@ -360,7 +361,8 @@ class Handler(BaseHTTPRequestHandler):
         return bool(tok and secrets.compare_digest(tok.value, self.app.pair_token))
 
     def _json(self, obj, code: int = 200, headers: dict | None = None) -> None:
-        body = json.dumps(obj, ensure_ascii=False, default=str).encode()
+        # "replace": a broken character (half of a pair, read from a damaged file) must never cost the answer itself
+        body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8", "replace")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -382,6 +384,11 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(raw or b"{}")
         if not isinstance(body, dict):
             raise ValueError("Send the details as a JSON object.")
+        try:  # "\ud800": half of a character pair, which no file, database or answer can hold
+            json.dumps(body, ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("Part of the text is not valid (a broken character). Type it again, or paste it "
+                             "without the odd symbol.") from None
         return body
 
     def _file(self, path: Path, sandbox: bool = False, cache: bool = False) -> None:
@@ -647,7 +654,11 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", r"/api/runs/([\w.-]+)")
     def api_run_state(self, rid):
-        data = self.app.runs.state(rid, int(self.query.get("after", 0) or 0))
+        try:  # the id of the last message the page has: a number the database can hold, or from the start
+            after = min(max(int(self.query.get("after") or 0), 0), 2 ** 62)
+        except ValueError:
+            after = 0
+        data = self.app.runs.state(rid, after)
         return self._json(data) if data else self._json({"id": rid, "starting": True, "messages": []})
 
     @route("POST", r"/api/runs/([\w.-]+)/say")
@@ -1075,10 +1086,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _text_fields(body: dict, *names: str) -> dict:
-    """The words an action types or looks for, as text (a number sent by a tool becomes its digits)."""
+    """The words an action types or looks for, as text (a number sent by a tool becomes its digits; null counts as
+    not given)."""
     out = dict(body)
     for name in names:
-        if name in out and out[name] is not None and not isinstance(out[name], str):
+        if name in out and out[name] is None:
+            del out[name]
+        elif name in out and not isinstance(out[name], str):
             if isinstance(out[name], (dict, list)):
                 raise ValueError(f"'{name}' must be text.")
             out[name] = str(out[name])
@@ -1098,11 +1112,16 @@ def browser_action(b: browser_mod.BrowserService, action: str, body: dict, drive
     if action == "press":
         return b.press(body.get("key", "enter"), driver=driver)
     if action == "scroll":
-        if "direction" in body:
-            dy = 700 * float(body.get("screens") or 1) * (-1 if body["direction"] == "up" else 1)
-        else:
-            dy = float(body.get("dy", 400))
-        return b.scroll(dy, driver=driver)
+        try:
+            if "direction" in body:
+                dy = 700 * float(body.get("screens") or 1) * (-1 if body["direction"] == "up" else 1)
+            else:
+                dy = float(body.get("dy", 400))
+        except (TypeError, ValueError):
+            raise ValueError("Say how far to scroll as a number.") from None
+        if not math.isfinite(dy):
+            raise ValueError("Say how far to scroll as a number.")
+        return b.scroll(max(-100000.0, min(100000.0, dy)), driver=driver)
     if action in ("back", "forward", "reload"):
         return b.history(action, driver=driver)
     if action == "device":
@@ -1128,7 +1147,8 @@ def phone_action(p: phone_mod.PhoneService, action: str, body: dict, driver: str
     if action == "swipe":
         if body.get("direction"):
             return p.swipe_dir(body["direction"], driver=driver)
-        return p.swipe(body["x1"], body["y1"], body["x2"], body["y2"], body.get("ms", 300), driver=driver)
+        return p.swipe(body.get("x1"), body.get("y1"), body.get("x2"), body.get("y2"), body.get("ms", 300),
+                       driver=driver)  # a missing value is explained by swipe itself
     if action == "type":
         return p.type(body.get("text", ""), driver=driver)
     if action == "key":

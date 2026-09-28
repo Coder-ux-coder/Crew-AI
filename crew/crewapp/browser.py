@@ -15,7 +15,7 @@ import queue
 import re
 import threading
 import time
-from concurrent.futures import Future
+from concurrent.futures import Future, TimeoutError as FutureTimeout
 from pathlib import Path
 
 from crewlib.util import crew_home
@@ -48,6 +48,42 @@ def normalize_address(text: str) -> str:
 
 class BrowserUnavailable(RuntimeError):
     pass
+
+
+# What the browser says when a page cannot be reached, in the owner's words.
+NET_ERRORS = (
+    ("ERR_NAME_NOT_RESOLVED", "No website was found at that address. Check how it is spelled."),
+    ("ERR_CONNECTION_REFUSED", "Nothing answered at that address. (A team project's preview only works while its "
+                               "program runs.)"),
+    ("ERR_CONNECTION_TIMED_OUT", "The website did not answer in time. Try again in a moment."),
+    ("ERR_INTERNET_DISCONNECTED", "This computer is not connected to the internet."),
+    ("ERR_TUNNEL_CONNECTION_FAILED", "The page could not be reached: the network (or its proxy) did not let it "
+                                     "through."),
+    ("ERR_PROXY_CONNECTION_FAILED", "The page could not be reached: the network's proxy did not answer."),
+    ("ERR_CERT", "The website's security certificate is not valid, so the browser did not open it."),
+    ("ERR_INVALID_URL", "That is not a web address the browser can open."),
+    ("ERR_ABORTED", "The page stopped loading (it may have started a download instead)."),
+)
+
+
+def plain(exc: Exception) -> str:
+    """A Playwright error as a short sentence: its first line, without Playwright's call log."""
+    text = str(exc)
+    for code, words in NET_ERRORS:
+        if code in text:
+            return words
+    first = (text.strip().splitlines() or [""])[0]
+    first = re.sub(r"^[A-Z]\w*\.\w+: ", "", first)  # "Page.goto: …", "Locator.click: …"
+    if first.startswith("Timeout"):
+        return "The page took too long to answer. Try again in a moment."
+    return "The browser could not do that: " + (first[:200] or type(exc).__name__)
+
+
+def _position(value) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        raise ValueError("Give the position on the page as numbers.") from None
 
 
 def availability() -> tuple[bool, str]:
@@ -118,7 +154,14 @@ class BrowserService:
             self.driver, self.driver_at = driver, time.time()
         fut: Future = Future()
         self.q.put((fn, args, fut))
-        return fut.result(timeout=timeout)
+        try:
+            return fut.result(timeout=timeout)
+        except FutureTimeout:
+            raise BrowserUnavailable("The browser is still busy with the last step. Try again in a moment.") from None
+        except Exception as exc:
+            if type(exc).__module__.startswith("playwright"):  # its errors carry a long call log: say it plainly
+                raise ValueError(plain(exc)) from None
+            raise
 
     def status(self) -> dict:
         ok, why = availability()
@@ -237,7 +280,7 @@ class BrowserService:
 
     def _click(self, xr: float, yr: float, double: bool = False) -> dict:
         w, h = self._viewport()
-        x, y = max(0.0, min(1.0, float(xr))) * w, max(0.0, min(1.0, float(yr))) * h
+        x, y = _position(xr) * w, _position(yr) * h
         if self.device == "phone":
             self.page.touchscreen.tap(x, y)
         elif double:
@@ -248,13 +291,22 @@ class BrowserService:
         return {"ok": True}
 
     def _type(self, text: str, submit: bool = False) -> dict:
-        self.page.keyboard.type(text, delay=8)
+        if len(text) > 300:  # typed key by key, a long text would keep the browser busy for minutes (or hours)
+            self.page.keyboard.insert_text(text)
+        else:
+            self.page.keyboard.type(text, delay=8)
         if submit:
             self.page.keyboard.press("Enter")
         return {"ok": True}
 
     def _press(self, key: str) -> dict:
-        self.page.keyboard.press(KEYS.get(key.lower(), key))
+        try:
+            self.page.keyboard.press(KEYS.get(key.lower(), key))
+        except Exception as exc:
+            if "Unknown key" in str(exc):
+                raise ValueError(f"The browser has no key called “{key[:40]}”. Use one of: "
+                                 + ", ".join(KEYS) + ", or a letter.") from None
+            raise
         return {"ok": True}
 
     def _scroll(self, dy: float) -> dict:
@@ -312,7 +364,10 @@ class BrowserService:
         try:
             target.click(timeout=8000)
         except Exception:
-            self.page.get_by_role("button", name=text).first.click(timeout=5000)
+            try:
+                self.page.get_by_role("button", name=text).first.click(timeout=5000)
+            except Exception:
+                raise ValueError(f"Nothing on the page says “{text[:80]}”.") from None
         self.page.wait_for_timeout(400)
         return {"ok": True, "url": self.page.url}
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from crewlib.util import atomic_write, crew_home
 
 BUILTIN = Path(__file__).resolve().parent.parent / "skills_pack" / "skills"
+SKILL_ID = r"[a-z0-9][a-z0-9-]{0,63}"  # a skill's id is at most 48 letters; a far longer one is not a skill
 
 # What each built-in skill does, in the owner's words (the SKILL.md descriptions are written for the agents).
 SUMMARIES = {
@@ -99,7 +100,7 @@ def list_all() -> list[dict]:
 def get(skill_id: str) -> dict | None:
     for root in (BUILTIN, user_dir()):
         path = root / skill_id / "SKILL.md"
-        if re.fullmatch(r"[a-z0-9][a-z0-9-]*", skill_id or "") and path.is_file():
+        if isinstance(skill_id, str) and re.fullmatch(SKILL_ID, skill_id) and path.is_file():
             info = _parse(path)
             return {"id": skill_id, **info, "origin": "built-in" if root == BUILTIN else "created",
                     "enabled": skill_id not in _disabled()}
@@ -144,8 +145,10 @@ def set_enabled(skill_id: str, enabled: bool) -> dict | None:
 
 
 def delete(skill_id: str) -> bool:
+    if not isinstance(skill_id, str) or not re.fullmatch(SKILL_ID, skill_id):
+        return False
     folder = user_dir() / skill_id
-    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", skill_id or "") or not folder.is_dir():
+    if not folder.is_dir():
         return False
     shutil.rmtree(folder)
     build_active_pack()

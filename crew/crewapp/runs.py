@@ -30,7 +30,8 @@ def runs_dir() -> Path:
 
 
 def _run_dir(run_id: str) -> Path | None:
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", run_id or ""):
+    # A project's id is about 60 letters; a longer one is not a project (and too long a name for the computer).
+    if not isinstance(run_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", run_id):
         return None
     path = runs_dir() / run_id
     return path if (path / "team.db").is_file() or path.is_dir() else None

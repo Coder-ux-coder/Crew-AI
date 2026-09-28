@@ -177,12 +177,15 @@ def import_claude_desktop() -> list[str]:
         clean = re.sub(r"[^A-Za-z0-9_-]+", "-", str(name)).strip("-")[:40] or "server"
         if clean in data["mcp"] or not isinstance(srv, dict):
             continue
+        headers = srv.get("headers") if isinstance(srv.get("headers"), dict) else {}
+        env = srv.get("env") if isinstance(srv.get("env"), dict) else {}
+        args = srv.get("args") if isinstance(srv.get("args"), list) else []  # a hand edit may hold anything
         if srv.get("url"):
-            entry = {"type": "sse" if srv.get("type") == "sse" else "http", "url": srv["url"],
-                     "headers": srv.get("headers") or {}}
+            entry = {"type": "sse" if srv.get("type") == "sse" else "http", "url": str(srv["url"]),
+                     "headers": {str(k): str(v) for k, v in headers.items()}}
         elif srv.get("command"):
-            entry = {"type": "stdio", "command": srv["command"], "args": list(srv.get("args") or []),
-                     "env": srv.get("env") or {}}
+            entry = {"type": "stdio", "command": str(srv["command"]), "args": [str(a) for a in args],
+                     "env": {str(k): str(v) for k, v in env.items()}}
         else:
             continue
         entry.update(enabled=True, source="Claude app")
