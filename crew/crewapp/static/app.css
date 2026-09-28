@@ -837,8 +837,8 @@ input[type=range] { width: 170px; accent-color: var(--accent); }
 .sidebar, .recents, main.view, .panel-body, .menu, .steps-list, .proj-body > .col {
   scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--ink) 20%, transparent) transparent; }
 .recents { flex: 1 1 auto; min-height: 96px; }
-.sb-devices { margin: 6px 0 2px; }
-.sb-devices button { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 6px 2px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
+.sb-devices { display: flex; margin: 6px 0 2px; }  /* each as wide as its words need: "Computer" was cut */
+.sb-devices button { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; gap: 4px; padding: 6px 2px; font-size: 11.5px; white-space: nowrap; overflow: hidden; }
 .sb-devices button .i { width: 16px; height: 16px; }
 .meters { gap: 3px; padding: 4px 8px; }
 .meter-line { grid-template-columns: minmax(0, 1fr) 56px 34px; gap: 8px; font-size: 12px; }
