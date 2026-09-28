@@ -23,14 +23,14 @@ never copy it onto the owner's computer.)
 - The owner's request (mid-campaign): one-to-one chats move on to the next subscription at a usage limit
   and keep the whole conversation. Done and pushed (A42–A48, C18, C19; tests/test_rollover.py, 14 tests, all
   failing on the old code).
-- Round 2 (server, data files, security), in progress: A49 (DNS rebinding) pushed; A50 (sandbox by file
-  type), A51 (connection time limit), A52 (damaged databases), A53 (damaged project record), A54 (app.log
-  capped) fixed with tests that fail on the old code; being verified by the full suite before the push.
+- Round 2 (server, data files, security) done (section 11): A49–A54, each with a test that fails on the old
+  code; full suite 196 tests OK on edf262d, pushed; the cloud runs on 2826d11 (the rollover) and earlier
+  were green on Python 3.12.
 - Still running: the clicking browser sweep (`sweep2`, every control of every screen), its laptop half is
   clean apart from expected notices (empty phone form, deliberately missing pages, the blocked test
   microphone).
-- Next: finish round 2 (the rest of the server route by route); rounds 3–11 (section 3); keep this section,
-  the ledger and section 11 current after every step.
+- Next: round 3 (models and effort everywhere; routing: tiers, subscriptions, limits, failover), then
+  rounds 4–11 (section 3); keep this section, the ledger and section 11 current after every step.
 - Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
   taskkill, a file held open during a conversation copy or a database set-aside, the message boxes.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
@@ -394,6 +394,14 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   at 1280x650 and 390x844 in light and dark; the P1 tests against the pre-fix code; the handoff's
   follow-ups. Found and fixed: C12, C14–C17, A28–A41, F7 (each with a test that fails on the old code).
   Left for later rounds: the clicking sweep's full run; the rest of section 3's plan.
+- Round 2 (the server route by route, data files, security) — done 2026-09-28. Checked: every route's
+  checks (address, pairing, app header, same-site); who may open folders, see the pairing code or change
+  phone access (this computer only); secrets (only masked hints leave); repository addresses (https, ssh and
+  git@ only, so git's risky transports are unreachable); how files the assistant made are served; every
+  deletion (each asks first; chats keep their files); every database damaged on purpose, and the app used on
+  it; the logs. Found and fixed: A49 (DNS rebinding), A50 (pages that escaped the sandbox), A51 (connections
+  that never finish), A52 (damaged databases), A53 (a damaged project record), A54 (app.log unbounded). Also
+  the owner's rollover request (A42–A48, C18, C19). Left: nothing from this round.
 
 ---------------------------------------------------------------------------------------------------------------
 
@@ -612,6 +620,18 @@ Round 2, data files (each database damaged on purpose in a scratch Crew folder, 
   opened for appending, with no limit · a log over 5 MB starts afresh at the next start, and the last one is
   kept as app.log.1 (a log held open by another Crew window on Windows is simply appended to) ·
   test_a54_the_log_does_not_grow_for_ever.
+
+Round 3 (models and effort; routing):
+
+- Tried: every model in the catalogue with every effort level, in a chat (the stand-ins record what ran):
+  each ran with the model and effort asked for; "ultra" is refused for Claude in plain words; Opus 5 is not
+  offered (it is not on the default allowed list) and is refused when typed.
+- A55 · P3 · config.ModelPolicy.check, validate · a typed model outside the allowed list, or on the banned
+  list, was refused in programmer's words ("model 'claude-opus-5' is not on the allowed list
+  ['claude-opus-5-5', 'claude-fable-5-1']"); three settings messages printed Python lists · messages built
+  from raw values · plain sentences that say what to do ("… is not one of the Claude models allowed in
+  Settings → Models (claude-opus-5-5, claude-fable-5-1). Choose one of those, or add it to that list") ·
+  test_a55_a_refused_model_is_explained_in_plain_words.
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
