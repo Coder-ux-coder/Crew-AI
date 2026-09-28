@@ -25,6 +25,18 @@ def now() -> float:
     return time.time()
 
 
+def utf8_stdio() -> None:
+    """Talk UTF-8 on stdin/stdout whatever the environment says (tool servers speak JSON-RPC, which is UTF-8).
+
+    Codex starts tool servers with only a few environment variables, so on Windows Python would otherwise use
+    the console code page (cp1252): a team message with "→" or "✔" (symbols Crew itself writes) then broke every tool call."""
+    for stream in (sys.stdin, sys.stdout):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):  # not a text stream (tests, pythonw): leave it
+            pass
+
+
 def hhmm(ts: float | None) -> str:
     if not ts:
         return "--:--"

@@ -18,8 +18,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from crewlib import claude_cli, config as cfgmod, connections, usage as usage_log
-from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, _kill_tree, _popen, _toml_str, child_env, codex_effort,
-                            copy_claude_session, default_claude_home, default_codex_home, which)
+from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, UTF8_ENV, _kill_tree, _popen, _toml_str, child_env,
+                            codex_effort, copy_claude_session, default_claude_home, default_codex_home, which)
 from crewlib.util import atomic_write, clip, crew_home, load_env_file, now
 
 from . import settings as settings_mod
@@ -673,7 +673,7 @@ class CodexSession(Session):
         if self.m.app_url:
             env_table = "{" + ", ".join(f"{k} = {_toml_str(v)}" for k, v in {
                 "CREW_APP_URL": self.m.app_url, "CREW_APP_TOKEN": self.m.app_token,
-                "PYTHONPATH": str(CREW_ROOT)}.items()) + "}"
+                "PYTHONPATH": str(CREW_ROOT), **UTF8_ENV}.items()) + "}"
             args += ["-c", f"mcp_servers.crew_devices.command={_toml_str(sys.executable)}",
                      "-c", 'mcp_servers.crew_devices.args=["-m", "crewapp.devices_mcp"]',
                      "-c", f"mcp_servers.crew_devices.env={env_table}"]

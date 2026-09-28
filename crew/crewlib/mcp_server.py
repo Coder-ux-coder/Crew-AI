@@ -15,6 +15,7 @@ import traceback
 from . import __version__
 from .store import Store
 from .tools import Ctx, call, tools_for
+from .util import utf8_stdio
 
 INSTRUCTIONS = (
     "Crew team tools. The team shares ONE group chat (no private messages), a task board with file leases, "
@@ -33,6 +34,7 @@ def _reply(msg_id, result=None, error=None) -> None:
 
 
 def serve() -> None:
+    utf8_stdio()
     db = os.environ.get("CREW_DB")
     if not db:
         sys.stderr.write("crew mcp: CREW_DB is not set\n")
@@ -47,6 +49,9 @@ def serve() -> None:
             msg = json.loads(line)
         except ValueError:
             _reply(None, error={"code": -32700, "message": "parse error"})
+            continue
+        if not isinstance(msg, dict):
+            _reply(None, error={"code": -32600, "message": "invalid request"})
             continue
         method, msg_id = msg.get("method"), msg.get("id")
         params = msg.get("params") or {}

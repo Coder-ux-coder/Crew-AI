@@ -107,6 +107,9 @@ def handle(name: str, args: dict) -> tuple[list[dict], bool]:
 
 
 def main() -> None:
+    from crewlib.util import utf8_stdio
+
+    utf8_stdio()  # Codex starts this without PYTHONUTF8: on Windows, non-English text for computer_type arrived garbled
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -114,6 +117,8 @@ def main() -> None:
         try:
             msg = json.loads(line)
         except ValueError:
+            continue
+        if not isinstance(msg, dict):
             continue
         mid, method, params = msg.get("id"), msg.get("method"), msg.get("params") or {}
         if method == "initialize":
