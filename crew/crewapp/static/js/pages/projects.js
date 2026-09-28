@@ -124,10 +124,18 @@ class ProjectView {
       s = await api(`/api/runs/${this.id}?after=${this.after}`);
       if (!this.alive) return;
       if (!s.starting) this.update(s);
+      else if (s.problem) this.cannotStart(s.problem);
     } catch (e) {
       if (e.status === 404) { toast('That project could not be found.'); location.hash = '#/projects'; return; }
     }
-    this.timer = setTimeout(() => this.tick(), s && (s.running || s.starting) ? 1500 : 6000);
+    this.timer = setTimeout(() => this.tick(), s && (s.running || (s.starting && !s.problem)) ? 1500 : 6000);
+  }
+
+  // Its program ended before the team began (git missing, a settings problem …): say why, instead of
+  // "Getting the team ready…" for ever.
+  cannotStart(text) {
+    const line = this.feed.querySelector('[data-placeholder]');
+    if (line && line.textContent !== text) { line.textContent = text; line.classList.add('problem'); }
   }
 
   update(s) {

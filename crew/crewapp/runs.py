@@ -11,10 +11,10 @@ import sys
 import threading
 from pathlib import Path
 
-from crewlib import tiers
+from crewlib import config as cfgmod, tiers
 from crewlib.cli import claim_run_dir
 from crewlib.store import Store
-from crewlib.util import crew_home, now
+from crewlib.util import clip, crew_home, now
 from crewlib.web import PHASES, friendly_activity, state as run_state
 
 CREW_ROOT = Path(__file__).resolve().parent.parent
@@ -71,6 +71,14 @@ class RunManager:
             raise ValueError("Tell the team what you want first.")
         if repo is not None and not isinstance(repo, str):
             raise ValueError("The project folder must be a folder's path.")
+        names = [a for a in (accounts if isinstance(accounts, list) else []) if isinstance(a, str)
+                 and re.fullmatch(r"[\w.@+-]+", a)]
+        if names:  # a choice the team cannot use (a subscription since renamed or removed) is said now, not lost
+            from . import settings as settings_mod
+            try:
+                cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None).restrict(names)
+            except cfgmod.ConfigError as exc:
+                raise ValueError(f"This project cannot use those subscriptions: {exc}.") from None
         run_id, run_dir = claim_run_dir(runs_dir(), request)
         # The request travels in a file, not on the command line: words that start with "-" would be read as
         # options, and Windows limits a command line to about 32,000 characters.
@@ -89,8 +97,6 @@ class RunManager:
             args += ["--max-hours", f"{min(hours, 168):g}"]
         if head_to_head in ("off", "some", "all"):
             args += ["--head-to-head", head_to_head]
-        names = [a for a in (accounts if isinstance(accounts, list) else []) if isinstance(a, str)
-                 and re.fullmatch(r"[\w.@+-]+", a)]
         if names:
             args += ["--accounts", ",".join(names)]
         self._spawn(run_id, args)
@@ -106,6 +112,29 @@ class RunManager:
             return False
         self._spawn(run_id, ["resume", run_id, "--headless"])
         return True
+
+    @staticmethod
+    def exists(run_id: str) -> bool:
+        """Is there a project (at least its folder) with this id?"""
+        return _run_dir(run_id) is not None
+
+    def start_problem(self, run_id: str) -> str:
+        """Why a project that has no team yet will not get one: its program ended before the team began (git
+        missing, a settings problem …), in the words its log ends with. '' while it may still be starting."""
+        run_dir = _run_dir(run_id)
+        if run_dir is None or (run_dir / "team.db").is_file():
+            return ""
+        proc = self.procs.get(run_id)
+        try:
+            ended = proc.poll() is not None if proc is not None else now() - run_dir.stat().st_mtime > 180
+            log = (run_dir / "app-run.log").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            log = ""
+        if not ended:
+            return ""
+        last = [line.strip() for line in log.splitlines() if line.strip()][-1:]
+        return "The project could not start" + (f": {clip(last[0], 300)}" if last else ".") + \
+            " Nothing was lost; you can start it again."
 
     def running(self, run_id: str) -> bool:
         """Started by this app, and its process is still alive."""

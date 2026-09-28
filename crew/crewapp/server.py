@@ -659,7 +659,11 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             after = 0
         data = self.app.runs.state(rid, after)
-        return self._json(data) if data else self._json({"id": rid, "starting": True, "messages": []})
+        if data:
+            return self._json(data)
+        if not self.app.runs.exists(rid):  # never started here, or deleted: not "getting ready" for ever
+            return self._error(404, "That project could not be found.")
+        return self._json({"id": rid, "starting": True, "messages": [], "problem": self.app.runs.start_problem(rid)})
 
     @route("POST", r"/api/runs/([\w.-]+)/say")
     def api_run_say(self, rid):

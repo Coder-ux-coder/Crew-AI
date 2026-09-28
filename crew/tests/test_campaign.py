@@ -998,6 +998,30 @@ class AppCampaignTests(unittest.TestCase):
                          (2.5, 1.2, False))
         s.api("PUT", "/api/settings", {"team": {"max_hours": 0}, "app": {"voice_rate": 1.0, "auto_update": True}})
 
+    def test_a40_a_project_that_cannot_start_says_why(self):
+        """Before, the project page said "Getting the team ready…" for ever: for a project that does not exist,
+        and for one whose program ended before its team began (git missing, a subscription since removed …)."""
+        s = self.s
+        s.api("GET", "/api/runs/20260101-000000-no-such-project", expect=404)
+        before = sorted(p.name for p in runs_mod.runs_dir().iterdir())
+        err = s.api("POST", "/api/runs", {"request": "Build a page about Lahore", "accounts": ["an-old-name"]},
+                    expect=400)
+        self.assertIn("cannot use those subscriptions", err["error"])
+        self.assertEqual(sorted(p.name for p in runs_mod.runs_dir().iterdir()), before)  # nothing was started
+        rid = "20260928-120000-cannot-start"
+        run_dir = runs_mod.runs_dir() / rid
+        run_dir.mkdir()
+        (run_dir / "app-run.log").write_text("Traceback (most recent call last):\n  ...\nFileNotFoundError: "
+                                             "[Errno 2] No such file or directory: 'git'\n", encoding="utf-8")
+        s.app.runs.procs[rid] = types.SimpleNamespace(poll=lambda: 1)  # its program has ended
+        try:
+            state = s.api("GET", f"/api/runs/{rid}")
+            self.assertIn("could not start", state["problem"])
+            self.assertIn("No such file or directory: 'git'", state["problem"])
+        finally:
+            s.app.runs.procs.pop(rid, None)
+            shutil.rmtree(run_dir, ignore_errors=True)
+
     def test_a41_a_model_name_with_a_stray_character_breaks_nothing(self):
         """A NUL in the model's name passed the checks: the owner's message was kept unanswered, and the name was
         saved as the chat's model, so every later message in that chat failed with "embedded null byte"."""
