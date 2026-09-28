@@ -11,6 +11,7 @@ Security model (it can run agents that act on your computer, so this matters):
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import math
 import mimetypes
@@ -353,6 +354,25 @@ class Handler(BaseHTTPRequestHandler):
     def _loopback(self) -> bool:
         return self.client_address[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
 
+    def _host_ok(self) -> bool:
+        """Was this request sent to this computer by address (localhost, 127.0.0.1, ::1, or an IP address on the
+        home network, as a paired phone uses)? A web page under another name that its maker points at this
+        computer (DNS rebinding) is, to the browser, that page's own site: it must get nothing."""
+        host = self.headers.get("Host")
+        if host is None:
+            return True  # not a browser (browsers always say which site they asked for)
+        try:
+            name = urlparse("//" + host).hostname or ""
+        except ValueError:
+            return False
+        if name == "localhost":
+            return True
+        try:
+            ipaddress.ip_address(name)
+        except ValueError:
+            return False
+        return True
+
     def _authorized(self) -> bool:
         if self._loopback():
             return True
@@ -443,6 +463,9 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(url.path)
         self.query = {k: v[0] for k, v in parse_qs(url.query).items()}
         try:
+            if not self._host_ok():
+                return self._error(403, f"Crew answers only at its own address: open http://localhost:"
+                                        f"{self.app.port} on this computer, or the address in Settings → Phone.")
             if path.startswith("/internal/"):
                 if not self._loopback() or self.headers.get("X-Crew-Token") != self.app.internal_token:
                     return self._error(403, "Forbidden.")

@@ -1103,6 +1103,24 @@ class AppCampaignTests(unittest.TestCase):
         until(lambda: all(p.stdout.closed and p.stderr.closed for p in started), timeout=20, step=0.1)
         s.api("DELETE", f"/api/chats/{cid}")
 
+    def test_a49_a_web_page_under_another_name_cannot_reach_crew(self):
+        """DNS rebinding: a web page whose name its maker points at this computer is, to the browser, its own site.
+        It could read every chat, setting and file, and change them: the same-site check compared its address with
+        itself, and a request from this computer needs no pairing."""
+        s = self.s
+        evil = {"Host": f"evil.example:{s.port}", "Origin": f"http://evil.example:{s.port}", "X-Crew": "1"}
+        for method, path in (("GET", "/api/settings"), ("GET", "/api/chats"), ("GET", "/api/pair"), ("GET", "/"),
+                             ("GET", "/pair?t=x")):
+            status, _, payload = s.request(method, path, headers=evil)
+            self.assertEqual(status, 403, (path, payload[:200]))
+        status, _, _ = s.request("POST", "/api/chats", raw=b"{}", headers={**evil, "Content-Type": "application/json"})
+        self.assertEqual(status, 403)
+        self.assertIn(b"localhost", s.request("GET", "/", headers=evil)[2])  # it says where Crew is
+        for host in (f"localhost:{s.port}", f"LocalHost:{s.port}", f"127.0.0.1:{s.port}", f"[::1]:{s.port}",
+                     f"192.168.1.20:{s.port}", "localhost"):  # this computer, and a phone on the home network
+            status, _, _ = s.request("GET", "/api/ping", headers={"Host": host})
+            self.assertEqual(status, 200, host)
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"
