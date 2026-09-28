@@ -10,6 +10,7 @@ import json
 import os
 import queue
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -23,10 +24,10 @@ from pathlib import Path
 from unittest import mock
 
 try:  # `python -m unittest discover -s tests` imports the modules by their own names
-    from test_app import ENV, HOME, ROOT, AppServer, until
+    from test_app import ENV, HOME, ROOT, AppServer, _chromium, until
     from test_e2e import dump_chat, make_run, run_orch
 except ImportError:
-    from tests.test_app import ENV, HOME, ROOT, AppServer, until
+    from tests.test_app import ENV, HOME, ROOT, AppServer, _chromium, until
     from tests.test_e2e import dump_chat, make_run, run_orch
 
 from crewapp import chat as chat_mod  # noqa: E402
@@ -427,6 +428,51 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual((home / "crew.toml.bak").read_text(encoding="utf-8"), "not toml at all [")
             self.assertEqual(len(list(home.glob("crew.toml.damaged-*"))), 2)
 
+    def test_a34_a_hand_edited_setting_of_the_wrong_kind_is_set_aside(self):
+        with TempHome() as home:
+            settings_mod.save({"team": {"max_hours": 2.0}})
+            settings_mod.save({"app": {"owner_name": "Zeeshan"}})  # the version before is the last good copy
+            (home / "crew.toml").write_text('[team]\nmax_hours = "two"\n', encoding="utf-8")  # a typing slip
+            st = settings_mod.load()
+            self.assertEqual(st["team"]["max_hours"], 2.0)  # not "two", which stopped every project
+            self.assertEqual(settings_mod.problem()["restored"], "the last good copy")
+            kept = home / settings_mod.problem()["kept"]
+            self.assertEqual(kept.read_text(encoding="utf-8"), '[team]\nmax_hours = "two"\n')
+
+    def test_a35_a_damaged_file_in_the_old_format_is_kept_as_it_was(self):
+        with TempHome() as home:
+            settings_mod.save({"team": {"max_hours": 2.0}})
+            settings_mod.save({"app": {"owner_name": "Zeeshan"}})
+            # Written by hand from crew.toml.example (no settings_version), with a slip: Crew's upgrade of old
+            # files rewrote it in its own layout before finding the slip, so the copy kept was not the owner's.
+            mine = "# my settings\n[team]\nmode = \"sometimes\"  # I will fix this later\n"
+            (home / "crew.toml").write_text(mine, encoding="utf-8")
+            settings_mod.load()
+            kept = home / settings_mod.problem()["kept"]
+            self.assertEqual(kept.read_text(encoding="utf-8"), mine)
+
+    def test_a36_two_settings_saved_at_the_same_moment_both_stay(self):
+        with TempHome():
+            settings_mod.save({"app": {"owner_name": "Zeeshan"}})
+            errors: list[Exception] = []
+
+            def change(key, values):
+                for v in values:
+                    try:
+                        settings_mod.save({"app": {key: v}})
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(exc)
+
+            a = threading.Thread(target=change, args=("theme", ["light", "dark"] * 15 + ["dark"]))
+            b = threading.Thread(target=change, args=("voice_rate", [1.1, 1.3] * 15 + [1.5]))
+            a.start()
+            b.start()
+            a.join()
+            b.join()
+            self.assertEqual(errors, [])
+            app = settings_mod.load()["app"]
+            self.assertEqual((app["theme"], app["voice_rate"], app["owner_name"]), ("dark", 1.5, "Zeeshan"))
+
     def test_a23_a_pasted_key_with_a_line_break(self):
         with TempHome() as home:
             settings_mod.save_secret("HUNTER_API_KEY", "  hk_test_0123456789  \n")
@@ -510,6 +556,46 @@ class AppPieceTests(unittest.TestCase):
                 service.devices()
         self.assertIn("did not answer in time", str(cm.exception))
 
+    def test_a33_a_swipe_without_its_points_is_explained(self):
+        p = phone_mod.PhoneService()
+        with mock.patch.object(p, "size", return_value=(1080, 2400)), mock.patch.object(p, "_adb") as adb:
+            with self.assertRaises(phone_mod.PhoneError) as cm:  # was a bare "'y1'"
+                server.phone_action(p, "swipe", {"x1": 0.5}, "you")
+            self.assertIn("start and end", str(cm.exception))
+            adb.assert_not_called()
+            server.phone_action(p, "swipe", {"x1": 0.5, "y1": 0.8, "x2": 0.5, "y2": 0.2}, "you")
+            adb.assert_called_once()
+
+    def test_a38_null_for_the_words_to_type_or_press_counts_as_not_given(self):
+        self.assertEqual(server._text_fields({"text": None, "key": 5, "x": 1}, "text", "key"), {"key": "5", "x": 1})
+        p = phone_mod.PhoneService()
+        with mock.patch.object(p, "_adb") as adb:
+            server.phone_action(p, "type", {"text": None}, "you")  # was a TypeError: a 500
+            server.phone_action(p, "key", {"key": None}, "you")  # was an AttributeError: a 500
+            self.assertEqual(adb.call_count, 2)
+
+    def test_a39_an_odd_connectors_file_from_the_claude_app(self):
+        with TempHome() as home:
+            desk = home / "claude_desktop_config.json"
+            desk.write_text(json.dumps({"mcpServers": {"files": {"command": "npx", "args": 5, "env": "X=1"},
+                                                       "web": {"url": "https://example.com/mcp", "headers": [1]}}}),
+                            encoding="utf-8")
+            with mock.patch.object(connections, "claude_desktop_config", return_value=desk):
+                self.assertEqual(sorted(connections.import_claude_desktop()), ["files", "web"])  # was a TypeError
+            saved = connections.load()["mcp"]
+            self.assertEqual((saved["files"]["args"], saved["files"]["env"], saved["web"]["headers"]), ([], {}, {}))
+
+    def test_a31_browser_problems_in_plain_words(self):
+        from crewapp import browser
+        for error, words in (("Page.goto: net::ERR_NAME_NOT_RESOLVED at https://pbit.gov.pkk/\nCall log:\n  - x",
+                              "No website was found"),
+                             ("Page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:5173/", "Nothing answered"),
+                             ("Locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting", "took too long"),
+                             ("Page.evaluate: Something odd\nCall log:\n  - x", "could not do that: Something odd")):
+            text = browser.plain(Exception(error))
+            self.assertIn(words, text)
+            self.assertNotIn("Call log", text)
+
     def test_a27_addresses_typed_in_the_browser_bar(self):
         from crewapp.browser import normalize_address as address
         self.assertEqual(address("localhost:5173"), "http://localhost:5173")  # a team project's preview
@@ -557,6 +643,38 @@ class AppPieceTests(unittest.TestCase):
             self.assertEqual(last["status"], "failed")
             self.assertIn("deleted", last["summary"])
             self.assertFalse(flows.get(w["id"])["running"])
+
+
+@unittest.skipUnless(_chromium(), "no Chromium for the browser test")
+class BrowserCampaignTests(unittest.TestCase):
+    def test_a31_a32_the_shared_browser_explains_itself_and_cannot_be_wedged(self):
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        from crewapp import browser
+        os.environ.setdefault("CREW_CHROMIUM", _chromium())
+        b = browser.service
+        with socket.socket() as sock:  # a port nothing listens on
+            sock.bind(("127.0.0.1", 0))
+            closed = sock.getsockname()[1]
+        try:
+            for action, body, words in (("navigate", {"url": f"http://127.0.0.1:{closed}/"}, "Nothing answered"),
+                                        ("click", {"text": "words that are nowhere"}, "Nothing on the page says"),
+                                        ("press", {"key": "not-a-key"}, "no key called"),
+                                        ("click", {"x": [], "y": 0.5}, "as numbers"),
+                                        ("scroll", {"dy": float("nan")}, "as a number"),  # it wedged the browser
+                                        ("scroll", {"dy": float("inf")}, "as a number")):
+                with self.assertRaises(ValueError) as cm:  # the app answers these with 400 and these words
+                    server.browser_action(b, action, body, "you")
+                self.assertIn(words, str(cm.exception), action)
+                self.assertNotIn("Call log", str(cm.exception))
+            started = time.time()
+            server.browser_action(b, "scroll", {"dy": 300}, "you")  # still answering
+            server.browser_action(b, "type", {"text": "x" * 5000}, "assistant")  # at once, not key by key
+            self.assertLess(time.time() - started, 20)
+        finally:
+            b.stop()
 
 
 # ====================================================================== updates
@@ -801,6 +919,84 @@ class AppCampaignTests(unittest.TestCase):
         # A26: a subscription name with @ reaches its sign-in (here: no such subscription, said plainly)
         err = self.s.api("POST", "/api/accounts/me%40work.pk/login", {}, expect=400)
         self.assertIn("No such subscription", err["error"])
+
+    def test_a28_a_broken_character_is_refused_plainly_and_changes_nothing(self):
+        """Half of a character pair ("\\ud800") in any text sent: the connection dropped without an answer, or a
+        refused message was kept in the chat anyway."""
+        s = self.s
+        cid, _ = self.new_chat()
+        for method, path, body in (("POST", "/api/chats", {"account": "\ud800"}),
+                                   ("POST", f"/api/chats/{cid}/send", {"text": "hello", "model": "\ud800"}),
+                                   ("POST", f"/api/chats/{cid}/send", {"text": "hello \ud800"}),
+                                   ("PUT", "/api/settings", {"app": {"owner_name": "\ud800"}}),
+                                   ("PUT", "/api/settings", {"app": {"\ud800": 1}})):
+            status, _, payload = s.request(method, path, raw=json.dumps(body).encode(),
+                                           headers={"X-Crew": "1", "Content-Type": "application/json"})
+            self.assertEqual(status, 400, (path, payload))
+            self.assertIn("broken character", json.loads(payload)["error"])
+        self.assertEqual(s.api("GET", f"/api/chats/{cid}")["messages"], [])  # nothing half-recorded
+        # A broken character already in a file on disk (a hand edit): the screen still gets its answer.
+        path = HOME / "connections.json"
+        saved = path.read_bytes() if path.is_file() else None
+        try:
+            path.write_text('{"mcp": {"notes\\ud800": {"type": "http", "url": "https://example.com/mcp"}}}',
+                            encoding="utf-8")
+            self.assertEqual([m["name"] for m in s.api("GET", "/api/connections")["mcp"]], ["notes?"])
+        finally:
+            if saved is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(saved)
+        s.api("DELETE", f"/api/chats/{cid}")
+
+    def test_a29_a30_odd_project_and_capture_addresses(self):
+        s = self.s
+        long_id = "a" * 300  # "file name too long" for the computer
+        for method, path in (("GET", f"/api/runs/{long_id}"), ("POST", f"/api/runs/{long_id}/stop"),
+                             ("POST", f"/api/runs/{long_id}/say"), ("POST", f"/api/runs/{long_id}/resume"),
+                             ("POST", f"/api/runs/{long_id}/open-folder")):
+            status, _, payload = s.request(method, path, {"text": "hello"}, headers={"X-Crew": "1"})
+            self.assertLess(status, 500, (path, payload))
+        for method, path in (("GET", f"/api/skills/{long_id}"), ("DELETE", f"/api/skills/{long_id}"),
+                             ("POST", f"/api/skills/{long_id}/toggle")):
+            status, _, payload = s.request(method, path, {"enabled": True}, headers={"X-Crew": "1"})
+            self.assertEqual(status, 404 if method != "DELETE" else 200, (path, payload))
+        cid, _ = self.new_chat()
+        s.api("POST", f"/api/chats/{cid}/attach-capture", {"name": "A" * 300}, expect=404)
+        s.api("DELETE", f"/api/chats/{cid}")
+        rid = "20260928-120000-odd-numbers"  # A30: a message number too big for the database
+        (HOME / "runs" / rid).mkdir(parents=True, exist_ok=True)
+        Store(HOME / "runs" / rid / "team.db").close()
+        try:
+            for after in ("99999999999999999999", "-5", "abc", "1e999"):
+                self.assertEqual(s.api("GET", f"/api/runs/{rid}?after={after}")["id"], rid)
+        finally:
+            store = s.app.runs._stores.pop(rid, None)
+            if store is not None:
+                store.close()
+            shutil.rmtree(HOME / "runs" / rid, ignore_errors=True)
+
+    def test_a34_settings_of_the_wrong_kind_are_refused_before_anything_is_written(self):
+        s = self.s
+        path = HOME / "crew.toml"
+        before = path.read_bytes() if path.is_file() else None
+        for body, words in (({"team": {"max_hours": "abc"}}, "must be a number"),  # saved; every project then failed
+                            ({"team": {"stall_minutes": 0}}, "more than 0"),  # every agent interrupted non-stop
+                            ({"team": {"ceo_reviews": "no"}}, "true or false"),  # "no" counted as yes
+                            ({"models": {"banned": [1, 2]}}, "list of names"),  # was a 500
+                            ({"models": {"work": 5}}, "must be text"),  # was a 500
+                            ({"app": {"phone_enabled": "false"}}, "on or off"),  # text: phone access on at every start
+                            ({"app": {"settings_version": 1}}, "Crew's own record")):  # the migrations ran again
+            err = s.api("PUT", "/api/settings", body, expect=400)
+            self.assertIn(words, err["error"], body)
+        self.assertEqual(path.read_bytes() if path.is_file() else None, before)  # nothing written
+        self.assertEqual(list(HOME.glob("crew.toml.damaged-*")), [])
+        # What the Settings screen sends is saved as before.
+        out = s.api("PUT", "/api/settings", {"team": {"max_hours": 2.5},
+                                             "app": {"voice_rate": 1.2, "auto_update": False}})
+        self.assertEqual((out["team"]["max_hours"], out["app"]["voice_rate"], out["app"]["auto_update"]),
+                         (2.5, 1.2, False))
+        s.api("PUT", "/api/settings", {"team": {"max_hours": 0}, "app": {"voice_rate": 1.0, "auto_update": True}})
 
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
