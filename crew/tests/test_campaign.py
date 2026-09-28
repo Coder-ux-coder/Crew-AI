@@ -84,6 +84,116 @@ class ToolServersSpeakUtf8(unittest.TestCase):
         self.assertEqual(got, [{"text": text}])
 
 
+class DeviceToolsIgnoreTheOfficeProxy(unittest.TestCase):
+    """B-02: the agents' browser, computer and phone tools reached the app on this computer through the system
+    web proxy; an office proxy cannot reach this computer's own programs, so every device tool failed."""
+
+    def test_device_tool_reaches_the_app_with_a_proxy_configured(self):
+        got: list[dict] = []
+        app = _FakeApp(got)
+        try:
+            env = {k: v for k, v in os.environ.items() if k.lower() not in ("no_proxy", "http_proxy", "https_proxy")}
+            env.update(HTTP_PROXY="http://127.0.0.1:9", http_proxy="http://127.0.0.1:9", PYTHONPATH=str(ROOT),
+                       CREW_APP_URL=app.url, CREW_APP_TOKEN="t")
+            replies = _rpc_session("crewapp.devices_mcp", env, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "browser_open", "arguments": {"url": "example.com"}}},
+            ])
+        finally:
+            app.close()
+        self.assertFalse(replies[2]["result"]["isError"], replies[2])
+        self.assertEqual(got, [{"url": "example.com"}])
+
+
+class ChatsNeverStayBusy(unittest.TestCase):
+    """B-03: an unexpected error at the end of an answer (a file vanishing while Crew lists the files it made, the
+    database busy, an odd line from Codex) left the chat "still answering" until Crew was restarted."""
+
+    @classmethod
+    def setUpClass(cls):
+        from test_app import ENV, AppServer
+        os.environ.update(ENV)
+        cls.s = AppServer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.stop()
+
+    def new_chat(self, **body):
+        cid = self.s.api("POST", "/api/chats", body)["id"]
+        return cid, self.s.events(f"/api/chats/{cid}/events")
+
+    @staticmethod
+    def done(ev, timeout=60):
+        while True:
+            name, data = ev.get(timeout=timeout)
+            if name == "done":
+                return data
+
+    def test_claude_answer_ends_even_when_its_bookkeeping_fails(self):
+        from crewapp import chat
+        s = self.s
+        cid, ev = self.new_chat()
+        saved = chat.Session._context_event
+
+        def locked(self):
+            raise __import__("sqlite3").OperationalError("database is locked")
+        chat.Session._context_event = locked
+        try:
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "hello"})
+            first = self.done(ev)
+        finally:
+            chat.Session._context_event = saved
+        self.assertIn("Summary", first["text"])  # the answer itself still reaches the owner
+        self.assertFalse(s.api("GET", f"/api/chats/{cid}")["busy"])
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "hello again"})  # and the conversation carries on
+        self.assertIn("Summary", self.done(ev)["text"])
+
+    def test_a_file_vanishing_while_files_are_listed_is_harmless(self):
+        from crewapp import chat
+        s = self.s
+        cid, ev = self.new_chat()
+        real_stat = Path.stat
+        seen = {"n": 0}
+
+        def flaky(self, *a, **k):  # the file is there when first seen, and gone a moment later
+            if self.name == "page.html":
+                seen["n"] += 1
+                if seen["n"] == 2:
+                    raise FileNotFoundError(2, "No such file or directory", str(self))
+            return real_stat(self, *a, **k)
+        Path.stat = flaky
+        try:
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "Please make a page for me"})
+            done = self.done(ev)
+        finally:
+            Path.stat = real_stat
+        self.assertFalse(done["meta"].get("error"), done)
+        self.assertFalse(s.api("GET", f"/api/chats/{cid}")["busy"])
+        self.assertGreaterEqual(seen["n"], 1)  # the file was looked at (Crew now looks each file up only once)
+
+    def test_chatgpt_answer_ends_even_when_reading_its_status_fails(self):
+        from crewapp import chat
+        s = self.s
+        before = s.api("GET", "/api/settings")
+        s.api("PUT", "/api/settings", {"accounts": before["accounts"] + [{"name": "chatgpt-1", "vendor": "codex",
+                                                                           "profile": ""}]})
+        saved = chat.read_codex_status
+        chat.read_codex_status = lambda *a, **k: (_ for _ in ()).throw(ValueError("odd session file"))
+        try:
+            cid, ev = self.new_chat(engine="codex")
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "hi"})
+            first = self.done(ev)
+            self.assertFalse(s.api("GET", f"/api/chats/{cid}")["busy"], first)
+            chat.read_codex_status = saved
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "hi again"})
+            self.assertTrue(self.done(ev)["text"])
+        finally:
+            chat.read_codex_status = saved
+            s.api("PUT", "/api/settings", {"accounts": before["accounts"]})
+
+
 class _FakeApp:
     """A stand-in for the Crew app's /internal endpoints: records what the agent's tools send."""
 

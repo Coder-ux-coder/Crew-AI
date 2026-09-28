@@ -9,8 +9,10 @@ its plan in plan mode, how full its context is, and your subscription limits.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -123,6 +125,21 @@ def describe(name: str, inp: dict | None) -> tuple[str, str, str]:
         "CronCreate": ("schedule", "Scheduled a task", short(inp.get("prompt") or inp.get("name"))),
     }
     return table.get(name, ("tool", name.replace("_", " "), ""))
+
+
+def walk_files(root: Path, skip_dirs: tuple[str, ...] = (".crew",)):
+    """(path, path relative to root in / form, stat) for every file under root. A file or folder that disappears
+    while it is being listed (an assistant's temporary file, a program still writing) is simply left out."""
+    for folder, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        for name in names:
+            path = Path(folder) / name
+            try:
+                st = path.stat()
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                yield path, path.relative_to(root).as_posix(), st
 
 
 def file_kind(name: str) -> str:
@@ -281,19 +298,35 @@ class Session:
             self.publish("step", step)
 
     def _record(self, text: str, meta: dict) -> int:
+        if self.m.sessions.get(self.chat_id) is not self:
+            return 0  # the chat was deleted while it was answering: nothing to keep
         mid = self.m.db.x("INSERT INTO messages(chat_id,role,text,ts,meta) VALUES(?,?,?,?,?)",
                           (self.chat_id, "assistant", text, now(), json.dumps(meta)))
         self.m.db.x("UPDATE chats SET updated=? WHERE id=?", (now(), self.chat_id))
         return mid
 
+    def _abandon(self, problem: str) -> None:
+        """End a turn that went wrong in Crew's own code: keep what was said, explain, and let the conversation
+        carry on — a chat must never stay "still answering" until Crew is restarted."""
+        if not self.busy:
+            return
+        t = self.turn
+        said = t.text.strip() if t is not None else ""
+        text = (said + "\n\n" if said else "") + f"(Crew could not finish this answer properly: {clip(problem, 300)})"
+        meta = {"error": not said, "engine": self.engine, "model": self.model or "", "effort": self.effort,
+                "mode": self.mode, "account": self.account.name if self.account else ""}
+        mid = 0
+        try:
+            mid = self._record(text, meta)
+        except Exception:  # noqa: BLE001 — the owner still sees the answer; only saving it failed
+            pass
+        self.busy, self.turn = False, None
+        self.publish("done", {"id": mid, "text": text, "meta": meta})
+
     def _new_files(self, since: float) -> list[dict]:
-        root = self.workspace()
         out = []
-        for p in root.rglob("*"):
-            parts = p.relative_to(root).parts
-            if p.is_file() and ".crew" not in parts and parts[0] != "attachments" and not p.name.startswith(".") \
-                    and p.stat().st_mtime >= since - 1:
-                rel = p.relative_to(root).as_posix()
+        for p, rel, st in walk_files(self.workspace(), (".crew", "attachments")):
+            if not p.name.startswith(".") and st.st_mtime >= since - 1:
                 out.append({"name": rel, "kind": file_kind(p.name), "url": f"/files/chat/{self.chat_id}/{rel}"})
         return sorted(out, key=lambda f: f["name"])[:20]
 
@@ -368,7 +401,7 @@ class ClaudeSession(Session):
         self.proc = _popen(cmd, self.workspace(), child_env({**self._secret_env(), **env}))
         self.running_mode = self.mode
         threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
-        threading.Thread(target=lambda p=self.proc: [None for _ in p.stderr], daemon=True).start()
+        threading.Thread(target=_drain, args=(self.proc.stderr,), daemon=True).start()
 
     def _bring_conversation(self, cfg) -> None:
         """Before resuming, make sure the chosen subscription holds this conversation: bring it from whichever
@@ -567,6 +600,12 @@ class ClaudeSession(Session):
                 self._finish(msg)
 
     def _finish(self, msg: dict) -> None:
+        try:
+            self._complete(msg)
+        except Exception as exc:  # noqa: BLE001 — see _abandon
+            self._abandon(f"{type(exc).__name__}: {exc}")
+
+    def _complete(self, msg: dict) -> None:
         t = self.turn or Turn()
         raw = (msg.get("result") or "").strip()
         error = bool(msg.get("is_error"))
@@ -578,7 +617,10 @@ class ClaudeSession(Session):
         if self.account and not command:
             usage_log.record_tokens(self.account.name, usage)
         if self.context.get("window"):
-            self._context_event()
+            try:
+                self._context_event()
+            except sqlite3.Error:  # only the context ring's saved figure is missed
+                pass
         text = t.text.strip() or raw
         if command == "compact" and not text:
             c = t.compacted or {}
@@ -688,6 +730,13 @@ class CodexSession(Session):
         return args
 
     def _turn(self, exe: str, prompt: str) -> None:
+        try:
+            self._run_turn(exe, prompt)
+        except Exception as exc:  # noqa: BLE001 — see _abandon
+            self.proc = None
+            self._abandon(f"{type(exc).__name__}: {exc}")
+
+    def _run_turn(self, exe: str, prompt: str) -> None:
         t = self.turn
         if self.session_id:
             cmd = [exe, "exec", "resume", "--json", "--skip-git-repo-check", *self._args(), self.session_id, "-"]
@@ -705,14 +754,16 @@ class CodexSession(Session):
             env["CODEX_HOME"] = str(prof)
         error_text, usage = "", {}
         try:
-            self.proc = _popen(cmd, self.workspace(), child_env(env))
-            self.proc.stdin.write(text_in)
-            self.proc.stdin.close()
-            threading.Thread(target=lambda p=self.proc: [None for _ in p.stderr], daemon=True).start()
-            for line in self.proc.stdout:
+            proc = self.proc = _popen(cmd, self.workspace(), child_env(env))
+            proc.stdin.write(text_in)
+            proc.stdin.close()
+            threading.Thread(target=_drain, args=(proc.stderr,), daemon=True).start()
+            for line in proc.stdout:
                 try:
                     ev = json.loads(line)
                 except ValueError:
+                    continue
+                if not isinstance(ev, dict):
                     continue
                 etype = ev.get("type")
                 item = ev.get("item") or {}
@@ -765,20 +816,29 @@ class CodexSession(Session):
                     error_text = (err.get("message") if isinstance(err, dict) else str(err)) or error_text
                 elif etype == "error":
                     error_text = ev.get("message") or error_text
-            code = self.proc.wait()
+            code = proc.wait()
         except OSError as exc:
             code, error_text = 1, str(exc)
+        if self.m.sessions.get(self.chat_id) is not self:  # the chat was deleted while it answered
+            self.proc, self.busy, self.turn = None, False, None
+            return
         failed = code != 0 and not t.text.strip()
         usage_log.record_tokens(self.account.name, {
             "input_tokens": int(usage.get("input_tokens") or 0) - int(usage.get("cached_input_tokens") or 0),
             "cache_read_input_tokens": int(usage.get("cached_input_tokens") or 0),
             "output_tokens": int(usage.get("output_tokens") or 0)})
-        status = read_codex_status(self.account, self.session_id)
+        try:
+            status = read_codex_status(self.account, self.session_id)
+        except Exception:  # noqa: BLE001 — only the limits and the context ring miss one update
+            status = {}
         if status.get("rate"):
             self._rate_event(status["rate"])
         if status.get("window"):
             self.context.update(used=status.get("used") or 0, window=status["window"])
-            self._context_event()
+            try:
+                self._context_event()
+            except sqlite3.Error:
+                pass
         text = t.text.strip() or (self.m.explain_error(error_text) if failed else "")
         for step in t.steps.values():
             if step["status"] == "running":
@@ -804,6 +864,15 @@ class CodexSession(Session):
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
+
+
+def _drain(stream) -> None:
+    """Read a child's output to the end so it never blocks on a full pipe (nothing is kept)."""
+    try:
+        for _ in stream:
+            pass
+    except (OSError, ValueError):
+        pass
 
 
 def read_codex_status(account, thread_id: str | None) -> dict:
@@ -1124,14 +1193,9 @@ class ChatManager:
         root = self.workspace(cid)
         if root is None:
             return []
-        out = []
-        for p in sorted(root.rglob("*")):
-            parts = p.relative_to(root).parts
-            if p.is_file() and ".crew" not in parts and not p.name.startswith("."):
-                rel = p.relative_to(root).as_posix()
-                out.append({"name": rel, "size": p.stat().st_size, "url": f"/files/chat/{cid}/{rel}",
-                            "modified": p.stat().st_mtime, "kind": file_kind(p.name)})
-        return out[:200]
+        out = [{"name": rel, "size": st.st_size, "url": f"/files/chat/{cid}/{rel}", "modified": st.st_mtime,
+                "kind": file_kind(p.name)} for p, rel, st in walk_files(root) if not p.name.startswith(".")]
+        return sorted(out, key=lambda f: f["name"])[:200]
 
     def as_project_request(self, cid: str) -> str:
         chat = self.get(cid) or {}

@@ -11,6 +11,8 @@ the source of truth for what has been done.
 ## 0. Campaign state (updated after every step — read this first after any break or context summary)
 
 - Status: RUNNING — the owner gave the go-ahead on 2026-09-28 ("execute this prompt and do whatever it says").
+- Passes: the owner asked (2026-09-28) for the whole campaign to be run three times: finish pass 1 (all
+  rounds), then run every round again as pass 2, then again as pass 3. Now: PASS 1 of 3.
 - Round: 1 — tooling and static sweep (in progress).
 - Done: brief written; the whole codebase read line by line (crewlib, crewapp, static, tests, install);
   ~40 candidate defects noted in section 13; baseline test run started.
@@ -397,6 +399,19 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   to UTF-8 themselves; Codex tool-server env also carries PYTHONUTF8/PYTHONIOENCODING; a JSON line that is
   not an object is answered "invalid request" instead of killing the server ·
   test_campaign.ToolServersSpeakUtf8 (both fail before the fix).
+- B-02 · device tools behind an office proxy · with a system web proxy set (office network), every browser_*,
+  computer_* and phone_* tool of chats and agents failed ("The Crew app is not running…") · devices_mcp reached
+  the app on 127.0.0.1 through urllib's default opener, which sends loopback requests to the proxy unless the
+  proxy's bypass list names them · a direct opener (no proxy) for the app, as the launcher already does ·
+  test_campaign.DeviceToolsIgnoreTheOfficeProxy.
+- B-03 · chats · a chat could stay "Still answering" until Crew was restarted: a Claude answer whose end-of-turn
+  bookkeeping failed (a file vanishing while Crew listed the files it made; the database busy while saving the
+  context size), or a ChatGPT turn hitting any unexpected error (reading Codex's status file, an odd output
+  line, the chat deleted mid-answer) · the end of a turn ran unguarded in a reader thread; the thread died and
+  nothing reset the busy flag · every turn now ends in a guard that keeps what was said, explains the problem
+  in the conversation and frees the chat; file listings (chat files, Library, new files) skip files that
+  vanish; nothing is written for a chat deleted mid-answer; child output is drained without growing lists ·
+  test_campaign.ChatsNeverStayBusy (3 tests; all fail before the fix).
 
 ---------------------------------------------------------------------------------------------------------------
 

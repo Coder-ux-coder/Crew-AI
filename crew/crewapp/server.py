@@ -174,12 +174,10 @@ class App:
             for chat_dir in root.iterdir():
                 if chat_dir.name not in titles:
                     continue
-                for p in chat_dir.rglob("*"):
-                    rel = p.relative_to(chat_dir)
-                    if not p.is_file() or rel.parts[0] in (".crew", "attachments") or p.name.startswith("."):
+                for p, rel, st in chat.walk_files(chat_dir, (".crew", "attachments")):
+                    if p.name.startswith("."):
                         continue
-                    st = p.stat()
-                    items.append({"name": rel.as_posix(), "url": f"/files/chat/{chat_dir.name}/{rel.as_posix()}",
+                    items.append({"name": rel, "url": f"/files/chat/{chat_dir.name}/{rel}",
                                   "kind": chat.file_kind(p.name), "size": st.st_size, "modified": st.st_mtime,
                                   "where": titles[chat_dir.name], "origin": f"#/chat/{chat_dir.name}"})
         items.sort(key=lambda x: x["modified"], reverse=True)
