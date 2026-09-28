@@ -1190,6 +1190,29 @@ class AppCampaignTests(unittest.TestCase):
                 self.assertEqual(sock.recv(1024), b"")  # Crew closed it
                 self.assertLess(time.time() - started, 8)
 
+    def test_a53_a_project_whose_record_is_damaged_is_still_shown_and_explained(self):
+        """A project's record (team.db) that could not be read hid the project from the list, and its page and
+        its Resume button answered "Something went wrong: file is not a database"."""
+        s = self.s
+        rid = "20260928-120000-damaged-record"
+        run_dir = runs_mod.runs_dir() / rid
+        run_dir.mkdir()
+        junk = b"the disk went wrong here " * 300
+        (run_dir / "team.db").write_bytes(junk)
+        (run_dir / "request.txt").write_text("Build a page about Lahore's gardens", encoding="utf-8")
+        try:
+            listed = {r["id"]: r for r in s.api("GET", "/api/runs")["runs"]}
+            self.assertIn(rid, listed)  # still in the list …
+            self.assertEqual(listed[rid]["title"], "Build a page about Lahore's gardens")
+            self.assertEqual(listed[rid]["phase"], "Record damaged")
+            state = s.api("GET", f"/api/runs/{rid}")  # … and its page says what happened, in plain words
+            self.assertIn("record is damaged", state["problem"])
+            err = s.api("POST", f"/api/runs/{rid}/resume", expect=400)
+            self.assertIn("record is damaged", err["error"])
+            self.assertEqual((run_dir / "team.db").read_bytes(), junk)  # the record itself is left as it was
+        finally:
+            shutil.rmtree(run_dir, ignore_errors=True)
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"

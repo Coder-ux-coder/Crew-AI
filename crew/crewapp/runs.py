@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -14,11 +15,19 @@ from pathlib import Path
 from crewlib import config as cfgmod, tiers
 from crewlib.cli import claim_run_dir
 from crewlib.store import Store
-from crewlib.util import clip, crew_home, now
+from crewlib.util import clip, crew_home, db_damaged, now
 from crewlib.web import PHASES, friendly_activity, state as run_state
 
 CREW_ROOT = Path(__file__).resolve().parent.parent
 ACTIVE = ("refine", "plan", "build", "deliver")
+DAMAGED = ("This project's record is damaged (the file team.db, in the project's folder under Crew's runs), so "
+           "Crew cannot show its progress or carry it on. The record is kept as it is, and the work the team did "
+           "is untouched in the project's folder. To carry on, start a new project and ask the team to continue "
+           "from that folder.")
+
+
+class RecordDamaged(ValueError):
+    """A project's record cannot be read (the app answers with DAMAGED, in plain words)."""
 PREVIEW_CANDIDATES = ("index.html", "dist/index.html", "build/index.html", "public/index.html", "site/index.html",
                       "docs/index.html", "web/index.html")
 
@@ -163,7 +172,12 @@ class RunManager:
             return None
         with self._lock:
             if run_id not in self._stores:
-                self._stores[run_id] = Store(run_dir / "team.db")
+                try:
+                    self._stores[run_id] = Store(run_dir / "team.db")
+                except sqlite3.DatabaseError as exc:
+                    if db_damaged(exc):
+                        raise RecordDamaged(DAMAGED) from None  # left as it is: it is the project's own record
+                    raise
             return self._stores[run_id]
 
     def stop(self, run_id: str) -> bool:
@@ -212,7 +226,10 @@ class RunManager:
         return {}
 
     def state(self, run_id: str, after: int = 0) -> dict | None:
-        st = self.store(run_id)
+        try:
+            st = self.store(run_id)
+        except RecordDamaged as exc:
+            return {"id": run_id, "starting": True, "messages": [], "problem": str(exc)}
         if st is None:
             return None
         data = run_state(st, runs_dir() / run_id, after)
@@ -253,6 +270,14 @@ class RunManager:
                 continue
             try:
                 out.append(self._summary(run_dir))
+            except RecordDamaged:  # still listed: its page says what happened
+                try:
+                    title = (run_dir / "request.txt").read_text(encoding="utf-8", errors="replace").strip()
+                except OSError:
+                    title = ""
+                out.append({"id": run_dir.name, "title": clip(" ".join(title.split()) or run_dir.name, 80),
+                            "phase": "Record damaged", "raw_phase": "damaged", "running": False, "done": False,
+                            "progress": [0, 0], "started": run_dir.stat().st_mtime, "mode": "", "preview": {}})
             except Exception as exc:  # a project that is still being created must not hide the others
                 print(f"run {run_dir.name}: {exc}")
         return sorted(out, key=lambda r: r["started"] or 0, reverse=True)
