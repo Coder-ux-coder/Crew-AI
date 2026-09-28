@@ -1159,7 +1159,7 @@ class ChatManager:
             prompt += "\n\n(The owner attached: " + ", ".join(attachments) + " — in this folder. Open them to answer.)"
         try:
             session.send(prompt, model, effort, mode)
-        except (RuntimeError, OSError, cfgmod.ConfigError) as exc:  # could not start: say so in the conversation
+        except Exception as exc:  # noqa: BLE001 — could not start: say so in the conversation, never leave it unanswered
             session.busy = False
             mid = self.db.add_message(cid, "assistant", str(exc), {"error": True})
             hub.publish(session.topic, "done", {"id": mid, "text": str(exc), "meta": {"error": True}})

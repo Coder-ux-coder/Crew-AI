@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import shutil
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -23,6 +24,7 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 EFFORT_CHOICES = ("auto",) + EFFORTS  # auto: the model decides (assistant), or the CEO decides per task (team)
 CEO_EFFORT_CHOICES = EFFORT_CHOICES + ("ultra",)  # GPT-6's deepest level; a Claude CEO runs it as max
 VENDORS = ("claude", "codex")
+MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+\[\]-]{0,127}")  # claude-opus-5-5, gpt-6-sol, sonnet[1m] …
 
 
 class ConfigError(ValueError):
@@ -45,6 +47,8 @@ class ModelPolicy:
         """Return the model if policy allows it, else raise. Codex models are
         governed by `codex`, Claude models by the allow/ban lists."""
         m = (model or "").strip()
+        if m and not MODEL_NAME.fullmatch(m):  # a stray character would break every start of the chat later
+            raise ConfigError(f"'{m[:60]}' is not a model's name (letters, digits and . - _ : @ / [ ] only)")
         low = m.lower()
         for bad in self.banned:
             if bad and bad.lower() in low:

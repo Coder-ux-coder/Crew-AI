@@ -998,6 +998,24 @@ class AppCampaignTests(unittest.TestCase):
                          (2.5, 1.2, False))
         s.api("PUT", "/api/settings", {"team": {"max_hours": 0}, "app": {"voice_rate": 1.0, "auto_update": True}})
 
+    def test_a41_a_model_name_with_a_stray_character_breaks_nothing(self):
+        """A NUL in the model's name passed the checks: the owner's message was kept unanswered, and the name was
+        saved as the chat's model, so every later message in that chat failed with "embedded null byte"."""
+        s = self.s
+        cid, ev = self.new_chat()
+        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hello", "model": "a\u0000b"}, expect=400)
+        self.assertIn("not a model's name", err["error"])
+        chat = s.api("GET", f"/api/chats/{cid}")
+        self.assertEqual((chat["messages"], chat["model"]), ([], "claude-opus-5-5"))  # nothing kept
+        with mock.patch.object(chat_mod.ClaudeSession, "send", side_effect=ValueError("an odd failure")):
+            out = s.api("POST", f"/api/chats/{cid}/send", {"text": "hello"})  # any failure to start is answered
+        self.assertEqual(out, {"ok": False, "error": "an odd failure"})
+        self.assertTrue(self.done(ev)["meta"]["error"])  # said in the conversation
+        self.assertEqual([m["role"] for m in s.api("GET", f"/api/chats/{cid}")["messages"]], ["user", "assistant"])
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "hello again"})  # and the chat carries on
+        self.assertFalse(self.done(ev)["meta"]["error"])
+        s.api("DELETE", f"/api/chats/{cid}")
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"
