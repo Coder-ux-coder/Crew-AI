@@ -306,6 +306,24 @@ class SeatTests(unittest.TestCase):
             seat._read_stdout()
             self.assertEqual([ev.kind for ev in drain(events)], ["result", "exit"])
 
+    def test_c16_a_stray_line_does_not_end_a_one_off_run(self):
+        """A reviewer, the CEO or the prompt writer: one output line that is JSON but not a message (null, a list)
+        raised AttributeError and ended the run; C6 fixed this for the standing seats only."""
+        with TempHome() as home:
+            result = json.dumps({"type": "result", "subtype": "success", "result": "APPROVE", "usage": {}})
+            out, err = io.StringIO(f"null\n[1]\n{result}\n"), io.StringIO("a warning\n")
+            proc = types.SimpleNamespace(stdin=io.StringIO(), stdout=out, stderr=err, pid=0,
+                                         wait=lambda timeout=None: 0, poll=lambda: 0)
+            setup = agents.ClaudeSetup(model="claude-opus-5-5", effort="auto", work_model="claude-opus-5-5",
+                                       permission_mode="bypassPermissions", run_dir=home, extra_env={})
+            with mock.patch.object(agents, "_popen", return_value=proc):
+                res = agents.run_once_claude("Review task #1.", seat="reviewer-1", role="reviewer",
+                                             account=Account("claude-1", "claude"), workdir=home, setup=setup,
+                                             redact=Redactor({}), with_team_tools=False, timeout=60)
+            self.assertEqual((res.text, res.is_error), ("APPROVE", False))
+            self.assertTrue(out.closed)  # C17: its pipes are let go
+            until(lambda: err.closed, timeout=10, step=0.05)
+
 
 class CheckTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "a POSIX shell command")
@@ -1059,6 +1077,30 @@ class AppCampaignTests(unittest.TestCase):
         self.assertEqual([m["role"] for m in s.api("GET", f"/api/chats/{cid}")["messages"]], ["user", "assistant"])
         s.api("POST", f"/api/chats/{cid}/send", {"text": "hello again"})  # and the chat carries on
         self.assertFalse(self.done(ev)["meta"]["error"])
+        s.api("DELETE", f"/api/chats/{cid}")
+
+    def test_c17_finished_answers_let_go_of_their_pipes(self):
+        """Each answer's program left its output pipes open until Python happened to collect them: over weeks of
+        use, open handles piled up (the tests showed ResourceWarnings)."""
+        s = self.s
+        self.with_chatgpt()
+        started = []
+        real = chat_mod._popen
+
+        def recording(*a, **k):
+            started.append(real(*a, **k))
+            return started[-1]
+
+        with mock.patch.object(chat_mod, "_popen", recording):
+            cid, ev = self.new_chat(engine="codex")  # ChatGPT: one program per answer
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "hi"})
+            self.done(ev)
+            cid2, ev2 = self.new_chat()  # Claude: one program for the conversation, until the chat goes
+            s.api("POST", f"/api/chats/{cid2}/send", {"text": "hi"})
+            self.done(ev2)
+        s.api("DELETE", f"/api/chats/{cid2}")
+        self.assertEqual(len(started), 2)
+        until(lambda: all(p.stdout.closed and p.stderr.closed for p in started), timeout=20, step=0.1)
         s.api("DELETE", f"/api/chats/{cid}")
 
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):

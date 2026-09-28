@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 from crewlib import claude_cli, config as cfgmod, connections, usage as usage_log
 from crewlib.tiers import vendor_of
 from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, _kill_tree, _popen, _toml_str, child_env, codex_effort,
-                            copy_claude_session, default_claude_home, default_codex_home, which)
+                            copy_claude_session, default_claude_home, default_codex_home, drain, which)
 from crewlib.util import atomic_write, clip, crew_home, load_env_file, now
 
 from . import settings as settings_mod
@@ -430,7 +430,7 @@ class ClaudeSession(Session):
         self.proc = _popen(cmd, self.workspace(), child_env({**self._secret_env(), **env}))
         self.running_mode = self.mode
         threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
-        threading.Thread(target=lambda p=self.proc: [None for _ in p.stderr], daemon=True).start()
+        threading.Thread(target=drain, args=(self.proc.stderr,), daemon=True).start()
 
     def _bring_conversation(self, cfg) -> None:
         """Before resuming, make sure the chosen subscription holds this conversation: bring it from whichever
@@ -489,15 +489,18 @@ class ClaudeSession(Session):
     # ------------------------------------------------------------ reading the stream
 
     def _read(self, proc) -> None:
-        for line in proc.stdout:
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                continue
-            try:
-                self._handle(msg)
-            except Exception as exc:  # one odd event must not end the conversation
-                self.publish("notice", {"text": f"(display problem: {exc})", "kind": "debug"})
+        try:
+            for line in proc.stdout:
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                try:
+                    self._handle(msg)
+                except Exception as exc:  # one odd event must not end the conversation
+                    self.publish("notice", {"text": f"(display problem: {exc})", "kind": "debug"})
+        finally:
+            drain(proc.stdout)  # the process has ended: its pipe is let go
         if self.busy and proc is self.proc:  # the process died mid-turn
             self._finish({"is_error": True, "result": "The assistant stopped unexpectedly. Please send that again."})
 
@@ -782,7 +785,7 @@ class CodexSession(Session):
             proc = self.proc = _popen(cmd, self.workspace(), child_env(env))
             proc.stdin.write(text_in)
             proc.stdin.close()
-            threading.Thread(target=lambda p=proc: [None for _ in p.stderr], daemon=True).start()
+            threading.Thread(target=drain, args=(proc.stderr,), daemon=True).start()
             for line in proc.stdout:
                 try:
                     ev = json.loads(line)
@@ -841,6 +844,7 @@ class CodexSession(Session):
                     error_text = (err.get("message") if isinstance(err, dict) else str(err)) or error_text
                 elif etype == "error":
                     error_text = ev.get("message") or error_text
+            drain(proc.stdout)
             code = proc.wait()
         except OSError as exc:
             code, error_text = 1, str(exc)

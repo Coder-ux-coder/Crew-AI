@@ -179,6 +179,24 @@ def _popen(cmd: list[str], cwd: Path, env: dict, stdin=subprocess.PIPE) -> subpr
     return subprocess.Popen(cmd, **kwargs)
 
 
+def drain(stream, keep: list | None = None) -> None:
+    """Read a child's pipe to its end (a full pipe would stop the child), keeping the lines if asked, then close it:
+    left for the garbage collector, open pipes pile up while Crew runs for weeks."""
+    if stream is None:
+        return
+    try:
+        for line in stream:
+            if keep is not None:
+                keep.append(line)
+    except (OSError, ValueError):
+        pass
+    finally:
+        try:
+            getattr(stream, "close", lambda: None)()
+        except (OSError, ValueError):
+            pass
+
+
 # ======================================================================= Claude
 
 
@@ -359,12 +377,15 @@ class ClaudeSeat:
 
     def _read_stderr(self) -> None:
         assert self.proc and self.proc.stderr
-        buf = []
-        for line in self.proc.stderr:
-            buf.append(line)
-            if len(buf) > 200:
-                buf = buf[-100:]
-        self._stderr_tail = "".join(buf[-30:])
+        stream, buf = self.proc.stderr, []
+        try:
+            for line in stream:
+                buf.append(line)
+                if len(buf) > 200:
+                    buf = buf[-100:]
+        finally:
+            self._stderr_tail = "".join(buf[-30:])
+            drain(stream)
 
     def _read_stdout(self) -> None:
         proc = self.proc
@@ -381,6 +402,7 @@ class ClaudeSeat:
                 self._handle(msg)
             except Exception as exc:  # one odd message must not stop the reader: the seat would go silent
                 self._log(f"(Crew could not read that message: {exc!r})")
+        drain(proc.stdout)
         code = proc.wait()
         self.busy = False
         time.sleep(0.05)
@@ -667,7 +689,7 @@ def _drive_codex(cmd: list[str], prompt: str, cwd: Path, env: dict, log_path: Pa
         timer = threading.Timer(timeout, _expire)
         timer.start()
     err_lines: list[str] = []
-    threading.Thread(target=lambda: err_lines.extend(proc.stderr or []), daemon=True).start()
+    threading.Thread(target=drain, args=(proc.stderr, err_lines), daemon=True).start()
     messages: list[str] = []
     last_error = ""
     completed = False
@@ -681,8 +703,10 @@ def _drive_codex(cmd: list[str], prompt: str, cwd: Path, env: dict, log_path: Pa
                 ev = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(ev, dict):
+                continue  # a stray line that is not an event (an odd tool's output) must not end the run
             etype = ev.get("type")
-            item = ev.get("item") or {}
+            item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
             if on_event:
                 on_event(proc, ev)
             if etype == "thread.started":
@@ -703,6 +727,7 @@ def _drive_codex(cmd: list[str], prompt: str, cwd: Path, env: dict, log_path: Pa
                 text = (err.get("message") if isinstance(err, dict) else None) or last_error or "Codex reported an error"
                 res.is_error = True
                 messages.append(text)
+    drain(proc.stdout)
     code = proc.wait()
     if timer:
         timer.cancel()
@@ -806,7 +831,7 @@ def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, work
     timer = threading.Timer(timeout, _expire)
     timer.start()
     err_lines: list[str] = []
-    threading.Thread(target=lambda: err_lines.extend(proc.stderr or []), daemon=True).start()
+    threading.Thread(target=drain, args=(proc.stderr, err_lines), daemon=True).start()
     assert proc.stdout
     with log_path.open("a", encoding="utf-8") as log:
         for line in proc.stdout:
@@ -817,6 +842,8 @@ def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, work
                 msg = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(msg, dict):
+                continue  # a stray line that is not a message must not end the run
             if msg.get("type") == "system" and msg.get("subtype") == "init":
                 res.session_id = msg.get("session_id")
             elif msg.get("type") == "rate_limit_event":
@@ -835,6 +862,7 @@ def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, work
                     res.limit_hit = True
                 if res.is_error and AUTH_RE.search(res.text):
                     res.auth_error = True
+    drain(proc.stdout)
     proc.wait()
     timer.cancel()
     res.duration_s = now() - start
