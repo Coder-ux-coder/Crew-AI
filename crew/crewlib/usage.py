@@ -76,6 +76,23 @@ def record_tokens(account: str, usage: dict | None) -> None:
         pass
 
 
+def limited_until(lim: dict | None, at: float | None = None) -> float:
+    """When a subscription at its usage limit has room again (0: it is not at its limit), from its recorded
+    limits (as snapshot() gives them: a window already past its reset counts as empty). Both windows count: the
+    5-hour one and the weekly one."""
+    if not lim:
+        return 0.0
+    at = time.time() if at is None else at
+    five, week = float(lim.get("five_reset") or 0), float(lim.get("week_reset") or 0)
+    ends = [end for end, used in ((five, lim.get("five_util")), (week, lim.get("week_util")))
+            if end > at and float(used or 0) >= 1.0]
+    if lim.get("status") == "rejected":  # refused: until the window it hit resets
+        hit = week if str(lim.get("kind") or "").startswith("seven_day") else five
+        if hit > at:
+            ends.append(hit)
+    return max(ends, default=0.0)
+
+
 def snapshot(days: int = 7) -> dict:
     """Everything the Usage screen shows: limits per account and tokens for the last `days` days."""
     db = _db()
@@ -91,6 +108,9 @@ def snapshot(days: int = 7) -> dict:
             lim["five_util"], lim["five_reset"] = 0.0, None
         if lim.get("week_reset") and lim["week_reset"] < now:
             lim["week_util"], lim["week_reset"] = 0.0, None
+        lim["limited_until"] = limited_until(lim, now) or None
+        if lim.get("status") == "rejected" and not lim["limited_until"]:
+            lim["status"] = "allowed"  # the limit it reached has lifted since it was reported
     today = time.strftime("%Y-%m-%d")
     per_account: dict[str, dict] = {}
     for r in rows:

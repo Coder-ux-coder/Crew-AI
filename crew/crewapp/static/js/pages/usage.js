@@ -77,7 +77,7 @@ export function usagePage(view, params = []) {
       h('div', { class: 'u-head' }, h('span', { class: 'u-logo ' + product }, icon(product === 'codex' ? 'gpt' : 'spark')),
         h('div', { class: 'grow' }, h('b', null, a.name), h('div', { class: 'muted small' }, product === 'codex' ? 'ChatGPT (through Codex)' : 'Claude')),
         signed ? h('span', { class: 'pill ' + (signed.signed_in ? 'ok' : signed.signed_in === false ? 'bad' : '') }, signed.signed_in ? 'Signed in' : signed.signed_in === false ? 'Not signed in' : 'Unknown') : null,
-        lim.status === 'rejected' ? h('span', { class: 'pill bad' }, 'At its limit') : null),
+        lim.limited_until ? h('span', { class: 'pill bad', title: `Until ${whenAt(lim.limited_until)}` }, 'At its limit') : null),
       limitBar('5-hour limit', lim.five_util, lim.five_reset),
       limitBar('Weekly limit', lim.week_util, lim.week_reset),
       h('div', { class: 'row', style: { alignItems: 'flex-end', gap: '18px' } },

@@ -197,18 +197,12 @@ class UpgradeTests(unittest.TestCase):
             scenario(assistant_limit=["default"])  # claude-1 uses Claude Code's default profile folder
             cid, ev = self.new_chat()
             s.api("POST", f"/api/chats/{cid}/send", {"text": "hello"})
-            _, first = collect_turn(ev)
-            self.assertIn("claude-1 has reached its usage limit", first["text"])
-            second, notices = None, []
-            while second is None:
-                name, data = ev.get(timeout=60)
-                if name == "notice":
-                    notices.append(data["text"])
-                if name == "done":
-                    second = data
-            self.assertIn("Continuing on claude-2.", notices)
-            self.assertEqual(second["meta"]["account"], "claude-2")
-            self.assertIn("Summary", second["text"])
+            seen, answer = collect_turn(ev)  # one answer: it carries on on claude-2
+            notices = [data["text"] for name, data in seen if name == "notice"]
+            self.assertIn("claude-1 has reached its usage limit. Continuing on claude-2 with the whole conversation.",
+                          notices)
+            self.assertEqual(answer["meta"]["account"], "claude-2")
+            self.assertIn("Summary", answer["text"])
             limits = s.api("GET", "/api/usage")["accounts"]
             self.assertEqual(next(a for a in limits if a["name"] == "claude-1")["limits"]["status"], "rejected")
         finally:

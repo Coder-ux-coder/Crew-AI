@@ -8,6 +8,8 @@ its plan in plan mode, how full its context is, and your subscription limits.
 
 from __future__ import annotations
 
+import collections
+import datetime
 import json
 import os
 import re
@@ -19,6 +21,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from crewlib import claude_cli, config as cfgmod, connections, usage as usage_log
+from crewlib.usage import limited_until
 from crewlib.tiers import vendor_of
 from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, _kill_tree, _popen, _toml_str, child_env, codex_effort,
                             copy_claude_session, default_claude_home, default_codex_home, drain, which)
@@ -33,6 +36,56 @@ EFFORTS = {"claude": ("auto", "low", "medium", "high", "xhigh", "max"),
 LEGACY_EFFORTS = {"minimal": "low"}  # chats started before GPT-6 (it has no "minimal")
 MODES = ("auto", "plan")
 WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+RECAP_CHARS = 240_000  # the most of Crew's record a new conversation is given (about 60,000 tokens)
+_RESET_EPOCH = re.compile(r"\|(\d{10})\b")  # Claude Code: "Claude AI usage limit reached|1790000000"
+_RESET_IN = re.compile(r"(?:try again|resets?|available again)\s+in\s+(\d+\s*[a-z]+(?:(?:\s*,\s*|\s+and\s+|\s+)"
+                       r"\d+\s*[a-z]+)*)", re.I)  # Codex: "… or try again in 2 hours 5 minutes."
+_RESET_AT = re.compile(r"(?:try again at|resets?(?: at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?m\b)?", re.I)
+
+
+def limit_resets_at(text: str, at: float | None = None) -> float | None:
+    """When a usage limit lifts, from the words of its message ("…|1790000000", "try again in 2 hours 5 minutes",
+    "resets 3pm"); None when the message does not say."""
+    at = time.time() if at is None else at
+    text = text or ""
+    m = _RESET_EPOCH.search(text)
+    if m:
+        return int(m.group(1))
+    m = _RESET_IN.search(text)
+    if m:
+        def unit(word: str) -> int:
+            w = word.lower()
+            return 60 if w == "m" else next((n for k, n in (("w", 604800), ("d", 86400), ("h", 3600), ("mi", 60),
+                                                            ("s", 1)) if w.startswith(k)), 0)
+        total = sum(int(n) * unit(u) for n, u in re.findall(r"(\d+)\s*([a-z]+)", m.group(1), re.I))
+        return at + total if total else None
+    m = _RESET_AT.search(text)
+    if m:
+        if not (m.group(2) or m.group(3)):
+            return None  # "resets 3 days …": not a time of day
+        hour, minute, half = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+        hour += 12 if half == "p" and hour < 12 else -12 if half == "a" and hour == 12 else 0
+        if hour > 23 or minute > 59:
+            return None
+        day = time.localtime(at)
+        when = time.mktime((day.tm_year, day.tm_mon, day.tm_mday, hour, minute, 0, 0, 0, -1))
+        return when if when > at else when + 86400
+    return None
+
+
+def plain_when(ts: float) -> str:
+    """A moment in the owner's own time, as they would say it: "at 15:40", "tomorrow at 09:00",
+    "on Friday 3 October at 09:00"."""
+    t = time.localtime(ts)
+    days = (datetime.date(t.tm_year, t.tm_mon, t.tm_mday) - datetime.date.today()).days
+    clock = time.strftime("%H:%M", t)
+    if days <= 0:
+        return f"at {clock}"
+    if days == 1:
+        return f"tomorrow at {clock}"
+    return f"on {time.strftime('%A', t)} {t.tm_mday} {time.strftime('%B', t)} at {clock}"
 
 
 def other_product(engine: str, model: str | None) -> str:
@@ -250,6 +303,7 @@ class Turn:
         self.thinking_tokens = 0
         self.compacted = None
         self.error_notice = ""
+        self.limited = False  # a subscription limit refused this answer (the CLI said so)
 
     def meta(self) -> dict:
         return {"steps": list(self.steps.values())[-80:], "todos": self.todos,
@@ -277,6 +331,9 @@ class Session:
         self.interrupted = False
         self.turn: Turn | None = None
         self.last_prompt = ""
+        self.tried: list[str] = []  # the subscriptions that reached their limit during the current message
+        self.moving = False  # the answer is moving to another program (another subscription)
+        self.recap_why = ""  # set when the next message must bring the conversation from Crew's record: why
         self.context = {"used": chat.get("context_tokens") or 0, "window": chat.get("context_window") or 0}
         self._lock = threading.Lock()
 
@@ -356,10 +413,97 @@ class Session:
     def _rate_event(self, info: dict) -> None:
         if not self.account:
             return
+        if info.get("status") == "rejected" and self.turn is not None:
+            self.turn.limited = True
         usage_log.record_rate(self.account.name, info)
         windows = info.get("unifiedWindows") or {}
         self.publish("rate", {"account": self.account.name, "status": info.get("status"),
                               "five": windows.get("five_hour"), "week": windows.get("seven_day")})
+
+    # ------------------------------------------------------------ moving on at a subscription's limit
+
+    def _note_limit(self, raw: str) -> None:
+        """This subscription reached its limit during this message: never try it again for this message, and
+        remember until when (if its message says so and the CLI did not report it), so later messages start
+        elsewhere."""
+        name = self.account.name if self.account else ""
+        if not name:
+            return
+        if name not in self.tried:
+            self.tried.append(name)
+        if limited_until(usage_log.snapshot(1)["limits"].get(name)):
+            return
+        ends = limit_resets_at(raw)
+        if ends:
+            kind = "seven_day" if ends - time.time() > 6 * 3600 else "five_hour"
+            usage_log.record_rate(name, {"status": "rejected", "rateLimitType": kind, "utilization": 1.0,
+                                         "resetsAt": int(ends)})
+
+    def _moved(self, old: str, new: str) -> None:
+        """Say in the answer, and in its record, that it carries on on another subscription."""
+        self.publish("notice", {"text": f"{old} has reached its usage limit. Continuing on {new} with the whole "
+                                        "conversation.", "kind": "failover"})
+        if self.turn is not None:
+            step = {"id": f"moved-{len(self.turn.steps)}", "kind": "account", "label": f"Continued on {new}",
+                    "detail": f"{old} reached its usage limit", "status": "done", "tool": "crew"}
+            self.turn.steps[step["id"]] = step
+            self.publish("step", step)
+
+    def _recap(self, why: str) -> str:
+        """The whole conversation before the owner's newest message, from Crew's own record, for a new conversation
+        that must carry on from it (a ChatGPT conversation cannot move to another subscription; Claude Code
+        removes old conversations). Everything is given in full; only a very long conversation leaves out its
+        middle (its first message, usually what it is about, is always kept)."""
+        msgs = (self.m.get(self.chat_id) or {}).get("messages") or []
+        newest = max((i for i, m in enumerate(msgs) if m.get("role") == "user"), default=len(msgs))
+        entries = []
+        for m in msgs[:newest]:
+            meta, text = m.get("meta") or {}, (m.get("text") or "").strip()
+            if m.get("role") == "user":
+                extra = [f"attached: {', '.join(meta['attachments'])}"] if meta.get("attachments") else []
+                entries.append(f"Owner: {text}" + "".join(f"\n  ({e})" for e in extra))
+            elif text and not meta.get("error") and not meta.get("notice") and not meta.get("command"):
+                did = self._work_done(meta.get("steps") or [], meta.get("files") or [])
+                entries.append(f"You: {text}" + (f"\n  ({did})" if did else ""))
+        entries = [clip(e, RECAP_CHARS // 2) for e in entries]
+        if sum(len(e) for e in entries) > RECAP_CHARS:
+            kept, room = [], RECAP_CHARS - len(entries[0])
+            for e in reversed(entries[1:]):
+                if len(e) > room:
+                    break
+                kept.insert(0, e)
+                room -= len(e)
+            left_out = len(entries) - 1 - len(kept)
+            entries = [entries[0], f"(… {left_out} messages in the middle are left out here …)", *kept]
+        head = (f"[Crew: {why} Here is the whole conversation so far, from Crew's record. Carry on with it as if "
+                "nothing had changed; the files are in the current folder.]")
+        return head + ("\n\n" + "\n\n".join(entries) if entries else "\n\n(Nothing was said before this.)") + \
+            "\n\n--- The owner's newest message:\n\n"
+
+    @staticmethod
+    def _work_done(steps: list, files: list) -> str:
+        done = [s.get("label", "") + (f" — {s['detail']}" if s.get("detail") else "") for s in steps
+                if s.get("kind") != "account" and s.get("label")]
+        names = [f.get("name", "") for f in files if f.get("name")]
+        return "; ".join(filter(None, ["what you did: " + "; ".join(done[-30:]) if done else "",
+                                        "files: " + ", ".join(names) if names else ""]))
+
+    def _carry_on_prompt(self, why: str, fresh: bool) -> str:
+        """What the next subscription is given when an answer moves to it (part-way, or before it began): the
+        owner's message again, and, for a new conversation, everything before it and what this answer did."""
+        t, prompt = self.turn or Turn(), self.last_prompt
+        if prompt.startswith("/") and not fresh:
+            return prompt  # a command (/compact …) is given again as it was
+        if not fresh:
+            return (f"[Crew: {why} This is the same conversation, carried on.]\n\n{prompt}\n\n[Crew: if you had "
+                    "already started on this message, carry on from where you stopped; do not start again.]")
+        said = clip(t.text.strip(), 6000)
+        done = [s.get("label", "") + (f" — {s['detail']}" if s.get("detail") else "") for s in t.steps.values()
+                if s.get("kind") != "account" and s.get("label")]
+        so_far = "\n".join(filter(None, [f"What you had said: «{said}»" if said else "",
+                                         f"What you had done: {'; '.join(done[-30:])}." if done else ""]))
+        return self._recap(why) + prompt + (f"\n\n[Crew: you had already started on this message.\n{so_far}\nCarry "
+                                            "on from where you stopped; do not start again.]" if so_far else "")
 
     def _give_up(self, exc: Exception) -> None:
         """Close the turn with what was said so far and a plain note, when finishing it properly failed."""
@@ -389,7 +533,9 @@ class ClaudeSession(Session):
         cfg.models.check(self.model)
         before = self.account.name if self.account else self.holder
         self.account = account or self.m.pick_account(cfg, "claude", prefer=self.chosen)
-        self._bring_conversation(cfg)
+        if not self._bring_conversation(cfg):
+            self._forget_conversation("Claude Code no longer has its own copy of this conversation (it removes old "
+                                      "ones after a while).")
         if self.chosen and self.account and before and self.account.name != before and account is None:
             self.publish("notice", {"text": f"Now using {self.account.name}.", "kind": "account"})
         files = self.workspace() / ".crew"
@@ -429,26 +575,86 @@ class ClaudeSession(Session):
             env["CLAUDE_CONFIG_DIR"] = str(prof)
         self.proc = _popen(cmd, self.workspace(), child_env({**self._secret_env(), **env}))
         self.running_mode = self.mode
+        self.err_tail = collections.deque(maxlen=40)  # the end of what the program said about itself
+        self.err_reader = threading.Thread(target=drain, args=(self.proc.stderr, self.err_tail), daemon=True)
+        self.err_reader.start()
         threading.Thread(target=self._read, args=(self.proc,), daemon=True).start()
-        threading.Thread(target=drain, args=(self.proc.stderr,), daemon=True).start()
 
-    def _bring_conversation(self, cfg) -> None:
-        """Before resuming, make sure the chosen subscription holds this conversation: bring it from whichever
-        Claude subscription has it (the owner switched, or Crew restarted and picked another one)."""
+    def _bring_conversation(self, cfg) -> bool:
+        """Before resuming, make sure the chosen subscription holds the newest copy of this conversation: bring it
+        from whichever Claude subscription has it (it moved at a limit, the owner switched, or Crew restarted and
+        picked another one). An older copy is never resumed: what was said since would be forgotten. False when
+        no subscription holds it any more."""
         if not self.session_id or self.account is None:
-            return
-        home = self.account.profile_dir() or default_claude_home()
-        if list((home / "projects").glob(f"*/{self.session_id}.jsonl")):
-            return
-        for other in cfg.accounts_for("claude"):
-            if other.name != self.account.name and copy_claude_session(self.session_id, other, self.account):
-                return
+            return True
+        here, newest = self.account.profile_dir() or default_claude_home(), None
+        for acc in cfg.accounts_for("claude"):
+            home = acc.profile_dir() or default_claude_home()
+            for f in home.glob(f"projects/*/{self.session_id}.jsonl"):
+                try:
+                    key = (f.stat().st_mtime, f.stat().st_size, home == here)
+                except OSError:
+                    continue
+                if newest is None or key > newest[0]:
+                    newest = (key, acc)
+        if newest is None:
+            return False
+        return newest[0][2] or copy_claude_session(self.session_id, newest[1], self.account)
+
+    def _forget_conversation(self, why: str) -> None:
+        """Start a new Claude Code conversation that carries on from Crew's record of this one."""
+        self.session_id = None
+        self.m.db.x("UPDATE chats SET session_id=NULL WHERE id=?", (self.chat_id,))
+        self.recap_why = why
+        self.publish("notice", {"text": "Claude Code no longer had its own copy of this conversation, so Crew gave it "
+                                        "the whole conversation from its record.", "kind": "account"})
+
+    def _write(self, text: str) -> None:
+        """Give the running program a message (the owner's, or Crew's when an answer moves on)."""
+        if self.recap_why and not text.startswith("/"):
+            text, self.recap_why = self._recap(self.recap_why) + text, ""
+        msg = {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+               "parent_tool_use_id": None, "session_id": self.session_id or ""}
+        self.proc.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        self.proc.stdin.flush()
+
+    def _carry_on(self, account, why: str) -> None:
+        """Carry the current answer on in a new Claude Code process on `account` (the conversation goes along;
+        when no subscription holds it any more, a new one starts from Crew's record). The answer stays open all
+        the while: nothing can be sent into the middle of the move."""
+        def work():
+            try:
+                with self._lock:
+                    if not self.m.db.q("SELECT id FROM chats WHERE id=?", (self.chat_id,)):
+                        self.busy, self.turn, self.moving = False, None, False  # deleted meanwhile: nothing to keep
+                        return
+                    stopped = self.interrupted
+                    if not stopped:
+                        self.stop_process()
+                        self._start(account)
+                        self.moving = False
+                        fresh = self.recap_why != "" or not self.session_id
+                        self.recap_why = ""
+                        self._write(self._carry_on_prompt(why, fresh))
+                if stopped:  # the owner pressed Stop while it moved: the answer ends here, as it is
+                    self.moving = False
+                    self._finish({"result": ""})
+                    return
+                self.publish("start", {"engine": "claude", "model": self.model, "effort": self.effort,
+                                       "mode": self.mode, "account": self.account.name if self.account else ""})
+            except Exception as exc:  # noqa: BLE001 — could not move on: the answer ends with what it has
+                self.moving = False
+                self._give_up(exc)
+        self.moving = True
+        threading.Thread(target=work, daemon=True).start()
 
     def send(self, prompt: str, model: str, effort: str, mode: str, account=None) -> None:
         with self._lock:
             if self.busy:
                 raise RuntimeError("Still answering the last message.")
-            switched = bool(self.chosen and self.account and self.chosen != self.account.name)
+            self.tried = []
+            switched = bool(self.chosen and self.account and self.chosen != self.account.name
+                            and self.m.has_room(self.chosen))  # back to the chosen one once it has room again
             if self.alive() and (model != self.model or effort != self.effort or switched or
                                  (account is not None and self.account and account.name != self.account.name)):
                 self.stop_process()  # a new model, effort or subscription: resume the conversation in a fresh process
@@ -459,10 +665,7 @@ class ClaudeSession(Session):
                 self._control({"subtype": "set_permission_mode", "mode": "plan" if mode == "plan" else self.act_mode})
                 self.running_mode = mode
             self.busy, self.turn, self.last_prompt = True, Turn(), prompt
-            msg = {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": prompt}]},
-                   "parent_tool_use_id": None, "session_id": self.session_id or ""}
-            self.proc.stdin.write(json.dumps(msg, ensure_ascii=False) + "\n")
-            self.proc.stdin.flush()
+            self._write(prompt)
         self.publish("start", {"engine": "claude", "model": model, "effort": effort, "mode": mode,
                                "account": self.account.name if self.account else ""})
 
@@ -501,7 +704,16 @@ class ClaudeSession(Session):
                     self.publish("notice", {"text": f"(display problem: {exc})", "kind": "debug"})
         finally:
             drain(proc.stdout)  # the process has ended: its pipe is let go
-        if self.busy and proc is self.proc:  # the process died mid-turn
+        if self.busy and proc is self.proc and not self.moving:  # the process died mid-turn
+            try:
+                proc.wait(timeout=5)
+            except Exception:  # noqa: BLE001 — still going: whatever it said so far is enough
+                pass
+            self.err_reader.join(timeout=2)
+            if self.session_id and any("No conversation found" in line for line in list(self.err_tail)):
+                self._forget_conversation("Claude Code could not find its own copy of this conversation.")
+                self._carry_on(self.account, "Claude Code could not find its own copy of this conversation.")
+                return
             self._finish({"is_error": True, "result": "The assistant stopped unexpectedly. Please send that again."})
 
     def _handle(self, msg: dict) -> None:
@@ -666,9 +878,16 @@ class ClaudeSession(Session):
                 text = ("Claude Code on this computer is older than this model needs (version "
                         f"{needed} or newer). Crew is updating it now and will answer again by itself.")
                 retry = "update"
-            elif LIMIT_RE.search(raw) and self.m.other_account(self.account, "claude"):
-                text = f"{self.account.name} has reached its usage limit. Continuing on another subscription…"
-                retry = "failover"
+            elif LIMIT_RE.search(raw) or t.limited:
+                self._note_limit(raw)
+                new = self.m.next_account(self, "claude") if self.account else None
+                if new is not None:  # the answer carries on there, with the whole conversation
+                    old = self.account.name
+                    self._moved(old, new.name)
+                    self._carry_on(new, f"{old} reached its usage limit, so this conversation moved to {new.name}.")
+                    return
+                note = self.m.limit_text("claude")
+                text, error = ((t.text.strip() + f"\n\n*{note}*", False) if t.text.strip() else (note, True))
             elif not t.text.strip():
                 text = self.m.explain_error(raw)
         for step in t.steps.values():
@@ -687,8 +906,6 @@ class ClaudeSession(Session):
         self.publish("done", {"id": mid, "text": text, "meta": meta})
         if retry == "update":
             self.m.fix_outdated(self)
-        elif retry == "failover":
-            self.m.failover(self)
 
 
 class CodexSession(Session):
@@ -705,33 +922,30 @@ class CodexSession(Session):
                 raise RuntimeError("Codex (for ChatGPT) is not installed. Run the Crew installer and answer Yes to "
                                    "ChatGPT.")
             cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
+            self.tried = []
             holder = self.account or next((a for a in cfg.accounts_for("codex") if a.name == self.holder), None)
-            if account is None and self.session_id and holder is not None and (not self.chosen or self.chosen == holder.name):
+            if account is None and self.session_id and holder is not None and \
+                    (not self.chosen or self.chosen == holder.name) and self.m.has_room(holder.name):
                 account = holder  # a ChatGPT conversation continues on the subscription that holds it
             new = account or self.m.pick_account(cfg, "codex", prefer=self.chosen)
             if new is None:
                 raise RuntimeError("Add your ChatGPT subscription first: Settings → Subscriptions → Add → ChatGPT.")
+            text = prompt
             if self.session_id and holder is not None and new.name != holder.name:
-                # ChatGPT conversations cannot move between subscriptions: continue from a summary of this one.
+                # A ChatGPT conversation cannot move between subscriptions: a new one carries on from Crew's record.
                 self.session_id = None
                 self.m.db.x("UPDATE chats SET session_id=NULL WHERE id=?", (self.chat_id,))
-                prompt = self._recap() + prompt
-                self.publish("notice", {"text": f"Now using {new.name}. A ChatGPT conversation cannot move to "
-                                                "another subscription, so it continues from a summary of this one.",
+                text = self._recap(f"This conversation moved from {holder.name} to {new.name}. A ChatGPT "
+                                   "conversation cannot move between subscriptions by itself.") + prompt
+                self.publish("notice", {"text": f"Now using {new.name}. A ChatGPT conversation cannot move between "
+                                                "subscriptions by itself, so Crew passes the whole conversation along.",
                                         "kind": "account"})
             self.account = new
             self.model, self.effort, self.mode = model, effort, mode
             self.busy, self.turn, self.last_prompt = True, Turn(), prompt
         self.publish("start", {"engine": "codex", "model": model or "", "effort": effort, "mode": mode,
                                "account": self.account.name})
-        threading.Thread(target=self._turn, args=(exe, prompt), daemon=True).start()
-
-    def _recap(self) -> str:
-        chat = self.m.get(self.chat_id) or {}
-        lines = [f"{'Owner' if m['role'] == 'user' else 'You'}: {clip(m['text'], 700)}"
-                 for m in (chat.get("messages") or [])[-13:-1] if m.get("text")]  # the newest is sent as the prompt
-        return ("The conversation so far (it moved to another ChatGPT subscription, so here is a recap; continue "
-                "from it):\n" + "\n".join(lines) + "\n\n---\n\n") if lines else ""
+        threading.Thread(target=self._turn, args=(exe, text), daemon=True).start()
 
     def _args(self) -> list[str]:
         import sys
@@ -765,6 +979,69 @@ class CodexSession(Session):
             self._give_up(exc)
 
     def _run_turn(self, exe: str, prompt: str) -> None:
+        t, limited = self.turn, False
+        while True:
+            code, error_text, usage = self._run_codex(exe, prompt)
+            if not self.m.db.q("SELECT id FROM chats WHERE id=?", (self.chat_id,)):
+                self.proc, self.busy, self.turn = None, False, None  # deleted while it answered: nothing to keep
+                return
+            self._took(usage)
+            limited = code != 0 and not self.interrupted and bool(LIMIT_RE.search(error_text or "") or t.limited)
+            if not limited:
+                break
+            self._note_limit(error_text)
+            new = self.m.next_account(self, "codex")
+            if new is None:
+                break
+            old = self.account.name
+            self._moved(old, new.name)
+            self.account, self.session_id, t.limited = new, None, False  # a new ChatGPT conversation, on `new`
+            self.m.db.x("UPDATE chats SET session_id=NULL WHERE id=?", (self.chat_id,))
+            prompt = self._carry_on_prompt(f"{old} reached its usage limit, so this conversation moved to {new.name}. "
+                                           "A ChatGPT conversation cannot move between subscriptions by itself.", True)
+            if self.interrupted:
+                break  # the owner pressed Stop while it moved: the answer ends here, as it is
+            self.publish("start", {"engine": "codex", "model": self.model or "", "effort": self.effort,
+                                   "mode": self.mode, "account": new.name})
+        stopped, self.interrupted = self.interrupted, False
+        failed = code != 0 and not t.text.strip() and not stopped
+        if limited and not stopped:  # every ChatGPT subscription is at its limit
+            note = self.m.limit_text("codex")
+            text, failed = (t.text.strip() + f"\n\n*{note}*", False) if t.text.strip() else (note, True)
+        else:
+            text = t.text.strip() or (self.m.explain_error(error_text) if failed else "")
+        if stopped:  # the owner pressed Stop: what was said so far stays, as with Claude
+            text = (t.text.strip() + "\n\n*Stopped.*") if t.text.strip() else "*Stopped.*"
+        for step in t.steps.values():
+            if step["status"] == "running":
+                step["status"] = "done"
+        meta = {**t.meta(), "files": self._new_files(t.started), "error": failed, "engine": "codex",
+                "model": self.model or "", "effort": self.effort, "mode": self.mode, "account": self.account.name,
+                "stopped": stopped, "seconds": round(now() - t.started, 1),
+                "usage": {"input": int(usage.get("input_tokens") or 0), "output": int(usage.get("output_tokens") or 0),
+                          "cache_read": int(usage.get("cached_input_tokens") or 0), "cache_write": 0},
+                "context": dict(self.context)}
+        mid = self._record(text or "(no answer)", meta)
+        self.proc, self.busy, self.turn = None, False, None
+        self.publish("done", {"id": mid, "text": text or "(no answer)", "meta": meta})
+
+    def _took(self, usage: dict) -> None:
+        """After each Codex program: its tokens count against its subscription; its limits and how full the
+        context is are read from Codex's own file."""
+        usage_log.record_tokens(self.account.name, {
+            "input_tokens": int(usage.get("input_tokens") or 0) - int(usage.get("cached_input_tokens") or 0),
+            "cache_read_input_tokens": int(usage.get("cached_input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or 0)})
+        status = read_codex_status(self.account, self.session_id)
+        if status.get("rate"):
+            self._rate_event(status["rate"])
+        if status.get("window"):
+            self.context.update(used=status.get("used") or 0, window=status["window"])
+            self._context_event()
+
+    def _run_codex(self, exe: str, prompt: str) -> tuple[int, str, dict]:
+        """One Codex program on the current subscription; its words and steps join the answer (self.turn).
+        Returns its exit code, its error message and its token use."""
         t = self.turn
         if self.session_id:
             cmd = [exe, "exec", "resume", "--json", "--skip-git-repo-check", *self._args(), self.session_id, "-"]
@@ -848,36 +1125,7 @@ class CodexSession(Session):
             code = proc.wait()
         except OSError as exc:
             code, error_text = 1, str(exc)
-        if not self.m.db.q("SELECT id FROM chats WHERE id=?", (self.chat_id,)):
-            self.proc, self.busy, self.turn = None, False, None  # deleted while it answered: nothing to keep
-            return
-        stopped, self.interrupted = self.interrupted, False
-        failed = code != 0 and not t.text.strip() and not stopped
-        usage_log.record_tokens(self.account.name, {
-            "input_tokens": int(usage.get("input_tokens") or 0) - int(usage.get("cached_input_tokens") or 0),
-            "cache_read_input_tokens": int(usage.get("cached_input_tokens") or 0),
-            "output_tokens": int(usage.get("output_tokens") or 0)})
-        status = read_codex_status(self.account, self.session_id)
-        if status.get("rate"):
-            self._rate_event(status["rate"])
-        if status.get("window"):
-            self.context.update(used=status.get("used") or 0, window=status["window"])
-            self._context_event()
-        text = t.text.strip() or (self.m.explain_error(error_text) if failed else "")
-        if stopped:  # the owner pressed Stop: what was said so far stays, as with Claude
-            text = (t.text.strip() + "\n\n*Stopped.*") if t.text.strip() else "*Stopped.*"
-        for step in t.steps.values():
-            if step["status"] == "running":
-                step["status"] = "done"
-        meta = {**t.meta(), "files": self._new_files(t.started), "error": failed, "engine": "codex",
-                "model": self.model or "", "effort": self.effort, "mode": self.mode, "account": self.account.name,
-                "stopped": stopped, "seconds": round(now() - t.started, 1),
-                "usage": {"input": int(usage.get("input_tokens") or 0), "output": int(usage.get("output_tokens") or 0),
-                          "cache_read": int(usage.get("cached_input_tokens") or 0), "cache_write": 0},
-                "context": dict(self.context)}
-        mid = self._record(text or "(no answer)", meta)
-        self.proc, self.busy, self.turn = None, False, None
-        self.publish("done", {"id": mid, "text": text or "(no answer)", "meta": meta})
+        return code, error_text, usage
 
     def _raw_step(self, sid: str, kind: str, label: str, detail: str) -> None:
         step = {"id": sid, "kind": kind, "label": label, "detail": detail, "status": "running", "tool": kind}
@@ -942,21 +1190,25 @@ class ChatManager:
 
     # ------------------------------------------------------------ accounts
 
-    def pick_account(self, cfg, vendor: str, avoid: str | None = None, prefer: str | None = None):
+    def pick_account(self, cfg, vendor: str, avoid=None, prefer: str | None = None, with_room: bool = False):
         """The subscription for a chat: the one the owner chose for it (unless it is at its limit), else the
-        default chosen in Settings, else the one with the most room (from the limits Claude and Codex report)."""
-        accounts = [a for a in cfg.accounts_for(vendor) if a.name != avoid]
-        if not accounts:
-            return None
+        default chosen in Settings, else the one with the most room (from the limits Claude and Codex report).
+        `avoid`: a name or names to leave out; `with_room`: None rather than one at its limit."""
+        skip = {avoid} if isinstance(avoid, str) else set(avoid or ())
+        accounts = [a for a in cfg.accounts_for(vendor) if a.name not in skip]
         preferred = settings_mod.load()["app"].get("chat_account") if vendor == "claude" else ""
         limits = usage_log.snapshot(1)["limits"]
 
         def load(a):
             lim = limits.get(a.name) or {}
-            if lim.get("status") == "rejected" and (lim.get("five_reset") or 0) > time.time():
-                return 2.0
+            if limited_until(lim):
+                return 2.0  # at its limit (the 5-hour or the weekly one)
             return max(float(lim.get("five_util") or 0), float(lim.get("week_util") or 0) * 0.8)
 
+        if with_room:
+            accounts = [a for a in accounts if load(a) < 2.0]
+        if not accounts:
+            return None
         if prefer:
             chosen = next((a for a in accounts if a.name == prefer and load(a) < 2.0), None)  # 2.0: at its limit
             if chosen:
@@ -964,28 +1216,35 @@ class ChatManager:
         chosen = next((a for a in accounts if a.name == preferred and load(a) < 0.9), None)
         return chosen or min(accounts, key=load)
 
-    def other_account(self, current, vendor: str):
-        if current is None:
-            return None
-        cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
-        other = self.pick_account(cfg, vendor, avoid=current.name)
-        return other
+    @staticmethod
+    def has_room(name: str) -> bool:
+        """Is this subscription free of its usage limits (as last reported)?"""
+        return not limited_until(usage_log.snapshot(1)["limits"].get(name))
 
-    def failover(self, session: ClaudeSession) -> None:
-        """Continue the same conversation on another Claude subscription."""
-        def work():
-            old = session.account
-            new = self.other_account(old, "claude")
-            if new is None or not session.session_id:
-                return
-            session.stop_process()
-            copy_claude_session(session.session_id, old, new)
-            session.publish("notice", {"text": f"Continuing on {new.name}.", "kind": "failover"})
-            try:
-                session.send(session.last_prompt, session.model, session.effort, session.mode, account=new)
-            except Exception as exc:
-                session.publish("notice", {"text": str(exc), "kind": "error"})
-        threading.Thread(target=work, daemon=True).start()
+    def next_account(self, session: Session, vendor: str):
+        """Where a conversation goes when its subscription reaches its usage limit: another of the owner's
+        subscriptions for this product that has room, never one that already reached its limit during this
+        message (so two subscriptions at their limit never hand it back and forth). None when there is none."""
+        cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
+        mine = [session.account.name] if session.account else []
+        return self.pick_account(cfg, vendor, avoid=[*mine, *session.tried], with_room=True)
+
+    def limit_text(self, vendor: str) -> str:
+        """Every subscription for this product has reached its limit: say so plainly, and when the first one has
+        room again."""
+        cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
+        names = [a.name for a in cfg.accounts_for(vendor)] or ["This subscription"]
+        limits = usage_log.snapshot(1)["limits"]
+        frees = sorted((limited_until(limits.get(n)), n) for n in names if limited_until(limits.get(n)))
+        if len(names) == 1:
+            text = f"{names[0]} has reached its usage limit."
+            text += f" It frees up {plain_when(frees[0][0])}." if frees else " Usage shows when it frees up."
+        else:
+            text = f"All your {ENGINES.get(vendor, vendor)} subscriptions have reached their usage limits " \
+                   f"({', '.join(names)})."
+            text += f" {frees[0][1]} frees up first, {plain_when(frees[0][0])}." if frees else \
+                " Usage shows when each one frees up."
+        return text + " Nothing is lost: send your message again then, and the conversation carries on where it stopped."
 
     def fix_outdated(self, session: Session) -> None:
         """Update Claude Code, then ask again."""

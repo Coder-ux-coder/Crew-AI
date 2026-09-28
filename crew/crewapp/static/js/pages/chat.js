@@ -56,7 +56,7 @@ function subscriptions(vendor) {
   const usage = Object.fromEntries(((store.usage && store.usage.accounts) || []).map((u) => [u.name, u.limits || {}]));
   return accs.map((a) => {
     const lim = usage[a.name] || {};
-    const hint = lim.status === 'rejected' && lim.five_reset ? `At its limit until ${whenAt(lim.five_reset)}`
+    const hint = lim.limited_until ? `At its limit until ${whenAt(lim.limited_until)}`
       : lim.five_util != null ? `${pct(Number(lim.five_util))} of its 5-hour limit used` : 'Not used yet today';
     return { name: a.name, vendor: a.vendor, hint };
   });
@@ -490,7 +490,7 @@ function withCursor(html) {
 }
 
 const STEP_ICONS = { plan: 'map', web: 'globe', file: 'doc', search: 'search', run: 'terminal', agent: 'bot', skill: 'sparkles', setup: 'tool', todo: 'listcheck',
-  schedule: 'clock', browser: 'globe', phone: 'phone', computer: 'monitor', connection: 'plug', tool: 'tool' };
+  schedule: 'clock', browser: 'globe', phone: 'phone', computer: 'monitor', connection: 'plug', tool: 'tool', account: 'key' };
 const FILE_ICONS = { web: 'globe', doc: 'doc', image: 'image', pdf: 'doc', table: 'table', file: 'doc' };
 
 class AiTurn {

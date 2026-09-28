@@ -464,8 +464,25 @@ class ClaudeSeat:
                        session_id=msg.get("session_id") or self.session_id)
 
 
+def _begins_with(path: Path, start: Path) -> bool:
+    """Does the file `path` begin with everything in `start` (an earlier copy of the same conversation)?"""
+    try:
+        if start.stat().st_size > path.stat().st_size:
+            return False
+        with path.open("rb") as a, start.open("rb") as b:
+            while True:
+                chunk = b.read(1 << 20)
+                if not chunk:
+                    return True
+                if a.read(len(chunk)) != chunk:
+                    return False
+    except OSError:
+        return False
+
+
 def copy_claude_session(session_id: str, src: Account, dst: Account) -> bool:
-    """Make a conversation resumable under another Claude account (same machine, same folder)."""
+    """Make a conversation resumable under another Claude account (same machine, same folder). A copy already
+    there that is not simply an earlier part of this one (both were continued) is kept under a dated name."""
     src_home = src.profile_dir() or default_claude_home()
     dst_home = dst.profile_dir() or default_claude_home()
     if src_home == dst_home:
@@ -475,11 +492,17 @@ def copy_claude_session(session_id: str, src: Account, dst: Account) -> bool:
         return False
     source = matches[0]
     target_dir = dst_home / "projects" / source.parent.name
-    target_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target_dir / source.name)
-    sidecar = source.parent / session_id  # sub-agent transcripts, if any
-    if sidecar.is_dir():
-        shutil.copytree(sidecar, target_dir / session_id, dirs_exist_ok=True)
+    target = target_dir / source.name
+    try:  # a file another program holds open cannot be replaced on Windows: then the copy is simply not made
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if target.is_file() and not _begins_with(source, target):
+            target.replace(target.with_name(f"{target.name}.kept-{time.strftime('%Y%m%d-%H%M%S')}"))
+        shutil.copy2(source, target)
+        sidecar = source.parent / session_id  # sub-agent transcripts, if any
+        if sidecar.is_dir():
+            shutil.copytree(sidecar, target_dir / session_id, dirs_exist_ok=True)
+    except OSError:
+        return False
     return True
 
 
