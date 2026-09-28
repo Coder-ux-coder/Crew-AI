@@ -665,6 +665,12 @@ Round 9 (memory and continuity), begun:
   drawn at once, and a search of the whole page per answer · the newest 120 messages first (148 ms for the
   same chat), a "Show N earlier messages" button above them that draws the rest and keeps the reader's place;
   the last answer is remembered instead of searched for · test_f9_a_long_chat_opens_at_once (in Chromium).
+- Checked, not a bug: 3,000 captures list in 26 ms.
+- A58 · P2 · server.App.library · a chat where the assistant built something (installed packages, kept a
+  git history) filled the Library with thousands of the tools' own files (node_modules, .git objects,
+  Python's caches), and the Library walked every one of them each time it opened · its own walk of the
+  folder, which skipped only hidden files, not tool folders (the chat's file panel already skipped them) ·
+  the Library uses the chat's walk (hidden and tool folders skipped) · test_a58_the_library_lists_what_…
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
