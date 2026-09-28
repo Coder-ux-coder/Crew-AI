@@ -13,23 +13,20 @@ never copy it onto the owner's computer.)
 
 ## 0. Campaign state (updated after every step — read this first after any break or context summary)
 
-- Status: Cloud setup in progress (2026-09-28). The owner explicitly requires all further repository
-  work and execution in GitHub/cloud, not on their Windows computer.
-- Branch: `claude/exciting-heisenberg-6w6gge`; starting revision `d842ae7`.
-- Round: 1. The earlier handoff reports 156 tests passing (1 skipped), 41 campaign tests passing,
-  and clean lint. Those results have not yet been independently rerun in this continuation.
-- Done in this continuation: both root handoff files read fully; branch confirmed directly through
-  GitHub; no existing Actions workflow or runs found on this branch.
-- Cloud setup: add a read-only GitHub-hosted Linux test job, isolated Crew home, fake agents,
-  Chromium, the full suite, Python/JavaScript syntax checks and lint. The owner approved the necessary
-  exception to the test-before-push rule for setting up and running these cloud checks.
-- Cloud run 36431387344 was rejected before any job started: GitHub does not allow the runner context
-  in job-level environment expressions. Folder paths now use RUNNER_TEMP in an initialization step.
-  This was workflow setup, not an application test failure.
-- Next: inspect the corrected cloud run; then prove the requested P1 tests against pre-fix revisions and
-  record individual results. Then build/run the route-derived API fuzzer and whole-app browser sweep,
-  followed by rounds 2–11. C12 and Codex pipe cleanup remain open.
-- No application fixes made in this continuation yet. No new test results claimed.
+- Status: RUNNING — third continuation (Claude, cloud container, 2026-09-28). All work and execution in
+  the cloud (the owner's requirement), on branch `claude/exciting-heisenberg-6w6gge`.
+- Round: 1, dynamic sweep. Baseline rerun here, before any change: full suite 157 tests OK, 0 skipped
+  (Python 3.11, Playwright + Chromium present); ruff (CI config) 2 findings, both triaged noise; eslint
+  0 problems on 17 files; `node --check` clean.
+- Found first: the second continuation's cloud run (36431557271) failed. Its E2E team tests looped until
+  their time limit. Cause: on Python 3.12 (the version the owner's installer sets up, and the cloud's)
+  `unittest` exits 5 when it finds no tests, so the fake project's first task could never pass its
+  check, and nothing ever stopped a task that keeps failing its checks (C14, C15; ledger). Also the
+  cloud lint config missed the two triaged findings (fixed in the config).
+- Done in this continuation: C14, C15 fixed with tests that fail on the old code; full suite under
+  Python 3.12: 160 tests OK. API fuzzer written (`.github/campaign/fuzz_api.py`), not yet run.
+- Next: run the fuzzer, fix what it finds (tests first); prove the P1 tests against pre-fix code
+  (worktree of `ba081b8` ready in the scratchpad); browser sweep; C12; pipe ResourceWarnings; rounds 2–11.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
   Version 2.3.1 and the installed-updater rehearsal require the owner's explicit approval.
 
@@ -392,8 +389,27 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
 
 (id · area · symptom · root cause · fix · test)
 
-Cloud continuation (2026-09-28): no new application fixes yet. Test infrastructure is being added;
-no additional before/after verification has run. See section 0.
+### Third continuation (2026-09-28) — found and fixed
+
+Each test named here failed on the code before its fix and passes after it (both run, in this container).
+
+- C14 · P1 · orchestrator.track_progress · a task whose checks can never pass (a broken check command, a
+  missing tool, or C15) was sent back for ever: 216 rounds in 4 minutes with the fakes, and with real agents
+  the owner's usage without end (the default has no time limit) · every change of a task's status counted as
+  progress and reset the stall count, so a task going round review → changes → review looked busy and the
+  stall ladder (lead replans twice, CEO ruling, honest stop with REPORT.md) never started · only a step
+  forward counts: a new task, or a task reaching a stage it had not reached before (STAGES); a task moved up
+  to the manager starts afresh · test_c14_a_task_sent_back_again_and_again_is_not_progress (unit),
+  test_c14_a_task_whose_checks_can_never_pass_ends_with_an_honest_stop (end to end, fake knob
+  `broken_checks`; ~30 s after the fix, "run did not finish in time" before it).
+- C15 · P1 · gitops.run_checks · on Python 3.12+ (what the installer sets up) a project's first task, its
+  skeleton, failed its check for ever when the check was `python -m unittest …` or pytest, because no tests
+  exist yet · test runners exit 5 with "no tests ran" when they find none, and any non-zero exit failed the
+  check · exit 5 whose last line says "no tests ran" is noted, not failed (a real failure that exits 5 still
+  fails) · test_c15_a_test_runner_that_finds_no_tests_yet_is_not_a_failure. This is also why the cloud's
+  E2E tests looped: they pass on Python 3.12 now (full suite 160 OK under 3.12).
+- CI · the cloud lint step failed on the two findings triaged as noise in the handoff (S108 in __main__,
+  B905 in orchestrator); both are now recorded in `.github/campaign/ruff.toml`.
 
 ### Earlier fixes — passing suite reported in handoff; old-code proof still pending
 
