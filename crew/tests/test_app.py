@@ -31,6 +31,10 @@ ENV = {
     "CREW_HOME": str(HOME), "CREW_CLAUDE_BIN": str(FAKES / "fake_claude"), "CREW_CODEX_BIN": str(FAKES / "fake_codex"),
     "CREW_ADB": str(FAKES / "fake_adb"), "CREW_FAKE_STATE": str(STATE), "CREW_FAKE_DESKTOP": "1",
     "CREW_FAKE_SCENARIO": json.dumps({"word_delay": 0.005}),
+    # The CLIs' own folders (a subscription signed in the usual way) are test folders too: the fakes and Crew must
+    # agree on where a conversation is kept, and nothing may touch this computer's real ~/.claude or ~/.codex.
+    "CLAUDE_CONFIG_DIR": str(HOME / "claude-default"), "CREW_FAKE_CLAUDE_HOME": str(HOME / "claude-default"),
+    "CODEX_HOME": str(HOME / "codex-default"), "CREW_FAKE_CODEX_HOME": str(HOME / "codex-default"),
 }
 os.environ.update(ENV)
 

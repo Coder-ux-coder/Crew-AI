@@ -27,6 +27,20 @@ injected through CREW_FAKE_SCENARIO (JSON):
   codex_delay: N             Codex waits N seconds before it answers (time for the owner to press Stop)
   broken_checks: true        the lead sets a check that can never pass (a broken command, a missing tool)
 
+The Assistant (one-to-one chats) also reads STATE/live-scenario.json before every message, so a test can change
+these while a conversation's program keeps running:
+
+  assistant_limit: [accounts]         Claude: the subscription is at its usage limit before answering
+  assistant_limit_midway: [accounts]  Claude: it starts (some words, a file) and then reaches its limit
+  codex_limit: [accounts]             ChatGPT: the same, for Codex
+  codex_limit_midway: [accounts]
+  codex_limit_text: text              ChatGPT: the words of its limit message
+
+An account is the name of its profile folder, or "default" for the CLI's own. Each conversation remembers what was
+said in its session file (Claude: projects/<folder>/<id>.jsonl; ChatGPT: sessions/…/rollout-…-<id>.jsonl), so asking
+"what is the code word?" shows whether a conversation kept its memory across subscriptions. Every message received
+is logged to STATE/assistant-prompts.jsonl (Claude) or STATE/codex-prompts.jsonl (ChatGPT).
+
 The owner's private messages are answered with team_reply_owner; when the owner says "tell the team", the agent
 also passes it on (share_with_team). The CEO answers the owner's questions, and the prompt writer writes the
 owner's words up as "Clarified: <words>".
@@ -50,6 +64,21 @@ from pathlib import Path
 SCEN = json.loads(os.environ.get("CREW_FAKE_SCENARIO") or "{}")
 STATE = Path(os.environ.get("CREW_FAKE_STATE") or "/tmp/crew-fake-state")
 STATE.mkdir(parents=True, exist_ok=True)
+
+
+def live(key: str, default=None):
+    """A scenario value that a test may change while the program runs (STATE/live-scenario.json wins)."""
+    try:
+        values = json.loads((STATE / "live-scenario.json").read_text())
+    except (OSError, ValueError):
+        values = {}
+    return values[key] if key in values else SCEN.get(key, default)
+
+
+def code_word(texts: list[str]) -> str:
+    """The Assistant's memory test: the last code word the owner gave in what this conversation holds."""
+    words = [w for t in texts for w in re.findall(r"code word is (?:now )?([A-Z][A-Z]+)", t)]
+    return f"The code word is {words[-1]}." if words else "I don't know the code word."
 
 
 def once(key: str) -> bool:
@@ -338,8 +367,25 @@ def assistant_main(argv: list[str]) -> int:
     model = opt("--model", "claude-opus-5-5")
     sid = opt("--resume") or str(uuid.uuid4())
     state = {"mode": opt("--permission-mode", "default"), "context": 12000 if opt("--resume") else 9000}
-    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude-fake")
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or os.environ.get("CREW_FAKE_CLAUDE_HOME")
+                or Path.home() / ".claude-fake")
     account = home.name if os.environ.get("CLAUDE_CONFIG_DIR") else "default"  # the profile folder's name
+    transcript = home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", os.getcwd()) / f"{sid}.jsonl"
+    if opt("--resume") and not transcript.is_file():  # as Claude Code does: this subscription does not hold it
+        sys.stderr.write(f"No conversation found with session ID: {sid}\n")
+        return 1
+
+    def remember(role: str, said: str) -> None:
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        with transcript.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": role, "text": said}) + "\n")
+
+    def recall() -> list[str]:
+        try:
+            return [json.loads(line).get("text", "") for line in transcript.read_text(encoding="utf-8").splitlines()
+                    if line.strip()]
+        except (OSError, ValueError):
+            return []
     devices = None
     cfg = opt("--mcp-config")
     servers = {}
@@ -459,16 +505,28 @@ def assistant_main(argv: list[str]) -> int:
         text = content if isinstance(content, str) else "".join(b.get("text", "") for b in content)
         low = text.lower().strip()
         started = time.time()
+        with (STATE / "assistant-prompts.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"account": account, "session": sid, "text": text}) + "\n")
+        remember("user", text)  # Claude Code saves the owner's message before it asks the model
         if SCEN.get("assistant_outdated") and claude_version() < "2.1.280":
             finish(f"API Error: 400 Claude Code {claude_version()} does not support this model; version 2.1.280 or "
                    "newer is required. Run 'claude update', or update the Claude desktop app, then try again.",
                    error=True)
             continue
-        if SCEN.get("assistant_limit") and account in SCEN["assistant_limit"]:
+        midway = account in (live("assistant_limit_midway") or [])
+        if account in (live("assistant_limit") or []) or midway:
+            if midway:  # it starts on the work, and the limit stops it part of the way through
+                started_text = stream_text("I have started on it: the first part is written. ")
+                draft = Path("draft.txt")
+                tid = tool_use("Write", {"file_path": str(draft.resolve()), "content": "first part"})
+                draft.write_text("first part\n", encoding="utf-8")
+                tool_result(tid, "File created successfully")
+                remember("assistant", started_text + "(wrote draft.txt)")
             reset = int(time.time()) + 3600
             out({"type": "rate_limit_event", "rate_limit_info": {
                 "status": "rejected", "rateLimitType": "five_hour", "utilization": 1.0, "resetsAt": reset,
                 "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": reset}}}})
+            remember("assistant", "API Error: Claude AI usage limit reached")
             finish(f"Claude AI usage limit reached|{reset}", error=True)
             continue
         if low.startswith("/context"):
@@ -498,7 +556,9 @@ def assistant_main(argv: list[str]) -> int:
                                       "cache_creation_input_tokens": 0}}}})
         think(int(SCEN.get("thinking_tokens", 240)))
         answer = ""
-        if state["mode"] == "plan":
+        if "what is the code word" in low:
+            answer = code_word(recall())
+        elif state["mode"] == "plan":
             plans = home / "plans"
             plans.mkdir(parents=True, exist_ok=True)
             plan_path = plans / "calm-river.md"
@@ -568,6 +628,7 @@ def assistant_main(argv: list[str]) -> int:
             finish(said, error=True, subtype="error_during_execution", terminal_reason="aborted")
             continue
         out({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}})
+        remember("assistant", answer)
         rate()
         out_tokens = len(answer.split()) * 2
         state["context"] += out_tokens
@@ -600,7 +661,8 @@ def claude_main(argv: list[str]) -> int:
     resume = opt("--resume")
     schema = opt("--json-schema")
     seat, role = os.environ.get("CREW_SEAT", "?"), os.environ.get("CREW_ROLE", "member")
-    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude-fake")
+    home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or os.environ.get("CREW_FAKE_CLAUDE_HOME")
+                or Path.home() / ".claude-fake")
     sessdir = home / "projects" / re.sub(r"[^A-Za-z0-9]", "-", os.getcwd())
     mcp = None
     cfg = opt("--mcp-config")
@@ -707,7 +769,8 @@ def codex_main(argv: list[str]) -> int:
         env[part.group(1)] = json.loads(part.group(2))
     mcp = Mcp(command, args, env) if command else None
     seat, role = env.get("CREW_SEAT", "?"), env.get("CREW_ROLE", "member")
-    home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex-fake")
+    home = Path(os.environ.get("CODEX_HOME") or os.environ.get("CREW_FAKE_CODEX_HOME") or Path.home() / ".codex-fake")
+    account = home.name if os.environ.get("CODEX_HOME") else "default"  # the profile folder's name
     resume = "resume" in argv
     if resume:
         rest = [a for a in argv[argv.index("resume") + 1:] if not a.startswith("-")]
@@ -733,6 +796,49 @@ def codex_main(argv: list[str]) -> int:
     text = sys.stdin.read()
     if SCEN.get("codex_delay"):
         time.sleep(float(SCEN["codex_delay"]))
+    day = time.strftime("%Y/%m/%d")
+    rollouts = sorted(home.glob(f"sessions/**/rollout-*{tid}.jsonl")) if resume else []
+    rollout = rollouts[0] if rollouts else home / "sessions" / day / f"rollout-2026-{tid}.jsonl"
+
+    def remember(role: str, said: str) -> None:
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        with rollout.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": role, "content": [{"type": "input_text", "text": said}]}}) + "\n")
+
+    def recall() -> list[str]:
+        try:
+            lines = [json.loads(line) for line in rollout.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except (OSError, ValueError):
+            return []
+        return [c.get("text", "") for x in lines if x.get("type") == "response_item"
+                for c in (x.get("payload") or {}).get("content") or []]
+
+    if seat == "?":  # the Assistant (a one-to-one chat), not a team seat
+        with (STATE / "codex-prompts.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"account": account, "resume": resume, "thread": tid, "text": text}) + "\n")
+        remember("user", text)
+        midway = account in (live("codex_limit_midway") or [])
+        if account in (live("codex_limit") or []) or midway:
+            if midway:  # it starts on the work, and the limit stops it part of the way through
+                out({"type": "item.completed", "item": {"id": "m0", "type": "agent_message",
+                                                        "text": "I have started on it: the first part is written."}})
+                Path("draft.txt").write_text("first part\n", encoding="utf-8")
+                out({"type": "item.completed", "item": {"id": "f0", "type": "file_change", "status": "completed",
+                                                        "changes": [{"path": str(Path("draft.txt").resolve()),
+                                                                     "kind": "add"}]}})
+                remember("assistant", "I have started on it: the first part is written.")
+            message = live("codex_limit_text") or ("You've hit your usage limit. Upgrade to Pro "
+                                                   "(https://chatgpt.com/explore/pro), or try again in 2 hours 5 minutes.")
+            out({"type": "error", "message": message})
+            out({"type": "turn.failed", "error": {"message": message}})
+            return 1
+        if "what is the code word" in text.lower():
+            said = code_word(recall())
+            remember("assistant", said)
+            out({"type": "item.completed", "item": {"id": "m1", "type": "agent_message", "text": said}})
+            out({"type": "turn.completed", "usage": {"input_tokens": 900, "cached_input_tokens": 0, "output_tokens": 20}})
+            return 0
     schema = None
     if "--output-schema" in argv:
         schema = json.loads(Path(argv[argv.index("--output-schema") + 1]).read_text())
@@ -748,8 +854,8 @@ def codex_main(argv: list[str]) -> int:
     if result == "LIMIT":
         out({"type": "turn.failed", "error": {"message": "You've hit your usage limit. Try again later."}})
         return 1
-    day = time.strftime("%Y/%m/%d")
-    rollout = home / "sessions" / day / f"rollout-2026-{tid}.jsonl"
+    if seat == "?":
+        remember("assistant", result)
     rollout.parent.mkdir(parents=True, exist_ok=True)
     with rollout.open("a") as fh:
         fh.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "rate_limits": {
