@@ -25,6 +25,7 @@ injected through CREW_FAKE_SCENARIO (JSON):
   no_reply_tool: true        an agent answers the owner's private message without team_reply_owner
   leak_task: [ids]           the first version of these tasks contains an API key (Crew's scan must send it back)
   codex_delay: N             Codex waits N seconds before it answers (time for the owner to press Stop)
+  broken_checks: true        the lead sets a check that can never pass (a broken command, a missing tool)
 
 The owner's private messages are answered with team_reply_owner; when the owner says "tell the team", the agent
 also passes it on (share_with_team). The CEO answers the owner's questions, and the prompt writer writes the
@@ -102,6 +103,14 @@ def write_and_commit(files: dict[str, str], message: str) -> None:
 
 
 # ----------------------------------------------------------------------- brain
+
+
+def checks() -> list[str]:
+    """The project's checks the fake lead sets: the tests, or (broken_checks) a command that can never pass."""
+    if SCEN.get("broken_checks"):
+        return [f"{sys.executable} -c \"import sys; print('the check tool is missing'); sys.exit(1)\""]
+    return [f"{sys.executable} -m unittest discover -s tests -q"]
+
 
 
 class Brain:
@@ -223,7 +232,7 @@ class Brain:
             self.tool("team_task_create", title=f"Feature {i}", spec=f"Implement feature {i}.",
                       acceptance=f"feat{i}() returns {i}", scope=[f"app/feat{i}.py", f"tests/test_feat{i}.py"],
                       depends_on=[found], size="S", tier=tier, suggested_owner=owner)
-        self.tool("team_set_checks", commands=[f"{sys.executable} -m unittest discover -s tests -q"])
+        self.tool("team_set_checks", commands=checks())
         self.tool("team_plan_ready", summary=f"Foundation then {n} independent features.")
         return "planned"
 
@@ -247,7 +256,7 @@ class Brain:
                 files[f"tests/test_feat{i}.py"] = (f"import unittest\nfrom app.feat{i} import feat{i}\n\n\n"
                                                    f"class T(unittest.TestCase):\n    def test(self):\n"
                                                    f"        self.assertEqual(feat{i}(), {i})\n")
-            self.tool("team_set_checks", commands=[f"{sys.executable} -m unittest discover -s tests -q"])
+            self.tool("team_set_checks", commands=checks())
         else:
             i = int(re.search(r"Feature (\d+)", detail).group(1))
             files[f"app/feat{i}.py"] = f"def feat{i}():\n    return {i}\n"

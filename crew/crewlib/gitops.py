@@ -250,6 +250,9 @@ def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float,
     bash = shutil.which("bash") if os.name != "nt" else None  # agents write bash; /bin/sh may be dash
     for cmd in commands:
         output, code = _run_check(cmd, cwd, timeout_s, env, bash)
+        if no_tests_yet(output, code):
+            chunks.append(f"$ {cmd}\n{output}\n[exit {code}: no tests yet, which is not a failure]\n")
+            continue
         chunks.append(f"$ {cmd}\n{output}\n[exit {code}]\n")
         if code != 0:
             ok = False
@@ -257,6 +260,14 @@ def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float,
     text = "\n".join(chunks)
     log_path.write_text(text, encoding="utf-8")
     return CheckResult(ok, tail(text, 40, 3000), log_path)
+
+
+def no_tests_yet(output: str, code: int) -> bool:
+    """A test runner that found no tests to run: pytest, and unittest from Python 3.12 on, end with "no tests ran"
+    and exit with 5. That is not broken work — a project's first task (its skeleton) has no tests yet — and counting
+    it as a failure would send that task back for ever."""
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return code == 5 and bool(lines) and "no tests ran" in lines[-1].lower()
 
 
 def _run_check(cmd: str, cwd: Path, timeout_s: float, env: dict | None, bash: str | None) -> tuple[str, int]:

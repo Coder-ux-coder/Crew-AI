@@ -34,6 +34,9 @@ ALIVE_SECONDS = 60.0      # a note older than this: the orchestrator is gone
 CONTEST_KINDS = ("build", "fix", "test", "docs")  # work whose two versions can be compared side by side
 CONTESTS_SOME = 2         # head-to-heads per project when the owner chose "some"
 CONTEST_WAIT = 15 * 60    # how long a finished version waits for its rival before it is checked alone
+# How far each task status is along the way to done. "changes" and "blocked" are steps back: a task sent back again
+# and again (its checks can never pass) goes round in circles, and that is not progress.
+STAGES = {"todo": 0, "in_progress": 1, "review": 2, "approved": 3, "merged": 4, "cancelled": 4}
 
 
 @dataclass
@@ -81,6 +84,7 @@ class Orchestrator:
         self.last_progress = now()
         self.stall_count = 0
         self.task_snapshot: dict[int, str] = {}
+        self.task_stage: dict[int, int] = {}  # the furthest stage each task has reached (see STAGES)
         self.chat_seen = 0
         self.backlog_checked = False  # the owner's drafts and CEO questions from while the team was paused
         self.grace_until: dict[int, float] = {}
@@ -1016,14 +1020,21 @@ class Orchestrator:
     # ================================================================ progress
 
     def track_progress(self) -> None:
+        """Note every change of a task's status; only a step forward counts as progress (a new task, or a task reaching
+        a stage it had not reached before). A task that goes round review → changes → review — say its checks can
+        never pass — would otherwise look busy for ever: the stall ladder (the lead replans, the CEO rules, then an
+        honest stop) would never start, and the team would spend the owner's usage on it without end."""
         for t in self.store.tasks():
             old = self.task_snapshot.get(t["id"])
             if old != t["status"]:
                 self.task_snapshot[t["id"]] = t["status"]
                 if old is not None:
                     self.store.event("task_status", task_id=t["id"], frm=old, to=t["status"])
-                self.last_progress = now()
-                self.stall_count = 0
+                stage = STAGES.get(t["status"], -1)
+                if stage > self.task_stage.get(t["id"], -1):
+                    self.task_stage[t["id"]] = stage
+                    self.last_progress = now()
+                    self.stall_count = 0
 
     def watchdog(self) -> None:
         stall = self.cfg.team.stall_minutes * 60
@@ -1608,6 +1619,7 @@ class Orchestrator:
         self._score(task, first_pass=False, outcome="moved-up", rounds=rounds)
         effort = self.task_effort(task)
         self.store.set(f"review_sha:{task['id']}", None)
+        self.task_stage.pop(task["id"], None)  # a new attempt by the manager: its steps forward count again
         self.store.update_task(task["id"], status="todo", owner=None, suggested_owner=None, tier="manager",
                                review_rounds=0, tokens=0, started_at=None, review_notes=notes,
                                effort="high" if effort in ("low", "medium", "auto") else effort)

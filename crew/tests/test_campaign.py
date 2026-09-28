@@ -24,8 +24,10 @@ from unittest import mock
 
 try:  # `python -m unittest discover -s tests` imports the modules by their own names
     from test_app import ENV, HOME, ROOT, AppServer, until
+    from test_e2e import dump_chat, make_run, run_orch
 except ImportError:
     from tests.test_app import ENV, HOME, ROOT, AppServer, until
+    from tests.test_e2e import dump_chat, make_run, run_orch
 
 from crewapp import chat as chat_mod  # noqa: E402
 from crewapp import launcher  # noqa: E402
@@ -146,6 +148,31 @@ class OrchestratorTests(unittest.TestCase):
             self.assertTrue(st.get("delivered"))
             st.close()
 
+    def test_c14_a_task_sent_back_again_and_again_is_not_progress(self):
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            tid = st.create_task("Foundation", "Create the package skeleton.", "package imports", ["app/**"], [])
+            fake = types.SimpleNamespace(store=st, task_snapshot={}, task_stage={}, last_progress=0.0, stall_count=3)
+            orchestrator.Orchestrator.track_progress(fake)
+            self.assertEqual(fake.stall_count, 0)  # a new task is progress
+            for status in ("in_progress", "review"):  # and so is each step it takes for the first time
+                fake.last_progress = 0.0
+                st.update_task(tid, status=status)
+                orchestrator.Orchestrator.track_progress(fake)
+                self.assertGreater(fake.last_progress, 0.0, status)
+            fake.stall_count = 2
+            for _ in range(3):  # sent back again and again (its checks can never pass): going round in circles
+                for status in ("changes", "in_progress", "review"):
+                    fake.last_progress = 0.0
+                    st.update_task(tid, status=status)
+                    orchestrator.Orchestrator.track_progress(fake)
+                    self.assertEqual((fake.last_progress, fake.stall_count), (0.0, 2), status)
+            st.update_task(tid, status="approved")  # a real step forward
+            orchestrator.Orchestrator.track_progress(fake)
+            self.assertGreater(fake.last_progress, 0.0)
+            self.assertEqual(fake.stall_count, 0)
+            st.close()
+
     def test_a4_the_heartbeat_says_whether_a_project_runs(self):
         with TempHome() as home:
             st = Store(home / "team.db")
@@ -213,6 +240,22 @@ class StartTests(unittest.TestCase):
             self.assertTrue(first[1].is_dir() and second[1].is_dir())
 
 
+class StuckProjectTests(unittest.TestCase):
+    def test_c14_a_task_whose_checks_can_never_pass_ends_with_an_honest_stop(self):
+        """Before, the task was sent back for ever (216 rounds in 4 minutes with the fakes): the owner's usage went
+        on it without end. Now the lead replans, the CEO rules, and the project stops with a report."""
+        with mock.patch.dict(os.environ):  # make_run points CREW_HOME and the fakes at a project of its own
+            cfg, run_dir, repo, rid = make_run({"tasks": 1, "broken_checks": True},
+                                               [("claude-1", "claude"), ("claude-2", "claude")], ledger=0.1)
+            orch = run_orch(cfg, run_dir, repo, rid, timeout=150)
+            st = orch.store
+            chat = dump_chat(st)
+            self.assertEqual(st.get("phase"), "stopped", chat)
+            self.assertIn("could not make progress", chat)
+            self.assertTrue(st.events("escalation"), chat)  # the CEO was asked to rule before the stop
+            self.assertTrue((run_dir / "REPORT.md").is_file())
+
+
 class SeatTests(unittest.TestCase):
     def test_c5_a_codex_turn_that_cannot_run_still_ends(self):
         with TempHome() as home:
@@ -265,6 +308,20 @@ class CheckTests(unittest.TestCase):
             self.assertLess(time.time() - started, 15)
             self.assertFalse(res.ok)
             self.assertIn("timed out after 1s", (home / "check.log").read_text(encoding="utf-8"))
+
+    @unittest.skipIf(os.name == "nt", "POSIX shell commands")
+    def test_c15_a_test_runner_that_finds_no_tests_yet_is_not_a_failure(self):
+        with TempHome() as home:
+            (home / "tests").mkdir()
+            (home / "tests" / "__init__.py").write_text("", encoding="utf-8")  # a project's skeleton: no tests yet
+            unittest_cmd = f"'{sys.executable}' -m unittest discover -s tests -q"  # exits with 5 from Python 3.12
+            pytest_like = "echo 'collected 0 items'; echo '=== no tests ran in 0.01s ==='; exit 5"
+            for cmd in (unittest_cmd, pytest_like):
+                res = gitops.run_checks(home, [cmd, "echo next-check"], home / "check.log", timeout_s=60)
+                self.assertTrue(res.ok, res.summary)
+                self.assertIn("next-check", (home / "check.log").read_text(encoding="utf-8"))  # the others still run
+            res = gitops.run_checks(home, ["echo 'the database is missing'; exit 5"], home / "check.log", timeout_s=60)
+            self.assertFalse(res.ok)  # a real failure that happens to exit with 5 still fails
 
 
 class LiveViewTests(unittest.TestCase):

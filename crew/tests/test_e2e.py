@@ -31,7 +31,7 @@ TOML = """
 {team_extra}
 max_hours = 0.1
 stall_minutes = {stall}
-ledger_minutes = 1.5
+ledger_minutes = {ledger}
 chat_budget = 8
 review = "cross"
 ceo_reviews = true
@@ -45,7 +45,8 @@ work = "claude-opus-5-5"
 """
 
 
-def make_run(scenario: dict, accounts: list[tuple[str, str]], stall: float = 0.5, team_extra: str = ""):
+def make_run(scenario: dict, accounts: list[tuple[str, str]], stall: float = 0.5, team_extra: str = "",
+             ledger: float = 1.5):
     home = Path(tempfile.mkdtemp(prefix="crew-e2e-home-"))
     os.environ["CREW_HOME"] = str(home)
     os.environ["CREW_FAKE_STATE"] = tempfile.mkdtemp(prefix="crew-e2e-state-")
@@ -53,7 +54,7 @@ def make_run(scenario: dict, accounts: list[tuple[str, str]], stall: float = 0.5
     os.environ["CREW_CLAUDE_BIN"] = str(FAKES / "fake_claude")
     os.environ["CREW_CODEX_BIN"] = str(FAKES / "fake_codex")
     blocks = "\n".join(f'[[account]]\nname = "{n}"\nvendor = "{v}"\n' for n, v in accounts)
-    (home / "crew.toml").write_text(TOML.format(stall=stall, accounts=blocks, team_extra=team_extra))
+    (home / "crew.toml").write_text(TOML.format(stall=stall, accounts=blocks, team_extra=team_extra, ledger=ledger))
     cfg = config.load(str(home / "crew.toml"))
     os.environ["CREW_FAKE_SEATS"] = ",".join(f"{s.name}:{s.vendor}" for s in cfg.seats)
     repo = gitops.ensure_repo(Path(tempfile.mkdtemp(prefix="crew-e2e-proj-")))
