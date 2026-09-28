@@ -411,7 +411,34 @@ Each test named here failed on the code before its fix and passes after it (both
 - CI · the cloud lint step failed on the two findings triaged as noise in the handoff (S108 in __main__,
   B905 in orchestrator); both are now recorded in `.github/campaign/ruff.toml`.
 
-### Earlier fixes — passing suite reported in handoff; old-code proof still pending
+### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
+
+The whole of test_campaign.py (44 tests, the round-1 tests plus C14/C15) was run against the code before the
+fixes (`ba081b8`, the tests and fakes copied in): 43 fail or error, 1 passes. What each P1 test hit on the old code:
+
+| id | test (test_…) | on the old code |
+|---|---|---|
+| C1 | c1_updates_do_not_make_built_in_lessons_count_for_more | FAIL: every seed lesson's weight went from 1 to 2 |
+| C3 | c3_a_damaged_or_locked_cost_model_is_ignored | ERROR: the damaged memo's JSONDecodeError escaped |
+| C4 | c4_a_delivered_project_stays_delivered | ERROR: "database is locked" escaped the retrospective |
+| C5 | c5_a_codex_turn_that_cannot_run_still_ends | ERROR: RuntimeError escaped the turn (seat left busy) |
+| C6 | c6_one_odd_message_does_not_silence_a_claude_seat | ERROR: AttributeError escaped the reader loop |
+| C7 | c7_a_check_that_leaves_a_server_running_finishes | FAIL: the check hung until its 20 s limit |
+| C7 | c7_a_check_past_its_time_limit_is_stopped | passes on the old code too: a guard, not the proof |
+| A1 | a1_…_set_aside_and_crew_opens / a1_…_told_to_the_owner | ERROR: TOMLDecodeError raised / FAIL: overview 400 |
+| A4 | a4_… (both) | ERROR: the new helpers are missing; see the mutation checks below |
+| A5 | a5_a_request_that_looks_like_an_option_starts_its_project | ERROR: SystemExit 2 (argparse took it as an option) |
+| A8 | a8_… (5) | 3 ERROR (new names missing), pip TimeoutExpired escaped, leftovers not tidied |
+| A14 | a14_crew_opens_with_a_damaged_app_file_and_a_locked_skill | ERROR: 'list' object has no attribute 'setdefault' |
+| A15 | a15_… (3) | no answer ever (queue.Empty); messages kept after delete; "Something went wrong" |
+| A16 | a16_a_claude_answer_that_cannot_be_finished_still_ends | no answer ever (queue.Empty) |
+
+Mutation checks, for the tests that met a missing name on the old code: one protection at a time was removed from the
+fixed code and the test run; all six fail as they should — A4: resume no longer refused while alive; heartbeat
+not written; a stale heartbeat counted as alive. A8: no rollback of swapped files; a damaged download not
+explained; two installs at once.
+
+### Earlier fixes (round 1)
 
 Tests are in crew/tests/test_campaign.py; each test's name starts with the ledger id.
 
