@@ -565,6 +565,39 @@ Found by reading server.py (security):
   answered (localhost, 127.0.0.1, ::1, or an IP address on the home network, as paired phones use); others get
   a plain 403 saying where Crew is · test_a49_a_web_page_under_another_name_cannot_reach_crew. Crew's own
   parts all use 127.0.0.1 or localhost (launcher, updater script, device tools, the phone through adb).
+- A50 · P2 · server.project_file, captures.resolve · a page the assistant saved as .shtml, .xht or .xhtm, or a
+  feed (.atom, .rss, .xsl) that styles itself with a script, ran with Crew's own rights when the owner opened
+  it (it could read every chat and change settings); a web page the assistant read could ask it to save one ·
+  the sandbox was chosen from a short list of extensions · everything under /files/ is sandboxed except
+  pictures, sound, video, fonts and PDFs (decided by the file's type, so a type Crew does not know is
+  sandboxed too); the captures route serves only pictures and recordings ·
+  test_a50_every_file_that_could_run_as_a_page_is_sandboxed.
+- A51 · P3 · server.Handler · a connection that never finished its request (or a live view whose reader
+  stopped reading) held one of Crew's threads for ever; with phone access on, anything on the home network
+  could open many · no time limit on the connection · 120 seconds of silence on the connection itself lets it
+  go (work in progress is not affected; live views send a ping every 15 s) ·
+  test_a51_a_connection_that_never_finishes_is_let_go.
+
+Round 2, data files (each database damaged on purpose in a scratch Crew folder, and the app used on it):
+
+- A52 · P1 · chat.ChatDB, usage._db, lessons._db · a damaged chat history (app.db, which also holds the
+  workflows) stopped Crew from opening at all; a damaged usage record (usage.db) made every chat message fail
+  (choosing a subscription reads it) and the Usage page answer "Something went wrong"; damaged lessons
+  (memory.db) broke the lessons page · a file SQLite cannot read had no path but the error · such a file is
+  kept under a dated name with its -wal and -shm (never deleted), a new one takes its place, and the owner is
+  told once which file was kept (util.open_db, data-problems.json, a notice at start); usage figures that
+  cannot be read at all (the disk, or Windows holding the file) count as none, since they only advise; a
+  file held open elsewhere is not moved, so nothing new is written over it ·
+  test_a52_a_damaged_database_is_kept_and_crew_still_opens, test_a52_usage_that_cannot_be_read_does_not_stop_a_chat.
+  A technician can often recover a kept file with SQLite's own `.recover`.
+- A53 · P2 · runs.list, runs.state, runs.resume · a project whose record (team.db) could not be read vanished
+  from the Projects list, and its page and Resume answered "Something went wrong: file is not a database" ·
+  the record was opened with no plain path for damage · the project stays in the list ("Record damaged",
+  titled with the owner's request); its page and Resume say what happened and how to carry on; the record is
+  left exactly as it is (it is the project's own) ·
+  test_a53_a_project_whose_record_is_damaged_is_still_shown_and_explained.
+- Checked, not a bug: a damaged app.json (it holds only the phone-pairing code) gets a new code; paired phones
+  pair again, and nothing of the owner's is lost.
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
