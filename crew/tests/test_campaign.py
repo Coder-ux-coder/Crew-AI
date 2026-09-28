@@ -108,6 +108,27 @@ class LessonTests(unittest.TestCase):
             self.assertIn("Your record so far", lessons.render_for_ceo())
             self.assertEqual(lessons.derive_ceo_lessons(), [])  # nothing is learned about unknown levels
 
+    def test_c12_the_ceos_effort_lessons_follow_its_record(self):
+        """A lesson worked out from the record kept its first numbers for ever; worse, when the record turned, the
+        new lesson (same words, other verdict) only reinforced the old "high is enough"."""
+        with TempHome():
+            lessons.add("ceo", "Ask the owner before any payment step.", source="agent:ceo")  # the CEO's own
+            for _ in range(3):
+                lessons.record_effort_outcome("build", "M", "high", 1, 5, 1000)
+            lessons.derive_ceo_lessons()
+            lessons.derive_ceo_lessons()  # confirmed again after the next project: it counts for more
+            ceo = {x["text"]: x["weight"] for x in lessons.top(10, categories=("ceo",))}
+            enough = next(t for t in ceo if "high is enough" in t)
+            self.assertIn("100% of the time (3 tasks", enough)
+            self.assertEqual(ceo[enough], 2)
+            for _ in range(9):  # the record turns: most such tasks now need a second round
+                lessons.record_effort_outcome("build", "M", "high", 2, 5, 1000)
+            lessons.derive_ceo_lessons()
+            shown = lessons.render_for_ceo()
+            self.assertIn("only 25% of the time (12 tasks): give such work more effort", shown)
+            self.assertNotIn("high is enough", shown)
+            self.assertIn("Ask the owner before any payment step.", shown)  # its own lessons are never touched
+
 
 class OrchestratorTests(unittest.TestCase):
     def test_c3_a_damaged_or_locked_cost_model_is_ignored(self):

@@ -57,7 +57,7 @@ def _db() -> sqlite3.Connection:
         # includes the approving review). Correct those records once, and drop the effort lessons built on them;
         # they are written again from the corrected record after the next project.
         db.execute("UPDATE effort_outcomes SET first_pass = CASE WHEN rounds <= 1 THEN 1 ELSE 0 END")
-        db.execute("DELETE FROM lessons WHERE source='crew-effort-record'")
+        db.execute("DELETE FROM lessons WHERE source='crew-effort-record'")  # DERIVED
         db.execute("INSERT OR IGNORE INTO memo(key,value) VALUES('first_pass_fixed','1')")
     return db
 
@@ -285,13 +285,19 @@ def render_for_ceo(limit: int = 12) -> str:
     return "\n".join(lines)
 
 
+DERIVED = "crew-effort-record"  # the source of the CEO's lessons that are worked out from its effort record
+
+
 def derive_ceo_lessons(min_tasks: int = 3) -> list[str]:
-    """Turn the effort record into plain lessons for the CEO (reinforced as evidence accumulates)."""
+    """Turn the effort record into plain lessons for the CEO, kept in step with the record: each is refreshed with
+    the latest numbers and counts for more each time the record confirms it; one the record no longer supports
+    goes. ("high is enough" must not stay once high has stopped being enough: a changed verdict is a new lesson,
+    and the old one is gone.) Only these worked-out lessons change; the record itself is kept."""
     stats = effort_stats()
     by_group: dict[tuple[str, str, str], list[dict]] = {}
     for r in stats:
         by_group.setdefault((r["tier"], r["kind"], r["size"]), []).append(r)
-    written = []
+    fresh: dict[str, str] = {}  # "effort record: tier kind size effort verdict" -> the lesson
     for (tier, kind, size), rows in by_group.items():
         solid = [r for r in rows if r["n"] >= min_tasks]
         who = TIER_WORDS.get(tier, tier)
@@ -300,6 +306,7 @@ def derive_ceo_lessons(min_tasks: int = 3) -> list[str]:
                 continue  # an effort level Crew does not know teaches nothing about the ones it uses
             rate = r["first_pass"] or 0
             if rate < 0.6:
+                verdict = "more"
                 text = (f"{kind} tasks of size {size} built by the {who} at {r['effort']} effort were approved first "
                         f"time only {round(100 * rate)}% of the time ({r['n']} tasks): give such work more effort"
                         + (", or the manager tier if it needs judgement." if tier == "workhorse" else "."))
@@ -308,14 +315,43 @@ def derive_ceo_lessons(min_tasks: int = 3) -> list[str]:
                          and (x["first_pass"] or 0) >= 0.9]
                 if lower:
                     continue  # a lower effort already does as well; that lesson is written for it
+                verdict = "enough"
                 text = (f"{kind} tasks of size {size} built by the {who} at {r['effort']} effort were approved first "
                         f"time {round(100 * rate)}% of the time ({r['n']} tasks, ~{round(r['minutes'] or 0)} min): "
                         f"{r['effort']} is enough for this kind of work.")
             else:
                 continue
-            add("ceo", text, evidence="effort record", source="crew-effort-record")
-            written.append(text)
-    return written
+            fresh[f"effort record: {tier} {kind} {size} {r['effort']} {verdict}"] = text
+    _keep_derived(fresh)
+    return list(fresh.values())
+
+
+def _keep_derived(fresh: dict[str, str]) -> None:
+    """Make the worked-out lessons exactly `fresh` (keyed by what they are about), in one step."""
+    with _lock:
+        db = _db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            have: dict[str, int] = {}
+            for row in db.execute("SELECT id, evidence FROM lessons WHERE source=? ORDER BY id", (DERIVED,)).fetchall():
+                if row["evidence"] in fresh and row["evidence"] not in have:
+                    have[row["evidence"]] = row["id"]
+                else:  # no longer supported by the record, a repeat, or written before lessons had their keys
+                    db.execute("DELETE FROM lessons WHERE id=?", (row["id"],))
+            for key, text in fresh.items():
+                norm = " ".join(sorted(_tokens(text)))
+                if key in have:
+                    db.execute("UPDATE lessons SET text=?, norm=?, weight=weight+1, last_seen=? WHERE id=?",
+                               (text, norm, now(), have[key]))
+                else:
+                    db.execute("INSERT INTO lessons(ts,last_seen,category,text,evidence,source,project,weight,norm) "
+                               "VALUES(?,?,?,?,?,?,?,?,?)", (now(), now(), "ceo", text, key, DERIVED, "", 1, norm))
+            db.execute("COMMIT")
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        finally:
+            db.close()
 
 
 def write_playbook() -> Path:
