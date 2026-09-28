@@ -23,10 +23,11 @@
   // Crew may come back on another of its ports (for example right after an update): look for it and go there.
   (function () {
     var here = Number(location.port || 80);
-    function probe(port) {
+    function probe(port) {  // only a real Crew counts (Crew lets pages on this machine read its answer)
       var url = port === here ? '/api/ping' : location.protocol + '//' + location.hostname + ':' + port + '/api/ping';
-      return fetch(url, port === here ? { cache: 'no-store' } : { mode: 'no-cors', cache: 'no-store' })
-        .then(function (r) { if (port === here && !r.ok) throw new Error('no'); return port; });
+      return fetch(url, { cache: 'no-store', credentials: 'include' })
+        .then(function (r) { if (!r.ok) throw new Error('no'); return r.json(); })
+        .then(function (d) { if (!d || !d.crew) throw new Error('not Crew'); return port; });
     }
     function scan() {
       var ports = [here];

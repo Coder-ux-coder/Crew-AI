@@ -1,6 +1,6 @@
 // Crew's service worker: lets the app be installed, and shows a helpful page
 // when Crew is not running on the computer. Live data is never cached.
-const CACHE = 'crew-shell-v2';  // v2: the offline page finds Crew again by itself
+const CACHE = 'crew-shell-v3';  // v3: the offline page goes only to a port that really is Crew
 const SHELL = ['/offline.html', '/icons/icon-192.png', '/icons/icon.svg'];
 
 self.addEventListener('install', (e) => {

@@ -125,9 +125,14 @@ class App:
             return False
         old = updater.current().get("version")
         launcher.log(f"updating Crew from {old} to {info.get('latest')} automatically (nothing was running)")
-        hub.publish("app", "updating", info)
+        hub.publish("app", "updating", {**info, "current": old})
         time.sleep(2)
-        result = updater.install()
+        try:
+            result = updater.install()
+        except updater.UpdateError as exc:  # nothing was changed: Crew carries on, and the window says why
+            launcher.log(f"automatic update failed: {exc}")
+            hub.publish("app", "update_failed", {"message": str(exc)})
+            return False
         updater.note_updated(old, result.get("version") or info.get("latest"), auto=True)
         self.chats.shutdown()
         self.workflows.stop()
@@ -553,8 +558,14 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", "/api/ping")
     def api_ping(self):
-        """Instant: is this Crew alive? (The launcher asks before it opens a window or replaces a stuck Crew.)"""
-        return self._json({"crew": True, "version": VERSION, "pid": os.getpid(), "port": self.app.port})
+        """Instant: is this Crew alive? (The launcher asks before it opens a window or replaces a stuck Crew.)
+        A Crew window on another port of this same machine may read the answer: after an update, Crew can come
+        back on a neighbouring port, and the window must know it is really Crew before it goes there."""
+        origin = self.headers.get("Origin") or ""
+        same_machine = origin and urlparse(origin).hostname == urlparse("//" + (self.headers.get("Host") or "")).hostname
+        headers = {"Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
+                   "Vary": "Origin"} if same_machine else {}
+        return self._json({"crew": True, "version": VERSION, "pid": os.getpid(), "port": self.app.port}, headers=headers)
 
     @route("GET", "/api/health")
     def api_health(self):
@@ -995,8 +1006,17 @@ class Handler(BaseHTTPRequestHandler):
     def api_update_install(self):
         if not self._loopback():
             return self._error(403, "Update Crew on the computer it runs on.")
+        busy = [r for r in self.app.runs.list() if r.get("running")]
+        if busy and not self._body().get("anyway"):
+            return self._json({"confirm": True, "running": len(busy), "error": (
+                f"{'A team project is' if len(busy) == 1 else f'{len(busy)} team projects are'} working right now. "
+                "It keeps working while Crew updates, but the safest moment to update is when nothing is running.")},
+                409)
         old = updater.current().get("version")
-        result = updater.install()
+        try:
+            result = updater.install()
+        except updater.UpdateError as exc:  # nothing was changed: Crew keeps running as it was
+            return self._error(503, str(exc))
         updater.note_updated(old, result.get("version"), auto=False)
         self.app.chats.shutdown()
         self.app.workflows.stop()

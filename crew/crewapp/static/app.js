@@ -1,7 +1,7 @@
 // Crew app: start-up, navigation, the sidebar, the side panel (browser, phone, computer and file previews
 // beside whatever you are doing, resizable like Claude's artifacts), app-wide notices and one-click updates.
 
-import { $, $$, h, icon, btn, api, stream, store, bus, fail, toast, markdown, download, esc, tokens, pct, inTime, menu, isSmall, clear } from './js/ui.js';
+import { $, $$, h, icon, btn, api, stream, store, bus, fail, toast, markdown, download, esc, pct, isSmall, clear, confirmBox } from './js/ui.js';
 import { homePage, chatPage, chatsPage } from './js/pages/chat.js';
 import { projectsPage, projectPage } from './js/pages/projects.js';
 import { workflowsPage } from './js/pages/workflows.js';
@@ -275,7 +275,7 @@ function preview(item) {
   }
   const name = String(item.name || '').split('/').pop() || 'Preview';
   const bar = h('div', { class: 'screen-bar' }, h('b', { class: 'grow ellipsis', style: { padding: '0 6px' } }, name),
-    btn('', () => { const f = box.querySelector('iframe'); if (f) f.src = f.src; else panel.show('preview'); }, { cls: 'icon ghost', ic: 'reload', title: 'Reload' }),
+    btn('', () => { const f = box.querySelector('iframe'); if (f) f.setAttribute('src', f.getAttribute('src')); else panel.show('preview'); }, { cls: 'icon ghost', ic: 'reload', title: 'Reload' }),
     btn('', () => window.open(item.url, '_blank', 'noopener'), { cls: 'icon ghost', ic: 'external', title: 'Open in a new window' }),
     btn('', () => download(item.url, name), { cls: 'icon ghost', ic: 'download', title: 'Download' }));
   const box = h('div', { class: 'livebox' }, bar);
@@ -358,22 +358,20 @@ function updatingCover(info) {
 }
 
 // Where is Crew now? Here, or — after a restart — on one of its other ports (Windows can keep a port for a few
-// minutes after a program closes). Another port cannot be read from this page, but it can be reached.
-async function findCrew(expected) {
+// minutes after a program closes). `before` is the version that was running: the updated Crew is any other one.
+async function findCrew(before) {
   const here = Number(location.port || (location.protocol === 'https:' ? 443 : 80));
+  const isNew = (d) => d && d.crew && (!before || d.version !== before);
   try {
     const r = await fetch('/api/ping', { cache: 'no-store' });
-    if (r.ok) {
-      const d = await r.json();
-      if (!expected || d.version === expected) return here;
-    }
+    if (r.ok && isNew(await r.json())) return here;
   } catch (e) { /* not here (yet) */ }
   for (let p = 8765; p < 8775; p++) {
     if (p === here) continue;
-    try {
-      await fetch(`${location.protocol}//${location.hostname}:${p}/api/ping`, { mode: 'no-cors', cache: 'no-store' });
-      return p;
-    } catch (e) { /* nothing there */ }
+    try {  // Crew lets a window on this machine read its answer; any other program there is not Crew
+      const r = await fetch(`${location.protocol}//${location.hostname}:${p}/api/ping`, { cache: 'no-store', credentials: 'include' });
+      if (r.ok && isNew(await r.json())) return p;
+    } catch (e) { /* nothing there, or not Crew */ }
   }
   return null;
 }
@@ -385,13 +383,14 @@ function goTo(port) {
 }
 
 // Crew restarts after an update (by the owner's click, or automatically at a quiet moment): wait for it and
-// reconnect, wherever it comes back.
-function waitForRestart(cover, expected) {
+// reconnect, wherever it comes back. `before`: the version that was running before the update.
+function waitForRestart(cover, before) {
   const started = Date.now();
   const tick = async () => {
     await new Promise((r) => setTimeout(r, 2000));
+    if (!cover.isConnected) return;  // the update did not go ahead (the cover was taken away)
     if (Date.now() - started > 5000) {
-      const port = await findCrew(expected);
+      const port = await findCrew(before);
       if (port) { goTo(port); return; }
     }
     if (Date.now() - started < 6 * 60000) tick();
@@ -403,24 +402,35 @@ function waitForRestart(cover, expected) {
   tick();
 }
 
-export async function installUpdate(info) {
+export async function installUpdate(info, anyway = false) {
+  const before = (store.overview && store.overview.version) || (info && info.current) || '';
   const cover = updatingCover(info);
   document.body.append(cover);
   try {
-    await api('/api/update', { method: 'POST', body: {} });
+    await api('/api/update', { method: 'POST', body: anyway ? { anyway: true } : {} });
   } catch (e) {
     cover.remove();
+    if (e.status === 409 && !anyway) {  // a team project is working: ask first
+      if (await confirmBox('Update Crew now?', e.message + ' Update now anyway?', { ok: 'Update now' })) installUpdate(info, true);
+      return;
+    }
     fail(e);
     return;
   }
-  waitForRestart(cover, info && info.latest);
+  waitForRestart(cover, before);
 }
 
 function showUpdating(info) {
   if (document.querySelector('.overlay-full')) return;
   const cover = updatingCover(info);
   document.body.append(cover);
-  waitForRestart(cover, info && info.latest);
+  waitForRestart(cover, (info && info.current) || (store.overview && store.overview.version) || '');
+}
+
+// An automatic update that could not be installed changed nothing: take the cover away and say why.
+function updateFailed(d) {
+  document.querySelectorAll('.overlay-full').forEach((el) => el.remove());
+  toast(`Crew could not update itself: ${(d && d.message) || 'an unknown problem'}`, { bad: true, ms: 15000 });
 }
 
 // After an update: say so once.
@@ -459,6 +469,7 @@ async function boot() {
   stream('/api/events', {
     update: (info) => showUpdate(info),
     updating: (info) => showUpdating(info),
+    update_failed: (d) => updateFailed(d),
     notice: (n) => {
       toast(n.text || 'Done.', { bad: n.status === 'failed', ms: 7000, action: n.kind === 'workflow' ? 'Open' : null, onAction: () => { location.hash = '#/workflows'; } });
       if (n.kind === 'workflow') { bus.emit('workflows'); refreshRecent(); }

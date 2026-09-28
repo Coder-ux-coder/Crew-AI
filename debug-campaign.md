@@ -412,6 +412,23 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   in the conversation and frees the chat; file listings (chat files, Library, new files) skip files that
   vanish; nothing is written for a chat deleted mid-answer; child output is drained without growing lists ·
   test_campaign.ChatsNeverStayBusy (3 tests; all fail before the fix).
+- B-04 · updating · an update copied the program file by file: a file Windows would not let go of (antivirus,
+  Explorer showing the icon) stopped it half way, leaving half an old and half a new program; a download cut
+  short ended in a raw "File is not a zip file" error (500) with a temp folder left behind; pip slower than 15
+  minutes raised after the files were replaced, so Crew never restarted · no staging, no rollback, pip errors
+  not caught · the whole new version is unpacked and staged beside the program first (a bad download or a full
+  disk stops there with nothing changed); files are then swapped with brief retries for Windows' momentary
+  locks, and if one will not move every swapped file is put back; pip problems are logged and ignored; the app
+  reports the plain reason (503) and does not restart; an automatic update that fails tells the open window
+  (update_failed) instead of leaving "Updating Crew…" on screen for six minutes ·
+  test_campaign.UpdatesAreAllOrNothing (3), UpdateFlowInTheApp (all fail before the fix).
+- B-05 · updating (C11, C12) · "Update now" while a team project worked gave no warning; after an update the
+  window waited for one exact version and, looking on neighbouring ports, went to any program that answered
+  (no-cors probe), which could be something that is not Crew · the update asks first when a project is working
+  (409 + confirm); the window waits for any version other than the one that was running and only follows a
+  port whose /api/ping it can read (Crew lets pages on the same machine read its ping); the offline page does
+  the same; service-worker cache bumped so the new offline page reaches installed copies ·
+  test_campaign.UpdateFlowInTheApp.
 
 ---------------------------------------------------------------------------------------------------------------
 

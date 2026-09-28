@@ -194,6 +194,162 @@ class ChatsNeverStayBusy(unittest.TestCase):
             s.api("PUT", "/api/settings", {"accounts": before["accounts"]})
 
 
+class UpdatesAreAllOrNothing(unittest.TestCase):
+    """B-04: an update copied file by file. A file Windows would not let go of (antivirus, Explorer showing the
+    icon) stopped it half way: half old, half new program. A download cut short ended in a raw zip error, and a
+    slow pip after the files were replaced raised, so Crew did not restart."""
+
+    def setUp(self):
+        import io
+        import zipfile
+
+        from crewapp import updater
+        self.updater = updater
+        self.root = Path(tempfile.mkdtemp(prefix="crew-install-"))
+        for rel, text in (("crewlib/cli.py", "OLD"), ("crewapp/a.py", "OLD-A"), ("crewapp/z.py", "OLD-Z")):
+            (self.root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / rel).write_text(text)
+        (self.root / "VERSION.json").write_text(json.dumps({"version": "2.0.0"}))
+        (self.root / "requirements-app.txt").write_text("playwright\n")
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("Crew-AI-x/crew/crewlib/cli.py", "NEW")
+            zf.writestr("Crew-AI-x/crew/crewapp/a.py", "NEW-A")
+            zf.writestr("Crew-AI-x/crew/crewapp/b.py", "NEW-B")
+            zf.writestr("Crew-AI-x/crew/crewapp/z.py", "NEW-Z")
+            zf.writestr("Crew-AI-x/crew/requirements-app.txt", "playwright\npillow\n")
+            zf.writestr("Crew-AI-x/crew/VERSION.json", json.dumps({"version": "2.1.0"}))
+        self.zip = buf.getvalue()
+        self.saved = (updater.ROOT, updater._get, updater.os.replace, updater.subprocess.run)
+        updater.ROOT = self.root
+        updater._get = lambda url, timeout=30: self.zip
+        updater.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0)
+
+    def tearDown(self):
+        u = self.updater
+        u.ROOT, u._get, u.os.replace, u.subprocess.run = self.saved
+
+    def program(self) -> dict:
+        return {p.relative_to(self.root).as_posix(): p.read_text() for p in sorted(self.root.rglob("*"))
+                if p.is_file()}
+
+    def test_a_locked_file_leaves_the_old_program_whole(self):
+        before = self.program()
+        real = self.saved[2]
+        targets: list[Path] = []
+
+        def replace(src, dst):
+            dst_p = Path(dst)
+            if self.root in dst_p.parents and ".crew-update" not in dst_p.parts and dst_p.suffix == ".py":
+                if dst_p not in targets:
+                    targets.append(dst_p)
+                if len(targets) > 1 and dst_p == targets[1]:  # the second program file is held open by another program, for good
+                    raise PermissionError(13, "The process cannot access the file", str(dst))
+            return real(src, dst)
+        self.updater.os.replace = replace
+        with self.assertRaises(self.updater.UpdateError) as caught:
+            self.updater.install()
+        self.assertIn("Nothing was changed", str(caught.exception))
+        self.assertEqual(self.program(), before)  # every file exactly as it was, no leftovers
+
+    def test_a_cut_download_changes_nothing(self):
+        before = self.program()
+        self.updater._get = lambda url, timeout=30: self.zip[: len(self.zip) // 2]
+        with self.assertRaises(self.updater.UpdateError) as caught:
+            self.updater.install()
+        self.assertIn("incomplete", str(caught.exception))
+        self.assertEqual(self.program(), before)
+
+    def test_pip_trouble_neither_undoes_nor_stops_the_update(self):
+        def slow(*a, **k):
+            raise subprocess.TimeoutExpired(a[0] if a else "pip", 900)
+        self.updater.subprocess.run = slow
+        self.assertEqual(self.updater.install(), {"version": "2.1.0"})
+        after = self.program()
+        self.assertEqual((after["crewlib/cli.py"], after["crewapp/a.py"], after["crewapp/b.py"]), ("NEW", "NEW-A", "NEW-B"))
+        self.assertEqual(json.loads(after["VERSION.json"])["version"], "2.1.0")
+        self.assertFalse(any(".crew-update" in k for k in after))
+
+
+class UpdateFlowInTheApp(unittest.TestCase):
+    """B-04 (the app side) and B-05: a failed update must say why and must not restart Crew; an automatic update
+    that fails must take the "Updating Crew…" cover away; updating while a project works asks first; after an
+    update the window reconnects only to a real Crew."""
+
+    @classmethod
+    def setUpClass(cls):
+        from test_app import ENV, AppServer
+        os.environ.update(ENV)
+        cls.s = AppServer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.stop()
+
+    def setUp(self):
+        from crewapp import updater
+        self.updater = updater
+        self.saved = (updater.install, updater.restart_later, updater.note_updated, self.s.app.runs.list)
+        self.restarts: list = []
+        updater.restart_later = lambda *a, **k: self.restarts.append(a)
+        updater.note_updated = lambda *a, **k: None
+
+        def broken():
+            raise updater.UpdateError("The download was incomplete (the connection may have dropped). Nothing was "
+                                      "changed; try again.")
+        updater.install = broken
+
+    def tearDown(self):
+        u = self.updater
+        u.install, u.restart_later, u.note_updated, self.s.app.runs.list = self.saved
+
+    def test_a_failed_update_says_why_and_crew_keeps_running(self):
+        err = self.s.api("POST", "/api/update", {}, expect=503)
+        self.assertIn("incomplete", err["error"])
+        self.assertEqual(self.restarts, [])
+
+    def test_updating_while_a_project_works_asks_first(self):
+        self.s.app.runs.list = lambda: [{"id": "x", "running": True}]
+        err = self.s.api("POST", "/api/update", {}, expect=409)
+        self.assertTrue(err["confirm"])
+        self.assertIn("working right now", err["error"])
+        self.s.api("POST", "/api/update", {"anyway": True}, expect=503)  # the owner said yes: it goes ahead
+        self.assertEqual(self.restarts, [])
+
+    def test_an_automatic_update_that_fails_tells_the_window(self):
+        from crewapp.sse import hub
+        app = self.s.app
+        q = hub.subscribe("app")
+        saved = (self.updater.last_check, self.updater.newer, app.idle, self.updater.time.sleep)
+        try:
+            self.updater.last_check = lambda: {"checked": 9e18, "latest": "9.9.9"}
+            self.updater.newer = lambda info: True
+            app.idle = lambda quiet_minutes=30: True
+            import crewapp.server as srv
+            srv_sleep = srv.time.sleep
+            srv.time.sleep = lambda s: None
+            try:
+                self.assertFalse(app.update_if_quiet())
+            finally:
+                srv.time.sleep = srv_sleep
+            events = []
+            while not q.empty():
+                events.append(q.get_nowait())
+            self.assertTrue(any("event: updating" in e for e in events), events)
+            self.assertTrue(any("event: update_failed" in e and "incomplete" in e for e in events), events)
+            self.assertEqual(self.restarts, [])
+        finally:
+            hub.unsubscribe("app", q)
+            self.updater.last_check, self.updater.newer, app.idle, self.updater.time.sleep = saved
+
+    def test_only_a_page_on_this_machine_may_read_the_ping(self):
+        s = self.s
+        _, headers, _ = s.request("GET", "/api/ping", headers={"Origin": "http://127.0.0.1:8766"})
+        self.assertEqual(headers.get("Access-Control-Allow-Origin"), "http://127.0.0.1:8766")
+        _, headers, _ = s.request("GET", "/api/ping", headers={"Origin": "http://evil.example"})
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+
 class _FakeApp:
     """A stand-in for the Crew app's /internal endpoints: records what the agent's tools send."""
 
