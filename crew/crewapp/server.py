@@ -199,13 +199,13 @@ class App:
             for chat_dir in root.iterdir():
                 if chat_dir.name not in titles:
                     continue
-                for p in chat_dir.rglob("*"):
-                    rel = p.relative_to(chat_dir)
-                    if not p.is_file() or rel.parts[0] in (".crew", "attachments") or p.name.startswith("."):
+                # What was made for the owner: not the tools' own files (node_modules, .git, Python's caches …),
+                # which also made the Library slow to open
+                for rel, st in chat.workspace_files(chat_dir):
+                    if rel.startswith("attachments/"):
                         continue
-                    st = p.stat()
-                    items.append({"name": rel.as_posix(), "url": f"/files/chat/{chat_dir.name}/{rel.as_posix()}",
-                                  "kind": chat.file_kind(p.name), "size": st.st_size, "modified": st.st_mtime,
+                    items.append({"name": rel, "url": f"/files/chat/{chat_dir.name}/{rel}",
+                                  "kind": chat.file_kind(rel), "size": st.st_size, "modified": st.st_mtime,
                                   "where": titles[chat_dir.name], "origin": f"#/chat/{chat_dir.name}"})
         items.sort(key=lambda x: x["modified"], reverse=True)
         return items[:limit]

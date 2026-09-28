@@ -1376,6 +1376,21 @@ class AppCampaignTests(unittest.TestCase):
             s.api("DELETE", f"/api/chats/{cid}")
         self.assertEqual(installs, [])  # nothing was installed
 
+    def test_a58_the_library_lists_what_was_made_not_the_tools(self):
+        """A chat where the assistant built something (installed its packages, kept a git history) filled the
+        Library with thousands of the tools' own files (node_modules, .git objects, Python's caches), and the
+        Library walked every one of them each time it opened."""
+        s = self.s
+        cid, _ = self.new_chat()
+        folder = s.app.chats.workspace(cid)
+        for rel in ["page.html", "site/index.html", "attachments/photo.png", ".git/objects/ab/cdef0123",
+                    "__pycache__/app.cpython-312.pyc"] + [f"node_modules/pkg{i}/index.js" for i in range(300)]:
+            (folder / rel).parent.mkdir(parents=True, exist_ok=True)
+            (folder / rel).write_text("x", encoding="utf-8")
+        mine = sorted(x["name"] for x in s.api("GET", "/api/library")["items"] if x["origin"] == f"#/chat/{cid}")
+        self.assertEqual(mine, ["page.html", "site/index.html"])
+        s.api("DELETE", f"/api/chats/{cid}")
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"
