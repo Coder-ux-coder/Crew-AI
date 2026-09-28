@@ -495,6 +495,77 @@ Follow-ups from the handoff, and what they led to:
   them (the suite's ResourceWarnings); over weeks, open handles pile up · each reader closes its pipe when it
   reaches the end (agents.drain) · test_c17_finished_answers_let_go_of_their_pipes.
 
+The owner's request (2026-09-28): a one-to-one chat (not the team) moves on to the next subscription when one
+reaches its usage limit, and keeps the whole conversation. A hand-over existed for Claude chats only; testing it
+with fakes that remember what each conversation holds (below) found these:
+
+- A42 · P1 · chat (Claude) · two Claude subscriptions both at their limit: the chat was handed back and forth
+  for ever, adding "…Continuing on another subscription…" and asking each subscription again, message after
+  message · the next subscription was chosen without checking that it had room, and nothing remembered which
+  had already reached their limit during this message · only a subscription with room that has not reached
+  its limit during this message; when there is none, one plain message saying when the first frees up ("…
+  frees up first, at 15:40. Nothing is lost: send your message again then …") ·
+  test_every_subscription_at_its_limit_ends_plainly_not_in_a_loop.
+- A43 · P1 · chat (Claude) · a chat that had moved to another subscription and later went back (its chosen
+  subscription had room again, or Crew restarted and picked it) resumed its old copy of the conversation
+  there: everything said meanwhile was forgotten (the fake answered "KIWI", the code word given before the
+  move, instead of "LEMON", given after it) · any copy on the subscription counted as good enough · the newest
+  copy is brought from whichever subscription holds it · test_a_chat_that_moves_back_keeps_what_was_said_meanwhile.
+- A44 · P1 · chat (ChatGPT) · a ChatGPT chat at its limit stopped with "Crew switches to another subscription
+  when you have one", but Crew did not · only Claude chats had a hand-over · ChatGPT chats move on too: a new
+  conversation on the next subscription, given the whole conversation from Crew's record (a ChatGPT
+  conversation cannot move between subscriptions by itself) · test_a_chatgpt_chat_moves_on_with_the_whole_
+  conversation, test_a_chatgpt_limit_midway_keeps_the_work, test_only_chatgpt_subscription_at_its_limit_…
+- A45 · P2 · chat (ChatGPT) · moving a ChatGPT chat to another subscription (by choice) carried only its last
+  12 messages, each cut to 700 characters · a short summary was passed on · the whole conversation is passed
+  on, with what was done and the files made (only a conversation of over about 240,000 characters leaves
+  out its middle, and says so) · test_switching_a_chatgpt_chat_keeps_all_of_it.
+- A46 · P2 · chat · a limit in the middle of an answer: what was said so far vanished from the conversation,
+  and the next subscription was given the owner's message as if new · the hand-over replaced the answer with
+  a notice and started another · the answer carries on in the same place on the next subscription, which is
+  told to carry on from where it stopped; the move is shown, and recorded as a step of the answer ·
+  test_a_limit_midway_keeps_the_work_and_the_answer_carries_on.
+- A47 · P2 · chat · between the limit's notice and the retry the chat looked idle: a message sent then went
+  to the subscription at its limit, and the retry of the first message was lost · the answer was closed
+  before the move · the answer stays open while it moves · test_the_owner_cannot_send_into_the_middle_of_a_move.
+- A48 · P2 · chat (Claude) · a conversation Claude Code no longer has (it removes old ones after 30 days by
+  default), or cannot find where Crew found it, failed on every message with "The assistant stopped
+  unexpectedly. Please send that again." · resuming was the only way on · a new conversation carries on from
+  Crew's record, and the owner is told · test_a_conversation_no_longer_on_disk_continues_from_crews_record,
+  test_claude_code_not_finding_the_conversation_is_not_the_end_of_it.
+- C18 · P2 · agents.copy_claude_session · bringing a conversation to another subscription overwrote a copy
+  there that had been continued separately · plain overwrite · a copy that is not an earlier part of the one
+  brought is kept under a dated name (….jsonl.kept-<date>); a file Windows holds open makes the copy fail
+  softly, and the conversation then carries on from Crew's record · test_a_copy_that_was_continued_elsewhere_…
+- C19 · P2 · usage.snapshot, chat.pick_account, pages/usage.js, the chat's subscription menu · only the
+  5-hour limit counted: a subscription at its weekly limit was chosen again and again, and shown as having
+  room; the Usage page said "At its limit" after a limit had lifted, until that subscription was used again ·
+  limits were read in three places, each partly · one definition (usage.limited_until: both windows), used by
+  the chat, the menu and the Usage page · test_a_weekly_limit_counts_as_at_the_limit,
+  test_a_limit_that_has_lifted_is_not_shown_as_reached.
+- New with it: when a limit lifts is read from its message when the CLI does not report it (Claude Code's
+  "…|1790000000", Codex's "try again in 2 hours 5 minutes", "resets 3pm") and remembered, so the next message
+  starts elsewhere · test_when_a_limit_lifts_is_read_from_its_message.
+- Test stand-ins: the fakes now keep each conversation in its session file and answer "what is the code
+  word?" from it, refuse to resume a conversation their subscription does not hold (as Claude Code does), and
+  read limits from STATE/live-scenario.json before every message. The tests' default CLI folders are now test
+  folders; before, the fakes wrote to ~/.claude-fake on the computer running the tests.
+- Verified by running (Linux container): tests/test_rollover.py, 14 tests, every one failing on the code
+  before the change (run in a worktree of d949d48 with the new tests and fakes) and passing after; the full
+  suite. Not verified: real Claude Code and Codex at a real usage limit (no subscriptions here); the fakes
+  follow the CLIs' output formats. Windows (a file held open during a copy) by reading only.
+
+Found by reading server.py (security):
+
+- A49 · P1 · server._dispatch · a web page whose name its maker points at this computer (DNS rebinding) is,
+  to the browser, that page's own site: it could read every chat, setting and file through Crew, and change
+  them (the same-site check compared the page's address with itself, and a request from this computer needs
+  no pairing). The test's request for /api/settings under the name evil.example got the whole settings back ·
+  nothing checked which address a request was sent to · only requests sent to this computer by address are
+  answered (localhost, 127.0.0.1, ::1, or an IP address on the home network, as paired phones use); others get
+  a plain 403 saying where Crew is · test_a49_a_web_page_under_another_name_cannot_reach_crew. Crew's own
+  parts all use 127.0.0.1 or localhost (launcher, updater script, device tools, the phone through adb).
+
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
 The whole of test_campaign.py (44 tests, the round-1 tests plus C14/C15) was run against the code before the
