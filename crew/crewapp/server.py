@@ -22,7 +22,6 @@ import sys
 import threading
 import time
 import traceback
-import webbrowser
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,7 +31,7 @@ from crewlib import claude_cli, connections as conn_mod, lessons, usage as usage
 from crewlib.util import atomic_write, crew_home
 
 from . import browser as browser_mod
-from . import captures, chat, computer as computer_mod, phone as phone_mod, settings, skills, updater
+from . import captures, chat, computer as computer_mod, launcher, phone as phone_mod, settings, skills, updater, writer
 from .workflows import TEMPLATES as WORKFLOW_TEMPLATES, Workflows
 from .runs import RunManager
 from .sse import hub
@@ -68,6 +67,7 @@ class App:
         skills.build_active_pack()
         self.workflows = Workflows(self)
         self.skill_install = {"state": "idle", "message": ""}
+        self.last_action = time.time()  # the owner's last change (sending, starting, saving): updates wait for quiet
 
     def upkeep(self) -> None:
         """Once a day, in the background: keep Claude Code current and look for a newer Crew."""
@@ -76,6 +76,7 @@ class App:
                 claude_cli.update_if_stale()
             except Exception as exc:
                 print(f"claude update: {exc}")
+            launcher.heal_shortcuts()
             refresh_windows_icons()
             if not (crew_home() / "anthropic-skills.json").is_file() and settings.load()["accounts"]:
                 self.install_anthropic_skills()  # once: Anthropic's official skills for every Claude subscription
@@ -87,6 +88,51 @@ class App:
             except Exception as exc:
                 print(f"update check: {exc}")
         threading.Thread(target=work, daemon=True, name="crew-upkeep").start()
+
+    def idle(self, quiet_minutes: float = 30) -> bool:
+        """A quiet moment for an automatic update: nothing running, and the owner has not used Crew for a while."""
+        if time.time() - self.last_action < quiet_minutes * 60:
+            return False
+        if any(getattr(s, "busy", False) for s in list(self.chats.sessions.values())):
+            return False
+        if getattr(self.workflows, "_running", None):
+            return False
+        try:
+            return not any(r.get("running") for r in self.runs.list())
+        except Exception:  # noqa: BLE001 — when in doubt, do not update
+            return False
+
+    def auto_updates(self) -> None:
+        """Every half hour: look for a newer Crew (every six hours) and, when the owner wants it, install it at a
+        quiet moment. The open window shows "Updating Crew…" and reconnects by itself."""
+        def loop():
+            time.sleep(300)
+            while True:
+                try:
+                    self.update_if_quiet()
+                except Exception as exc:  # noqa: BLE001 — an update problem must never stop Crew
+                    print(f"automatic update: {exc}")
+                time.sleep(1800)
+        threading.Thread(target=loop, daemon=True, name="crew-auto-update").start()
+
+    def update_if_quiet(self) -> bool:
+        info = updater.last_check()
+        if time.time() - float(info.get("checked") or 0) > 6 * 3600:
+            info = updater.check()
+            if info.get("available"):
+                hub.publish("app", "update", info)
+        if not updater.newer(info) or not settings.load()["app"].get("auto_update", True) or not self.idle():
+            return False
+        old = updater.current().get("version")
+        launcher.log(f"updating Crew from {old} to {info.get('latest')} automatically (nothing was running)")
+        hub.publish("app", "updating", info)
+        time.sleep(2)
+        result = updater.install()
+        updater.note_updated(old, result.get("version") or info.get("latest"), auto=True)
+        self.chats.shutdown()
+        self.workflows.stop()
+        updater.restart_later(self.port)
+        return True
 
     def install_anthropic_skills(self) -> None:
         """Anthropic's official skills (Word, Excel, PowerPoint, PDF, skill creator …) through Claude Code's
@@ -383,6 +429,7 @@ class Handler(BaseHTTPRequestHandler):
                 origin = self.headers.get("Origin")
                 if origin and urlparse(origin).netloc != self.headers.get("Host"):
                     return self._error(403, "Cross-site request refused.")
+                self.app.last_action = time.time()
             for m, rx, name in ROUTES:
                 if m == method:
                     match = rx.match(path)
@@ -499,6 +546,18 @@ class Handler(BaseHTTPRequestHandler):
         atomic_write(crew_home() / "app.json", json.dumps(conf))
         return self._json(self._pair_info("Paired phones were signed out. Scan the new code to pair again."))
 
+    @route("POST", "/api/improve")
+    def api_improve(self):
+        """The prompt writer: the owner's words as a clear, precise prompt (shown in the message box first)."""
+        b = self._body()
+        return self._json(writer.improve(self.app.chats, b.get("text", ""), b.get("reader") or "claude",
+                                         b.get("recent") or ""))
+
+    @route("GET", "/api/ping")
+    def api_ping(self):
+        """Instant: is this Crew alive? (The launcher asks before it opens a window or replaces a stuck Crew.)"""
+        return self._json({"crew": True, "version": VERSION, "pid": os.getpid(), "port": self.app.port})
+
     @route("GET", "/api/health")
     def api_health(self):
         from shutil import which as sys_which
@@ -570,7 +629,12 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("POST", r"/api/runs/([\w.-]+)/say")
     def api_run_say(self, rid):
-        return self._json({"ok": self.app.runs.say(rid, self._body().get("text", ""))})
+        b = self._body()
+        return self._json({"ok": self.app.runs.say(rid, b.get("text", ""), b.get("to") or None)})
+
+    @route("POST", r"/api/runs/([\w.-]+)/interrupt")
+    def api_run_interrupt(self, rid):
+        return self._json({"ok": self.app.runs.interrupt(rid, self._body().get("seat", ""))})
 
     @route("POST", r"/api/runs/([\w.-]+)/stop")
     def api_run_stop(self, rid):
@@ -924,13 +988,18 @@ class Handler(BaseHTTPRequestHandler):
     def api_update_state(self):
         info = updater.check() if self.query.get("refresh") == "1" else (updater.last_check() or {})
         info["current"] = updater.current().get("version")
+        info["available"] = updater.newer(info)
+        info["updated"] = updater.recent_update()
+        info["auto"] = settings.load()["app"].get("auto_update", True)
         return self._json(info)
 
     @route("POST", "/api/update")
     def api_update_install(self):
         if not self._loopback():
             return self._error(403, "Update Crew on the computer it runs on.")
+        old = updater.current().get("version")
         result = updater.install()
+        updater.note_updated(old, result.get("version"), auto=False)
         self.app.chats.shutdown()
         self.app.workflows.stop()
         updater.restart_later(self.app.port)
@@ -1054,7 +1123,7 @@ def set_start_with_windows(enabled: bool) -> str:
           f"$s.TargetPath='{target}';$s.Arguments='-X utf8 -m crewlib app --no-open';"
           f"$s.WorkingDirectory='{root}';$s.IconLocation='{icon},0';$s.Save()")
     subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-                   capture_output=True, timeout=60)
+                   capture_output=True, timeout=60, creationflags=launcher.NO_WINDOW)
     return "Crew will start quietly when you sign in to Windows."
 
 
@@ -1080,7 +1149,7 @@ def refresh_windows_icons() -> None:
           "Start-Process -FilePath ie4uinit.exe -ArgumentList '-show' -WindowStyle Hidden")
     try:
         subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-                       capture_output=True, timeout=60)
+                       capture_output=True, timeout=60, creationflags=launcher.NO_WINDOW)
         atomic_write(flag, json.dumps({"version": ICON_VERSION, "at": time.time()}))
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"icon refresh: {exc}")
@@ -1097,15 +1166,7 @@ def open_path(path: Path) -> None:
 
 def open_app_window(url: str) -> None:
     """Open Crew in its own app window (Edge/Chrome app mode) when possible, else a normal browser tab."""
-    if os.name == "nt":
-        for exe in (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-                    os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
-                    r"C:\Program Files\Google\Chrome\Application\chrome.exe"):
-            if os.path.exists(exe):
-                subprocess.Popen([exe, f"--app={url}", "--window-size=1360,880"])
-                return
-    webbrowser.open(url)
+    launcher.open_window(url)
 
 
 class CrewServer(ThreadingHTTPServer):
@@ -1116,15 +1177,6 @@ class CrewServer(ThreadingHTTPServer):
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
-
-
-def _is_crew(port: int) -> bool:
-    import urllib.request
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=3) as resp:
-            return "version" in json.loads(resp.read() or b"{}")
-    except Exception:
-        return False
 
 
 def _log_when_windowless() -> None:
@@ -1145,24 +1197,64 @@ def _alert(message: str) -> None:
             pass
 
 
-def main(port: int = 8765, phone: bool = False, open_window: bool = True) -> int:
-    _log_when_windowless()
-    server = None
-    for candidate in range(port, port + 10):
+def _bind(port: int, patient: bool):
+    """Take Crew's port. Windows keeps a port for a few minutes after a program closes (its last connections
+    linger), so a Crew restarting after an update, or started quietly with Windows, waits for its own port — an
+    open window is looking at it — instead of moving to another. Started from the icon, it moves on at once (the
+    window follows it). Returns the server, the port of a Crew that turned out to be running, or None."""
+    deadline = time.time() + (240 if patient else 0)
+    candidate = port
+    while candidate < port + 10:
         try:
-            server = CrewServer(("127.0.0.1", candidate), Handler)
-            port = candidate
-            break
+            return CrewServer(("127.0.0.1", candidate), Handler)
         except OSError:
-            if _is_crew(candidate):  # already running: just show it
-                url = f"http://localhost:{candidate}"
-                print(f"Crew is already running: {url}")
-                if open_window:
-                    open_app_window(url)
-                return 0
+            if launcher.listening(candidate):
+                if launcher.wait_for(candidate, 3):
+                    return candidate
+            elif candidate == port and time.time() < deadline:
+                time.sleep(1.0)
+                continue
+            candidate += 1
+    return None
+
+
+def main(port: int = 8765, phone: bool = False, open_window: bool = True) -> int:
+    """Start Crew, or show the Crew that is already running. Opening Crew never fails silently: every step is
+    in ~/.crew/app.log, and a problem the owner must know about is shown in a message."""
+    _log_when_windowless()
+    launcher.log(f"Crew {updater.current().get('version')} asked to {'open' if open_window else 'start'} "
+                 f"(process {os.getpid()}, {sys.executable}, {launcher.ROOT})")
+    running = launcher.find_running(port)
+    if running:  # Crew keeps running after its window is closed: just show it again
+        url = f"http://localhost:{running}"
+        launcher.log(f"Crew is already running at {url}")
+        if open_window:
+            launcher.open_window(url)
+        return 0
+    other = launcher.starting_elsewhere()
+    if other:  # the icon clicked twice, or Crew restarting after an update: wait for it rather than start twice
+        launcher.log(f"another Crew (process {other.get('pid')}) is starting; waiting for it")
+        found = launcher.wait_running(port, 300)
+        if open_window:
+            launcher.open_window(f"http://localhost:{found or other.get('port') or port}")
+        return 0
+    stuck = launcher.stuck_server(port)
+    if stuck:
+        launcher.log(f"the previous Crew (process {stuck}) stopped answering; replacing it")
+        launcher.stop_process(stuck, launcher.recorded().get("port"))
+    launcher.record(port, "starting")
+    server = _bind(port, patient=not open_window)
+    if isinstance(server, int):  # a Crew answered on that port after all
+        url = f"http://localhost:{server}"
+        launcher.log(f"Crew is already running at {url}")
+        if open_window:
+            launcher.open_window(url)
+        return 0
     if server is None:
         _alert(f"Crew could not start: ports {port}-{port + 9} are all taken by other programs.")
         return 1
+    port = server.server_address[1]
+    launcher.record(port, "starting")
     try:
         app = App(port, False)
     except Exception as exc:
@@ -1171,15 +1263,17 @@ def main(port: int = 8765, phone: bool = False, open_window: bool = True) -> int
         _alert(f"Crew could not start: {exc}\n\nDetails are in {crew_home() / 'app.log'}")
         return 1
     Handler.app = app
+    launcher.record(port, "running")
     url = f"http://localhost:{port}"
     app.workflows.start_clock()
     app.upkeep()
+    app.auto_updates()
     if phone or settings.load()["app"].get("phone_enabled"):
         app.set_phone_access(True)
-    print(f"Crew is running at {url}" +
-          ("  (phone access on — pair from Settings → Phone)" if app.phone_access else ""))
+    launcher.log(f"Crew is running at {url}" +
+                 ("  (phone access on — pair from Settings → Phone)" if app.phone_access else ""))
     if open_window:
-        threading.Timer(0.6, open_app_window, args=(url,)).start()
+        threading.Timer(0.6, launcher.open_window, args=(url,)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

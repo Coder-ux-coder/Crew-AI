@@ -1,12 +1,12 @@
 {
-  "version": "2.2.0",
-  "date": "2026-09-27",
+  "version": "2.3.0",
+  "date": "2026-09-28",
   "notes": [
-    "Model scorecard (Usage & scorecard): how each model does, by kind of work",
-    "Work the workhorse keeps failing moves up to Opus automatically; a task Sol fails twice moves up at once",
-    "Head-to-head (optional): both models build a part, the manager judges blind and keeps the better one",
-    "Choose the subscription yourself: per chat, per team project, per workflow",
-    "ChatGPT and Claude models are now clearly labelled everywhere",
-    "The CEO's effort record now counts first-time approvals correctly"
+    "Talk to any agent privately in a team project (grouped by subscription), ask the CEO, or reach a helper through its agent",
+    "Prompt writer: your words become a clear instruction before the team reads them (your own words stay attached)",
+    "The desktop icon always opens Crew again, and updates come back by themselves; Crew can update itself when idle",
+    "Stronger team rules: agents name each other, pass on what you tell one of them, plan briefly, share files and lessons",
+    "Automatic quality gate: tests for every backend route, a security check, and Crew's own scan for leaked keys and risky code",
+    "Head-to-head can now combine the best of both versions into one joint result"
   ]
 }

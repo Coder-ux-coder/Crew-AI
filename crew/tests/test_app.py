@@ -305,6 +305,31 @@ class AppTests(unittest.TestCase):
         later = s.api("GET", f"/api/runs/{rid}?after={state['messages'][-1]['id']}")
         self.assertIn("thank you", [m["text"] for m in later["messages"] if m["who"] == "you"])
         self.assertIn(rid, [r["id"] for r in s.api("GET", "/api/runs")["runs"]])
+        # talking to one agent: only a real agent (or the CEO) can be addressed
+        lead = next(a["name"] for a in state["agents"] if a.get("standing"))
+        err = s.api("POST", f"/api/runs/{rid}/say", {"text": "hello", "to": "nobody"}, expect=400)
+        self.assertIn("no agent called nobody", err["error"])
+        self.assertTrue(s.api("POST", f"/api/runs/{rid}/say", {"text": "How did it go?", "to": lead})["ok"])
+        self.assertTrue(s.api("POST", f"/api/runs/{rid}/say", {"text": "Anything to improve?", "to": "CEO"})["ok"])
+        mine = [m for m in s.api("GET", f"/api/runs/{rid}?after={later['messages'][-1]['id']}")["messages"]
+                if m["who"] == "you"]
+        self.assertEqual([(m["to"], m["kind"]) for m in mine], [(lead, "draft"), ("ceo", "draft")])  # the writer's turn
+        self.assertTrue(s.api("POST", f"/api/runs/{rid}/interrupt", {"seat": lead})["ok"])
+        self.assertFalse(s.api("POST", f"/api/runs/{rid}/interrupt", {"seat": "nobody"})["ok"])
+
+    def test_ping_prompt_writer_and_update_state(self):
+        s = self.s
+        ping = s.api("GET", "/api/ping")
+        self.assertEqual((ping["crew"], ping["port"]), (True, s.port))
+        s.api("POST", "/api/improve", {"text": "  "}, expect=400)
+        out = s.api("POST", "/api/improve", {"text": "pls make the button bigger and blue", "reader": "claude"})
+        self.assertEqual(out, {"text": "Clarified: pls make the button bigger and blue", "changed": True})
+        info = s.api("GET", "/api/update")
+        self.assertIn("available", info)
+        self.assertIn("auto", info)
+        self.assertFalse(s.app.idle())  # the owner just used Crew: an automatic update waits for a quiet moment
+        s.app.last_action -= 3600
+        self.assertTrue(s.app.idle())
 
     # ------------------------------------------------------------ phone (simulated)
 

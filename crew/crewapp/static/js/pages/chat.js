@@ -132,10 +132,12 @@ class Composer {
     this.talkBtn = h('button', { class: 'icon-btn sm', type: 'button', title: 'A spoken conversation', 'aria-label': 'Talk', onclick: () => this.o.onTalk && this.o.onTalk() }, icon('wave'));
     if (!(canDictate && canSpeak) || !this.o.onTalk) this.talkBtn.classList.add('hidden');
     this.sendBtn = h('button', { class: 'send-btn idle', type: 'button', title: 'Send', 'aria-label': 'Send', onclick: () => (this.busy ? this.o.onStop() : this.submit()) }, icon('send2'));
+    this.improveBtn = h('button', { class: 'icon-btn sm improve-btn', type: 'button', 'aria-label': 'Improve my message',
+      title: 'Improve my message: the prompt writer turns your words into a clear, precise prompt — you see it before it is sent', onclick: () => this.improve() }, icon('sparkles'));
     this.banner = h('div', { class: 'mode-banner hidden' }, icon('map'), h('span', null, 'Plan mode — it looks into things and writes a plan. Nothing changes until you approve it.'));
     this.el = h('div', { class: 'composer' }, this.banner, this.atts, this.ta,
       h('div', { class: 'c-row' }, this.plusBtn, this.fileIn, this.planBtn, this.prodBtn, this.effortBtn, this.acctBtn, this.timerBtn,
-        h('div', { class: 'c-end' }, this.ring, this.mic, this.talkBtn, this.sendBtn)));
+        h('div', { class: 'c-end' }, this.ring, this.improveBtn, this.mic, this.talkBtn, this.sendBtn)));
     // Drop files onto the composer
     let depth = 0;
     const zone = h('div', { class: 'dropzone hidden' }, 'Drop to attach');
@@ -392,11 +394,48 @@ class Composer {
     if (e.key === 'Tab' && e.shiftKey && this.product !== 'team') { e.preventDefault(); this.setMode(this.mode === 'plan' ? 'auto' : 'plan'); }
   }
 
+  // The prompt writer: the owner's words, typed or dictated, become a clear and precise prompt in the message box.
+  async improve(thenSend = false) {
+    const text = this.ta.value.trim();
+    if (!text) { toast('Write or say your message first; the prompt writer then makes it clear and precise.'); return false; }
+    if (this.improving) return false;
+    this.improving = true;
+    this.improveBtn.classList.add('busy');
+    this.improveBtn.disabled = true;
+    try {
+      const r = await api('/api/improve', { method: 'POST', body: { text, reader: this.product } });
+      const original = text;
+      this.ta.value = r.text;
+      this.improvedText = r.text.trim();
+      this.fit();
+      this.sync();
+      if (!thenSend) {
+        toast(r.changed ? 'Written up by the prompt writer. Check it, then send.' : 'Your message is already clear.', {
+          ms: 7000, action: r.changed ? 'Undo' : null,
+          onAction: () => { this.ta.value = original; this.improvedText = null; this.fit(); this.sync(); },
+        });
+      }
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    } finally {
+      this.improving = false;
+      this.improveBtn.classList.remove('busy');
+      this.improveBtn.disabled = false;
+    }
+  }
+
   submit() {
     if (this.busy) return;
     if (this.uploads) { toast('One moment — still attaching your file.'); return; }
     const text = this.ta.value.trim();
     if (!text && !this.attachments.length) { this.ta.focus(); return; }
+    const auto = store.overview && store.overview.app && store.overview.app.improve_prompts;
+    if (auto && text && !text.startsWith('/') && this.improvedText !== text && !this.improving) {
+      this.improve(true).then(() => { this.improvedText = this.ta.value.trim(); this.submit(); });  // sent as written up (or as typed, if the writer could not help)
+      return;
+    }
     closeMenu();
     stopDictation();
     speech.stop();

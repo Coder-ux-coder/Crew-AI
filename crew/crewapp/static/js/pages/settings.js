@@ -214,7 +214,9 @@ const RENDER = {
       card('Claude', 'The defaults for new chats with Claude. You can change them in any chat from the composer.',
         row('Model', '', select(claudeModels, app.chat_model, (v) => save({ app: { chat_model: v } }))),
         row('Effort', 'Anthropic’s own levels. auto lets Claude decide.', select(effortOpts('claude'), app.chat_effort || 'auto', (v) => save({ app: { chat_effort: v } }))),
-        claudeAccounts.length > 1 ? row('Subscription', 'Which one chats use first (Crew switches when it runs low)', select([['', 'Whichever has the most room'], ...claudeAccounts.map((a) => [a.name, a.name])], app.chat_account || '', (v) => save({ app: { chat_account: v } }))) : null),
+        claudeAccounts.length > 1 ? row('Subscription', 'Which one chats use first (Crew switches when it runs low)', select([['', 'Whichever has the most room'], ...claudeAccounts.map((a) => [a.name, a.name])], app.chat_account || '', (v) => save({ app: { chat_account: v } }))) : null,
+        row('Improve my messages automatically', 'Before a chat message is sent, the prompt writer turns your words (typed or spoken) into a clear, precise prompt — it adds a few seconds. You can also press ✦ in any message box to improve one message and check it first.',
+          toggle(app.improve_prompts === true, (v) => save({ app: { improve_prompts: v } })))),
       card('ChatGPT', 'The defaults for new chats with ChatGPT (through Codex).',
         row('Model', '', select(withCurrent(codexModels, app.codex_model), app.codex_model || '', (v) => save({ app: { codex_model: v } }))),
         row('Effort', 'OpenAI’s own levels. auto lets ChatGPT decide.', select(effortOpts('codex'), app.codex_effort || 'auto', (v) => save({ app: { codex_effort: v } })))),
@@ -244,8 +246,12 @@ const RENDER = {
       card('How the team works', '',
         row('Who builds', TEAM_MODES.find((x) => x.value === t.mode)?.hint || '', select(TEAM_MODES.map((x) => [x.value, x.label]), t.mode, (v) => save({ team: { mode: v } }))),
         row('Final approval by the CEO', 'One last look at the whole result before it is handed over', toggle(t.ceo_reviews, (v) => save({ team: { ceo_reviews: v } }))),
-        row('Head-to-head comparisons', 'The workhorse and a manager each build the same part; a manager compares the two versions without knowing which is which and keeps the better one. Fills the model scorecard; uses more tokens.',
+        row('Head-to-head comparisons', 'The workhorse and a manager each build the same part; a manager compares the two versions without knowing which is which. Fills the model scorecard; uses more tokens.',
           select([['off', 'Off'], ['some', 'A few parts per project'], ['all', 'Every part that can be compared']], t.head_to_head || 'off', (v) => save({ team: { head_to_head: v } }))),
+        row('When both versions are built', 'Combine: the better version also takes in what the other did better (one joint result). Compete: the better one is kept as it is.',
+          select([['combine', 'Combine both'], ['compete', 'Keep the better']], t.head_to_head_style || 'combine', (v) => save({ team: { head_to_head_style: v } }))),
+        row('Prompt writer', 'Before the team reads your messages, a writer turns your words (typed or spoken) into a clear instruction. Your own words stay attached, so nothing is lost.',
+          toggle(t.prompt_writer !== false, (v) => save({ team: { prompt_writer: v } }))),
         row('When the work is finished', '', select([['merge', 'Put it in the project folder'], ['branch', 'Keep it as a separate version for me to check'], ['push', 'Put it in the folder and upload it online']], t.deliver, (v) => save({ team: { deliver: v } }))),
         row('Let agents act without asking', 'On: fully automatic. Off: a safety check approves each action.',
           toggle(t.permission_mode === 'bypassPermissions', (v) => save({ team: { permission_mode: v ? 'bypassPermissions' : 'auto' } }))),
@@ -373,7 +379,7 @@ const RENDER = {
     ];
   },
 
-  updates() {
+  updates(s) {
     const crew = h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'Checking…'));
     const claude = h('div', { class: 'stack' });
     const health = h('div', { class: 'health' }, h('p', { class: 'muted' }, 'Checking…'));
@@ -388,7 +394,9 @@ const RENDER = {
           try { drawCrew(await api('/api/update?refresh=1')); } catch (x) { fail(x); }
         }, { cls: 'sm', ic: 'reload' })),
         u.available && (u.notes || []).length ? h('ul', { class: 'small', style: { margin: 0, paddingLeft: '20px' } }, u.notes.map((n) => h('li', null, n))) : null,
-        h('p', { class: 'muted small' }, 'Updates replace only Crew’s program. Your chats, projects, captures, sign-ins, API keys and settings stay exactly as they are — no reinstalling, nothing to enter again.'));
+        h('p', { class: 'muted small' }, 'Updates replace only Crew’s program. Your chats, projects, captures, sign-ins, API keys and settings stay exactly as they are — no reinstalling, nothing to enter again.'),
+        row('Update automatically', 'When a new version is ready, Crew updates itself at a quiet moment: nothing running, and you have not used it for half an hour. The window reconnects by itself.',
+          toggle(s.app.auto_update !== false, (v) => save({ app: { auto_update: v } }))));
     };
     api('/api/update').then(drawCrew).catch(fail);
     api('/api/claude').then((c) => {

@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL, kind TEXT NOT NULL, seat TEXT, task_id INTEGER, data TEXT
 );
+CREATE TABLE IF NOT EXISTS shared (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts REAL NOT NULL, seat TEXT NOT NULL, title TEXT NOT NULL, path TEXT, content TEXT NOT NULL, audience TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
 """
@@ -100,7 +104,9 @@ class Store:
         with self._lock:
             self.db.executescript(SCHEMA)
             for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT"),
-                                        ("tasks", "tier", "TEXT"), ("tasks", "twin", "INTEGER")):
+                                        ("tasks", "tier", "TEXT"), ("tasks", "twin", "INTEGER"),
+                                        ("messages", "recipient", "TEXT"), ("messages", "ref", "INTEGER"),
+                                        ("messages", "original", "TEXT")):
                 have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
                 if column not in have:
                     try:
@@ -146,30 +152,91 @@ class Store:
 
     # ------------------------------------------------------------- messages
 
-    def post(self, sender: str, kind: str, text: str, task_id: int | None = None, urgent: bool = False) -> int:
+    def post(self, sender: str, kind: str, text: str, task_id: int | None = None, urgent: bool = False,
+             recipient: str | None = None, ref: int | None = None, original: str | None = None) -> int:
+        """A team-chat message. With a recipient it is direct: only the owner ("you") and that one agent see it.
+        ref and original: the prompt writer's version of an owner's draft keeps the draft's id and the owner's words."""
         with self.tx() as db:
             cur = db.execute(
-                "INSERT INTO messages(ts,sender,kind,text,task_id,urgent) VALUES(?,?,?,?,?,?)",
-                (now(), sender, kind, text, task_id, 1 if urgent else 0),
+                "INSERT INTO messages(ts,sender,kind,text,task_id,urgent,recipient,ref,original) VALUES(?,?,?,?,?,?,?,?,?)",
+                (now(), sender, kind, text, task_id, 1 if urgent else 0, recipient, ref, original),
             )
             return int(cur.lastrowid)
+
+    def owner_message(self, text: str, to: str | None = None) -> int:
+        """The owner's message to the team, or to one agent ("ceo" for the CEO). When the project uses the prompt
+        writer it waits as a draft (no agent sees drafts) until the writer has turned it into a clear instruction."""
+        if self.get("prompt_writer"):
+            return self.post("you", "draft", text, recipient=to or None)
+        return self.post("you", "direct" if to else "human", text, urgent=True, recipient=to or None)
+
+    def conversation(self, seat: str, limit: int = 20) -> list[dict]:
+        """The owner's private conversation with one agent (or "ceo"), oldest first."""
+        rows = self._all("SELECT * FROM messages WHERE ((sender='you' AND recipient=? AND kind='direct') OR "
+                         "(sender=? AND recipient='you')) ORDER BY id DESC LIMIT ?", (seat, seat, limit))
+        return list(reversed(rows))
+
+    def mark_drafted(self, msg_id: int) -> None:
+        with self.tx() as db:
+            db.execute("UPDATE messages SET kind='drafted' WHERE id=? AND kind='draft'", (msg_id,))
+
+    def owner_pending(self) -> list[dict]:
+        """The owner's messages that still need work from the software: drafts for the prompt writer and
+        questions for the CEO (the caller skips questions already answered)."""
+        return self._all("SELECT * FROM messages WHERE sender='you' AND (kind='draft' OR (kind='direct' AND "
+                         "recipient='ceo')) ORDER BY id")
 
     def messages_after(self, after_id: int = 0, limit: int = 500) -> list[dict]:
         return self._all("SELECT * FROM messages WHERE id>? ORDER BY id LIMIT ?", (after_id, limit))
 
-    def recent_messages(self, limit: int = 50) -> list[dict]:
-        rows = self._all("SELECT * FROM messages ORDER BY id DESC LIMIT ?", (limit,))
+    def recent_messages(self, limit: int = 50, public_only: bool = False) -> list[dict]:
+        """The latest messages. public_only leaves out direct messages between the owner and one agent (for
+        anything shown to other agents)."""
+        where = "WHERE recipient IS NULL AND kind NOT IN ('draft','drafted') " if public_only else ""
+        rows = self._all(f"SELECT * FROM messages {where}ORDER BY id DESC LIMIT ?", (limit,))
         return list(reversed(rows))
 
     def unread(self, seat: str, limit: int = 200) -> list[dict]:
+        """What this seat has not read yet: the team chat plus direct messages addressed to it."""
         cursor = (self.seat(seat) or {}).get("chat_cursor") or 0
         return self._all(
-            "SELECT * FROM messages WHERE id>? AND sender!=? ORDER BY id LIMIT ?", (cursor, seat, limit)
+            "SELECT * FROM messages WHERE id>? AND sender!=? AND (recipient IS NULL OR recipient=?) "
+            "AND kind NOT IN ('draft','drafted') ORDER BY id LIMIT ?",
+            (cursor, seat, seat, limit)
         )
+
+    def owner_asks(self, seat: str, messages: list[dict] | None = None) -> list[dict]:
+        """The owner's direct messages to this seat that it has not answered yet (any answer it sent the owner
+        after a message answers it) — among `messages`, or all of them."""
+        row = self._one("SELECT MAX(id) AS last FROM messages WHERE sender=? AND recipient='you'", (seat,))
+        last = (row or {}).get("last") or 0
+        if messages is None:
+            return self._all("SELECT * FROM messages WHERE sender='you' AND recipient=? AND id>? AND kind='direct' "
+                             "ORDER BY id", (seat, last))
+        return [m for m in messages if m["sender"] == "you" and m.get("recipient") == seat and m["id"] > last
+                and m["kind"] == "direct"]
 
     def mark_read(self, seat: str, up_to: int) -> None:
         with self.tx() as db:
             db.execute("UPDATE seats SET chat_cursor=MAX(COALESCE(chat_cursor,0),?) WHERE name=?", (up_to, seat))
+
+    # ------------------------------------------------------------- shared notes and files
+
+    def add_shared(self, seat: str, title: str, content: str, path: str | None = None,
+                   audience: list[str] | None = None) -> int:
+        """Something one agent shares with the team: a note (what it learned) or a snapshot of a file."""
+        with self.tx() as db:
+            cur = db.execute("INSERT INTO shared(ts,seat,title,path,content,audience) VALUES(?,?,?,?,?,?)",
+                             (now(), seat, title, path, content, ",".join(audience or []) or None))
+            return int(cur.lastrowid)
+
+    def shared(self, shared_id: int) -> dict | None:
+        return self._one("SELECT * FROM shared WHERE id=?", (shared_id,))
+
+    def shared_list(self, limit: int = 30) -> list[dict]:
+        rows = self._all("SELECT id, ts, seat, title, path, audience, length(content) AS size FROM shared "
+                         "ORDER BY id DESC LIMIT ?", (limit,))
+        return list(reversed(rows))
 
     def last_message_id(self) -> int:
         row = self._one("SELECT MAX(id) AS m FROM messages")

@@ -17,14 +17,14 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import gitops, lessons, prompts, scheduler, scorecard, tiers
+from . import gitops, lessons, prompts, quality, scheduler, scorecard, tiers
 from . import tools as team_tools
 from .agents import (ClaudeSeat, ClaudeSetup, CodexSeat, CodexSetup, Event, RunResult, copy_claude_session,
                      run_once_claude, run_once_codex)
 from .config import Account, Config, SeatSpec
 from .store import Store, StoreError
 from .tiers import TIERS, model_label, seat_tier, vendor_of
-from .tools import _fmt_msg, _mentions
+from .tools import _fmt_msg, _mentions, owner_words
 from .util import Redactor, atomic_write, clip, crew_home, hhmm, human_duration, load_env_file, now
 
 TICK = 1.0
@@ -55,6 +55,7 @@ class SeatRT:
     restart_times: list[float] = field(default_factory=list)
     cooldown_until: float = 0.0
     want_effort: str = ""  # the effort the CEO set for the seat's current task
+    owner_interrupt: float = 0.0  # when the owner interrupted this seat's turn to ask it something
 
     @property
     def name(self) -> str:
@@ -78,6 +79,7 @@ class Orchestrator:
         self.stall_count = 0
         self.task_snapshot: dict[int, str] = {}
         self.chat_seen = 0
+        self.backlog_checked = False  # the owner's drafts and CEO questions from while the team was paused
         self.grace_until: dict[int, float] = {}
         self.ready_since: dict[int, float] = {}  # when each to-do task first became ready
         self.processed_escalations: set[int] = set()
@@ -143,6 +145,7 @@ class Orchestrator:
             self.integration = st.get("integration", self.integration)
             self.prefix = self.integration.rsplit("/", 1)[0]
             gitops.add_worktree(self.repo, self.main_wt, self.integration, st.get("base_commit"))
+        st.set("prompt_writer", bool(self.cfg.team.prompt_writer))  # the current setting, on a resume too
         for acc in self.cfg.accounts:
             st.upsert_account(acc.name, vendor=acc.vendor, profile=str(acc.profile_dir() or "default"))
         for spec in self.cfg.seats:
@@ -224,6 +227,10 @@ class Orchestrator:
 
     def head_to_head(self) -> str:
         return self.store.get("head_to_head") or self.cfg.team.head_to_head
+
+    def head_to_head_style(self) -> str:
+        """combine: the kept version takes in what the other did better; compete: the better one is kept as it is."""
+        return self.store.get("head_to_head_style") or self.cfg.team.head_to_head_style
     def start_seat(self, rt: SeatRT, first: str | None, resume_session: str | None = None,
                    effort: str | None = None) -> None:
         system = self._system_prompt(rt)
@@ -503,8 +510,23 @@ class Orchestrator:
         self.store.set("phase_before_stop", self.phase())
         self.set_phase("stopped")
 
+    def interrupt_for_owner(self) -> None:
+        for rt in self.seats.values():
+            if not self.store.get(f"interrupt:{rt.name}"):
+                continue
+            asks = self.store.owner_asks(rt.name)
+            if not asks and any(m["kind"] == "draft" and m.get("recipient") == rt.name
+                                for m in self.store.owner_pending()):
+                continue  # the prompt writer is still writing the question up: interrupt once it is ready
+            self.store.set(f"interrupt:{rt.name}", None)
+            if rt.busy and rt.runner is not None and asks:
+                rt.owner_interrupt = now()
+                rt.runner.interrupt()
+                self.say(f"{rt.name} pauses its work to answer the owner.")
+
     def tick(self) -> None:
         modes = scheduler.refresh_modes(self.store)
+        self.interrupt_for_owner()
         self.wake_waiting(modes)
         self.route_chat()
         self.track_progress()
@@ -558,8 +580,29 @@ class Orchestrator:
         elif ev.kind == "exit":
             self.on_exit(rt, ev.data)
 
+    def answer_owner(self, rt: SeatRT, text: str, failed: bool = False) -> None:
+        """If the owner messaged this seat and it has not answered with team_reply_owner, its words are the answer."""
+        asked = int(self.store.get(f"owner_q:{rt.name}") or 0)
+        if not asked:
+            return
+        answered = any(m["sender"] == rt.name and m.get("recipient") == "you"
+                       for m in self.store.messages_after(asked, 200))
+        self.store.set(f"owner_q:{rt.name}", None)
+        if answered:
+            return
+        reply = clip((text or "").strip(), 3500) if not failed and (text or "").strip() else \
+            "I could not answer just now (my last step ended with a problem). Please ask again in a moment."
+        self.store.post(rt.name, "direct", self.redact(reply), recipient="you")
+
     def on_result(self, rt: SeatRT, data: dict) -> None:
         rt.busy = False
+        interrupted, rt.owner_interrupt = now() - rt.owner_interrupt < 120, 0.0
+        if interrupted:  # stopped at the owner's request: not a failure; the question comes next
+            data = {**data, "is_error": False}
+            rt.pending.append("Your last step was paused so that you could answer the owner. Once you have "
+                              "answered, continue your work exactly where you left off.")
+        else:
+            self.answer_owner(rt, data.get("text", ""), failed=bool(data.get("is_error") or data.get("limit_hit")))
         tokens, cost = int(data.get("tokens") or 0), float(data.get("cost") or 0)
         self.store.add_seat_usage(rt.name, tokens=tokens, cost=cost, turns=1)
         self.store.add_account_usage(rt.account.name, tokens=tokens, cost=cost)
@@ -567,6 +610,8 @@ class Orchestrator:
         if row.get("current_task"):
             self.store.add_task_usage(row["current_task"], tokens=tokens, cost=cost)
         self.store.update_seat(rt.name, status="idle", note="")
+        if interrupted:  # not a turn the seat chose to end: no nudges, and it does not count against the seat
+            return
         if data.get("auth_error"):
             rt.down = True
             self.store.update_seat(rt.name, status="down", note=f"{rt.account.name} is not signed in")
@@ -683,7 +728,7 @@ class Orchestrator:
         self.store.set("lead", new.name)
         self.store.update_seat(old.name, role="member")
         self.store.update_seat(new.name, role="lead")
-        recent = "\n".join(_fmt_msg(m, 300) for m in self.store.recent_messages(30))
+        recent = "\n".join(_fmt_msg(m, 300) for m in self.store.recent_messages(30, public_only=True))
         briefing = (f"You are now the LEAD: {old.name} became unavailable ({reason}). Take over calmly.\n\n"
                     f"{self.brief_text()}\n\nBoard:\n{self._board_text()}\n\nRecent chat:\n{recent}\n\n"
                     "Continue from here: keep the plan unless it is wrong, unblock the team, and finish the project.")
@@ -790,15 +835,83 @@ class Orchestrator:
 
     def route_chat(self) -> None:
         new = self.store.messages_after(self.chat_seen, 500)
-        if not new:
-            return
-        self.chat_seen = new[-1]["id"]
-        with (self.run_dir / "chat.md").open("a", encoding="utf-8") as fh:
+        if new:
+            self.chat_seen = new[-1]["id"]
+            with (self.run_dir / "chat.md").open("a", encoding="utf-8") as fh:
+                for m in new:
+                    to = f" → {m['recipient']}" if m.get("recipient") else ""
+                    fh.write(f"**{hhmm(m['ts'])} {m['sender']}{to}** [{m['kind']}] {self.redact(m['text'])}\n\n")
             for m in new:
-                fh.write(f"**{hhmm(m['ts'])} {m['sender']}** [{m['kind']}] {self.redact(m['text'])}\n\n")
-        for m in new:
-            if m["kind"] == "decision" or m["sender"] == "you":
-                self.last_progress = max(self.last_progress, m["ts"])
+                if m["kind"] == "decision" or m["sender"] == "you":
+                    self.last_progress = max(self.last_progress, m["ts"])
+        if not self.backlog_checked or any(m["sender"] == "you" for m in new):
+            self.backlog_checked = True
+            self.owner_backlog()
+
+    def owner_backlog(self) -> None:
+        """The owner's messages that still need the software: drafts for the prompt writer, and questions for the
+        CEO — including any sent while the team was paused."""
+        for m in self.store.owner_pending():
+            if m["kind"] == "draft":
+                if f"draft-{m['id']}" not in self.jobs:
+                    self.start_job(f"draft-{m['id']}", self._draft_job, m)
+            elif not self.store.get(f"ceo_answered:{m['id']}") and f"owner-ceo-{m['id']}" not in self.jobs:
+                self.start_job(f"owner-ceo-{m['id']}", self._owner_ceo_job, m["id"], owner_words(m))
+
+    def _writer_context(self, to: str | None) -> str:
+        brief = self.store.get("brief", {}) or {}
+        parts = [f"Project: {brief.get('title') or ''} — {clip(brief.get('goal') or self.request, 700)}"]
+        plan = self.store.get("plan_summary")
+        if plan:
+            parts.append("The plan: " + clip(plan, 900))
+        if to == "ceo":
+            parts.append("Reader: the CEO (reviews the plan and the finished work; does not build).")
+        elif to:
+            seat = self.store.seat(to) or {}
+            task = self.store.task(seat["current_task"]) if seat.get("current_task") else None
+            parts.append(f"Reader: {to} alone — a private message ({seat.get('role') or 'member'}, "
+                         f"{model_label(seat.get('model') or '')}"
+                         + (f", working on task #{task['id']} {task['title']}" if task else "") + ").")
+        else:
+            parts.append("Reader: the whole team (the lead and every agent).")
+        parts.append("The team: " + ", ".join(f"{s['name']} ({s['role']})" for s in self.store.seats()))
+        if to:
+            talk = self.store.conversation(to, 6)
+            if talk:
+                parts.append("The owner's private conversation with this reader so far:\n"
+                             + "\n".join(_fmt_msg(x, 400) for x in talk))
+        recent = self.store.recent_messages(12, public_only=True)
+        if recent:
+            parts.append("Recent team chat:\n" + "\n".join(_fmt_msg(x, 300) for x in recent))
+        return "\n\n".join(parts)
+
+    def _draft_job(self, m: dict) -> None:
+        """The prompt writer: the owner's (often dictated) words become a clear message for their reader, and the
+        owner's own words travel with it. If the writer cannot run, the owner's words go through unchanged."""
+        to, raw, text = m.get("recipient"), m["text"], m["text"]
+        name = f"writer-{m['id']}"
+        try:
+            modes = {a["name"]: a.get("mode") for a in self.store.accounts()}
+            row = scheduler.pick_account([a for a in self.store.accounts() if a["vendor"] == "claude"], modes)
+            if row is not None:
+                account = self.cfg.account(row["name"])
+                self.store.event("oneoff", seat=name, state="start", role="writer", vendor="claude",
+                                 account=account.name, model=self.cfg.models.work, effort="low")
+                res = run_once_claude(prompts.writer_prompt(raw, self._writer_context(to)), seat=name, role="member",
+                                      account=account, workdir=self.main_wt, setup=self._claude_setup(effort="low"),
+                                      redact=self.redact, json_schema=prompts.WRITER_SCHEMA, read_only=True,
+                                      timeout=240, with_team_tools=False)
+                self._account_usage(account.name, res)
+                self.store.event("oneoff", seat=name, state="error" if res.is_error else "done", tokens=res.tokens,
+                                 seconds=round(res.duration_s or 0))
+                out = res.structured if isinstance(res.structured, dict) else {}
+                better = str(out.get("message") or "").strip()
+                if not res.is_error and better and len(better) <= 4 * len(raw) + 400:
+                    text = better
+        finally:
+            self.store.post("you", "direct" if to else "human", text, urgent=True, recipient=to, ref=m["id"],
+                            original=raw)
+            self.store.mark_drafted(m["id"])
 
     def _wants_wake(self, rt: SeatRT, unread: list[dict]) -> bool:
         """Wake an idle agent only when a message needs it: tokens are spent on work, not on reading chatter."""
@@ -810,20 +923,39 @@ class Orchestrator:
                 return True
         return False
 
+    def _owner_directs(self, unread: list[dict], seat: str) -> tuple[list[dict], list[dict]]:
+        """Split what a seat has not read into the owner's unanswered direct messages to it and the team chat
+        (direct messages it has already answered are neither)."""
+        direct = self.store.owner_asks(seat, unread)
+        return direct, [m for m in unread if not (m["sender"] == "you" and m.get("recipient") == seat)]
+
     def deliver_pending(self) -> None:
         """Send idle seats their instructions plus the chat they missed (only when there is a reason)."""
+        modes = {a["name"]: a.get("mode") for a in self.store.accounts()}
         for rt in self.seats.values():
+            if rt.runner is None and not rt.down and rt.cooldown_until <= now() and \
+                    modes.get(rt.account.name) != "parked" and self.phase() not in ("done", "stopped", "failed"):
+                direct, _ = self._owner_directs(self.store.unread(rt.name), rt.name)
+                if direct:  # a standing-by agent is started just to answer the owner
+                    session = (self.store.seat(rt.name) or {}).get("session_id")
+                    self.start_seat(rt, None, resume_session=session)
             if rt.down or rt.busy or rt.runner is None or not rt.runner.alive():
                 continue
             if isinstance(rt.runner, CodexSeat) and rt.runner.busy:
                 continue
             unread = self.store.unread(rt.name)
-            if not rt.pending and not (unread and self._wants_wake(rt, unread)):
+            direct, unread_team = self._owner_directs(unread, rt.name)
+            if not rt.pending and not direct and not (unread_team and self._wants_wake(rt, unread_team)):
                 continue
-            parts = list(rt.pending)
+            parts = []
+            if direct:
+                self.store.set(f"owner_q:{rt.name}", direct[-1]["id"])
+                parts.append(prompts.owner_direct(direct))
+            parts += list(rt.pending)
             rt.pending.clear()
+            if unread_team:
+                parts.append(prompts.chat_digest(unread_team))
             if unread:
-                parts.append(prompts.chat_digest(unread))
                 self.store.mark_read(rt.name, unread[-1]["id"])
             running = getattr(getattr(rt.runner, "setup", None), "effort", None)
             if rt.want_effort and running and running != rt.want_effort:
@@ -1161,12 +1293,20 @@ class Orchestrator:
                                        self.cfg.team.checks_timeout_minutes * 60, env=None)
             if result.ran and not result.ok:
                 return ("changes", "The checks fail on your branch:\n" + result.summary, "checks")
+            # Crew's own scan of what the change adds: a leaked secret goes straight back; risky lines go to the
+            # reviewer, who judges each in context.
+            scan = quality.scan(wt, self.integration, self.redact.values())
+            if scan.findings:
+                self.store.event("scan", task_id=task_id, secrets=len(scan.blocking), risky=len(scan.risky))
+            if scan.blocking:
+                return ("changes", quality.blocking_text(scan, self.integration), "scan")
+            notes = quality.review_notes(scan)
             # The manager (Opus 5.5) checks every piece of work, on another account than its author's.
             failures, rounds = 0, 0
             while failures < 2 and rounds < 2 + len(self.cfg.accounts):
                 rounds += 1
                 self.store.set(f"review:{task_id}", None)
-                res = self.run_reviewer(task, result.summary if result.ran else "")
+                res = self.run_reviewer(task, result.summary if result.ran else "", notes)
                 verdict = self.store.get(f"review:{task_id}")
                 if verdict:
                     return (verdict["verdict"], verdict["notes"], verdict["by"])
@@ -1185,7 +1325,7 @@ class Orchestrator:
     def manager_usable(self) -> bool:
         return any(scheduler.mode_of(a) != "parked" for a in self.store.accounts() if a["vendor"] == "claude")
 
-    def run_reviewer(self, task: dict, check_log: str) -> RunResult:
+    def run_reviewer(self, task: dict, check_log: str, scan_notes: str = "") -> RunResult:
         """A fresh manager (Opus 5.5) checks the task, on another subscription than its author's when possible."""
         modes = {a["name"]: a.get("mode") for a in self.store.accounts()}
         owner_acc = self.seats[task["owner"]].account.name if task["owner"] in self.seats else None
@@ -1198,7 +1338,7 @@ class Orchestrator:
         author = self.seats.get(task["owner"] or "")
         author_tier = seat_tier(author.spec.vendor) if author else (task.get("tier") or "manager")
         prompt = prompts.reviewer_prompt(task, self.integration, self.store.get("checks", []) or [], check_log,
-                                         author_tier=author_tier)
+                                         author_tier=author_tier, scan_notes=scan_notes)
         wt = self.run_dir / "worktrees" / f"_review-{task['id']}"
         name = f"reviewer-{task['id']}"
         model = self.cfg.models.work if account.vendor == "claude" else (self.cfg.models.codex or "")
@@ -1311,8 +1451,13 @@ class Orchestrator:
                 if r.ran and not r.ok:
                     data[letter] = {"verdict": "changes",
                                     "notes": "The checks fail on this version:\n" + r.summary + "\n\n" + data[letter]["notes"]}
+                scan = quality.scan(folders[letter], self.integration, self.redact.values())
+                if scan.blocking:  # so is a leaked secret
+                    data[letter] = {"verdict": "changes", "notes": quality.blocking_text(scan, self.integration)
+                                    + "\n\n" + data[letter]["notes"]}
             return ("judged", {"labels": labels, "a": data["a"], "b": data["b"], "winner": data["winner"],
-                               "reason": str(data.get("reason") or "").strip(), "by": f"judge-{orig_id}"})
+                               "reason": str(data.get("reason") or "").strip(), "by": f"judge-{orig_id}",
+                               "borrow": str(data.get("borrow") or "").strip()})
         finally:
             for folder in folders.values():
                 gitops.remove_worktree(self.repo, folder)
@@ -1381,11 +1526,27 @@ class Orchestrator:
                  f"{model_label(wmodel)}'s" + (f": {clip(detail['reason'], 300)}" if detail.get("reason") else "."),
                  task_id=orig_id)
         kept = self._keep_version(winner, loser)
-        if passed[winner["id"]]:
+        borrow = str(detail.get("borrow") or "").strip()
+        combine = bool(borrow) and self.head_to_head_style() == "combine"
+        joint = (f"Combine the best of both versions: the other version (branch {loser['branch']}, by "
+                 f"{model_label(lmodel)}) does these things better. Fold them into yours, keep everything else, run "
+                 f"the checks and resubmit:\n{borrow}\n(See the other version with: git diff "
+                 f"{self.integration}...{loser['branch']})") if combine else ""
+        if combine:
+            self.store.append_note(kept["id"], "crew", f"Joint submission: {model_label(wmodel)}'s version, with "
+                                                       f"what {model_label(lmodel)}'s did better folded in.")
+            self.store.set(f"joint:{kept['id']}", {"base": wmodel, "with": lmodel})
+        if passed[winner["id"]] and not combine:
             self.store.update_task(kept["id"], status="approved", review_notes=verdict["notes"], review_rounds=1)
+        elif passed[winner["id"]]:  # collaborative: one more short round, then the usual review
+            self.store.set(f"review_sha:{kept['id']}", None)
+            self.store.update_task(kept["id"], status="changes", review_notes=joint, review_rounds=0)
+            self.say(f"Task #{kept['id']}: combining the best of both — {model_label(wmodel)}'s version takes in what "
+                     f"{model_label(lmodel)}'s did better: {clip(borrow, 300)}", task_id=kept["id"])
         else:
             self.store.set(f"review_sha:{kept['id']}", None)
-            self.store.update_task(kept["id"], status="changes", review_notes=verdict["notes"], review_rounds=1)
+            notes = verdict["notes"] + (f"\n\n{joint}" if joint else "")
+            self.store.update_task(kept["id"], status="changes", review_notes=notes, review_rounds=1)
             self.say(f"Task #{kept['id']} needs changes before it is merged: {clip(verdict['notes'], 400)}",
                      task_id=kept["id"])
 
@@ -1605,11 +1766,16 @@ class Orchestrator:
         gitops.clean_worktree(self.main_wt)
         if result.ran and not result.ok:
             return "red:" + result.summary
+        scan = quality.scan(self.main_wt, self.store.get("base_commit"), self.redact.values())
+        self.store.set("final_scan", {"secrets": len(scan.blocking), "risky": len(scan.risky), "lines": scan.lines})
+        if scan.blocking and self.final_rounds < 2:
+            self.final_rounds += 1
+            return "changes:" + quality.final_blocking_text(scan)
         if self.cfg.team.ceo_reviews and self.final_rounds < 1:
             self.final_rounds += 1
             self.store.set("verdict:final", None)
             prompt = prompts.ceo_final_prompt(self.brief_text(), self.store.get("done_report", ""), checks,
-                                              self.store.get("base_commit"))
+                                              self.store.get("base_commit"), scan=quality.summary(scan))
             res = self.run_ceo("ceo-final", prompt, workdir=self.main_wt, json_schema=prompts.CEO_FINAL_SCHEMA,
                                accept=lambda r: bool(self.store.get("verdict:final")) or self._valid_verdict(r))
             if not self.store.get("verdict:final"):
@@ -1678,12 +1844,12 @@ class Orchestrator:
         return chain
 
     def run_ceo(self, name: str, prompt: str, workdir: Path | None = None, json_schema: dict | None = None,
-                timeout: float = 2400, accept=None) -> RunResult:
+                timeout: float = 2400, accept=None, effort: str | None = None) -> RunResult:
         """A CEO call (GPT-6 Astra by default) at the CEO's effort. If that model cannot run — no ChatGPT
         subscription, a usage limit, an error, or no usable answer — the backup (Fable 5.1) and then the
         manager (Opus 5.5) take over at the same effort."""
         modes = {a["name"]: a.get("mode") for a in self.store.accounts()}
-        effort = self.cfg.models.effort_ceo if self.cfg.models.effort_ceo != "auto" else "max"
+        effort = effort or (self.cfg.models.effort_ceo if self.cfg.models.effort_ceo != "auto" else "max")
         res = RunResult(is_error=True, text="no subscription available for the CEO")
         for model in self.ceo_chain():
             vendor = vendor_of(model)
@@ -1718,9 +1884,21 @@ class Orchestrator:
                 continue
             self.processed_escalations.add(ev["id"])
             context = self._board_text() + "\n\nRecent chat:\n" + "\n".join(
-                _fmt_msg(m, 300) for m in self.store.recent_messages(25))
+                _fmt_msg(m, 300) for m in self.store.recent_messages(25, public_only=True))
             prompt = prompts.ceo_ruling_prompt(ev["data"].get("question", ""), context)
             self.start_job(f"ruling-{ev['id']}", self._ruling_job, ev["id"], prompt)
+
+    def _owner_ceo_job(self, msg_id: int, question: str) -> None:
+        self.store.set(f"ceo_answered:{msg_id}", True)
+        context = (self.brief_text() + "\n\nBoard:\n" + self._board_text() + "\n\nRecent team chat:\n" + "\n".join(
+            _fmt_msg(m, 300) for m in self.store.recent_messages(25, public_only=True)))
+        # A question is not a review: a lighter effort answers it well and keeps the CEO near its token share.
+        res = self.run_ceo(f"ceo-question-{msg_id}", prompts.ceo_owner_prompt(question, context), timeout=1800,
+                           effort="high")
+        text = (res.text or "").strip()
+        if res.is_error or not text:
+            text = "I could not answer just now (no CEO model was available). Please ask again later."
+        self.store.post("ceo", "direct", self.redact(clip(text, 4000)), recipient="you")
 
     def _ruling_job(self, event_id: int, prompt: str) -> RunResult:
         name = f"ceo-ruling-{event_id}"

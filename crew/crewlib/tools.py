@@ -11,7 +11,9 @@ Design rules (see ARCHITECTURE.md):
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable
 
 from . import lessons as lessons_mod
@@ -73,14 +75,71 @@ LIST_I = {"type": "array", "items": {"type": "integer"}}
 # ------------------------------------------------------------------ helpers
 
 
+def owner_words(m: dict, limit: int = 1500) -> str:
+    """An owner's message as the agents read it: the prompt writer's clear version, plus the owner's own words
+    (for intent) when the writer changed them."""
+    text = clip(m["text"], limit)
+    own = (m.get("original") or "").strip()
+    if own and own != (m["text"] or "").strip():
+        text += f'\n  (the owner\'s own words, for intent: "{clip(own, 800)}")'
+    return text
+
+
 def _fmt_msg(m: dict, limit: int = 900) -> str:
     task = f" (task #{m['task_id']})" if m.get("task_id") else ""
     flag = " URGENT" if m.get("urgent") else ""
-    return f"#{m['id']} {hhmm(m['ts'])} {m['sender']} [{m['kind']}{flag}]{task}: {clip(m['text'], limit)}"
+    to = f" → {m['recipient']}, directly" if m.get("recipient") else ""
+    who = "the owner" if m["sender"] == "you" else m["sender"]
+    text = owner_words(m, limit) if m["sender"] == "you" else clip(m["text"], limit)
+    return f"#{m['id']} {hhmm(m['ts'])} {who}{to} [{m['kind']}{flag}]{task}: {text}"
 
 
 def _mentions(text: str, seat: str) -> bool:
     return f"@{seat}".lower() in (text or "").lower() or "@all" in (text or "").lower()
+
+
+MENTION = re.compile(r"(?<![\w.@/])@([A-Za-z][\w-]*)")
+CODE_SPAN = re.compile(r"```.*?```|`[^`\n]*`", re.S)
+ACK = re.compile(r"(?i)^\W*(?:(?:ok(?:ay)?|k|thanks?|thank you|thx|ty|got it|noted|agreed|agree|sounds good|will do|"
+                 r"understood|acknowledged|ack|roger|perfect|great|cool|nice|sure|yes|yep|done|on it|lgtm|"
+                 r"\+1|👍|🙏)[\s,.!]*)+\W*$")
+
+
+def _lead(ctx: Ctx) -> str:
+    return next((s["name"] for s in ctx.store.seats() if s["role"] == "lead"), "")
+
+
+def _address(ctx: Ctx, text: str) -> tuple[str, list[str], list[str]]:
+    """Resolve @lead to the lead's name; return (text, the teammates named, names that are not on the team).
+    Mentions inside `code` are not names."""
+    lead = _lead(ctx)
+    if lead:
+        text = re.sub(r"(?<![\w.@/])@lead\b", f"@{lead}", text, flags=re.I)
+    team = {s["name"].lower() for s in ctx.store.seats()}
+    named, unknown = [], []
+    for name in MENTION.findall(CODE_SPAN.sub(" ", text)):
+        low = name.lower()
+        if low in team:
+            named.append(low)
+        elif low not in ("all", "owner", "you", "team", "everyone") and low not in unknown:
+            unknown.append(low)
+    return text, named, unknown
+
+
+def _roster(ctx: Ctx) -> str:
+    return ", ".join(f"@{s['name']} ({s['role']})" for s in ctx.store.seats())
+
+
+def _owner_asks(ctx: Ctx, unread: list[dict]) -> list[dict]:
+    """The owner's unanswered direct messages to this seat; noted so that the owner always gets an answer."""
+    asks = ctx.store.owner_asks(ctx.seat, unread)
+    if asks:
+        ctx.store.set(f"owner_q:{ctx.seat}", asks[-1]["id"])
+    return asks
+
+
+def _is_owner_direct(m: dict, seat: str) -> bool:
+    return m["sender"] == "you" and m.get("recipient") == seat
 
 
 def digest(ctx: Ctx) -> str:
@@ -88,9 +147,16 @@ def digest(ctx: Ctx) -> str:
     unread = ctx.store.unread(ctx.seat)
     if not unread:
         return ""
-    urgent = [m for m in unread if m["urgent"] or _mentions(m["text"], ctx.seat)]
-    lines = [f"[team chat: {len(unread)} unread message(s)"
-             + (f", {len(urgent)} for you" if urgent else "") + " — call team_chat_read when you reach a stopping point]"]
+    asks = _owner_asks(ctx, unread)
+    team = [m for m in unread if not _is_owner_direct(m, ctx.seat)]
+    urgent = [m for m in team if m["urgent"] or _mentions(m["text"], ctx.seat)]
+    lines = []
+    if team:
+        lines.append(f"[team chat: {len(team)} unread message(s)" + (f", {len(urgent)} for you" if urgent else "")
+                     + " — call team_chat_read when you reach a stopping point]")
+    for m in asks[-3:]:
+        lines.append("  ! THE OWNER ASKS YOU DIRECTLY (only you see this; answer now with team_reply_owner, in plain "
+                     "words, then carry on): " + owner_words(m, 600))
     for m in urgent[-3:]:
         lines.append("  ! " + _fmt_msg(m, 400))
     return "\n".join(lines)
@@ -126,6 +192,18 @@ def chat_post(ctx: Ctx, a: dict) -> str:
         raise ToolError(f"kind must be one of {CHAT_KINDS} (decisions go through team_decide).")
     if len(text) > 2500:
         raise ToolError("Too long for chat (2500 chars). Put details in team_task_note or a file and summarise here.")
+    if kind != "blocker" and ACK.match(MENTION.sub(" ", text)):
+        raise ToolError("No need to acknowledge: silence means agreement, and every message costs the team tokens. "
+                        "Carry on with your work.")
+    text, named, unknown = _address(ctx, text)
+    lead = _lead(ctx)
+    routed = ""
+    if kind in ("question", "blocker", "concern") and not named and "@all" not in text.lower() \
+            and lead and lead != ctx.seat:
+        text += f" @{lead}"  # a question nobody is named in reaches nobody: the lead gets it
+        routed = f" You named no one, so it went to the lead (@{lead}); name who you need with @name."
+    warn = (f" Note: there is no {', '.join('@' + n for n in unknown)} on this team, so nobody was notified for that "
+            f"name. The team: {_roster(ctx)}." if unknown else "")
     seat = ctx.store.seat(ctx.seat) or {}
     if kind == "concern":
         if _phase(ctx) != "plan":
@@ -144,7 +222,7 @@ def chat_post(ctx: Ctx, a: dict) -> str:
         ctx.store.update_seat(ctx.seat, chat_used=used + 1)
     task_id = a.get("task_id") or seat.get("current_task")
     msg_id = ctx.store.post(ctx.seat, kind, text, task_id=task_id, urgent=(kind == "blocker"))
-    return f"Posted to the team chat as #{msg_id}."
+    return f"Posted to the team chat as #{msg_id}.{routed}{warn}"
 
 
 def chat_read(ctx: Ctx, a: dict) -> str:
@@ -152,11 +230,15 @@ def chat_read(ctx: Ctx, a: dict) -> str:
     unread = ctx.store.unread(ctx.seat, limit=500)
     if not unread:
         return "No unread messages."
-    skipped = max(0, len(unread) - limit)
-    shown = unread[-limit:]
+    asks = _owner_asks(ctx, unread)
+    team = [m for m in unread if not _is_owner_direct(m, ctx.seat)]
+    skipped = max(0, len(team) - limit)
+    shown = team[-limit:]
     ctx.store.mark_read(ctx.seat, unread[-1]["id"])
     head = f"({skipped} older unread messages skipped; team_status has the overview)\n" if skipped else ""
-    return head + "\n".join(_fmt_msg(m) for m in shown)
+    owner = ("THE OWNER ASKS YOU DIRECTLY (only you see this; answer now with team_reply_owner, in plain words):\n"
+             + "\n".join(f"- {owner_words(m)}" for m in asks[-3:]) + "\n\n") if asks else ""
+    return owner + head + ("\n".join(_fmt_msg(m) for m in shown) or "No other unread messages.")
 
 
 # ------------------------------------------------------------------- board
@@ -243,10 +325,14 @@ def status_view(ctx: Ctx, a: dict) -> str:
         lines.append(f"  {acc['name']}: {acc['mode']}{util}{week}")
     checks = st.get("checks", [])
     lines.append("Checks: " + ("; ".join(checks) if checks else "none set (lead: team_set_checks)"))
-    decisions = [m for m in st.recent_messages(200) if m["kind"] == "decision"][-3:]
+    decisions = [m for m in st.recent_messages(200, public_only=True) if m["kind"] == "decision"][-3:]
     if decisions:
         lines.append("Recent decisions:")
         lines += ["  " + _fmt_msg(m, 300) for m in decisions]
+    items = st.shared_list(8)
+    if items:
+        lines.append("Shared with the team (team_shared id=N): " + "; ".join(
+            f"#{x['id']} {x['title']} ({x['seat']})" for x in items))
     return "\n".join(lines)
 
 
@@ -333,6 +419,13 @@ def plan_ready(ctx: Ctx, a: dict) -> str:
     todo = ctx.store.tasks(("todo",))
     if not todo:
         raise ToolError("Create the tasks first (team_task_create).")
+    if not ctx.store.get("checks"):
+        raise ToolError("Set the automated checks first (team_set_checks): the tests — for any backend, a test for "
+                        "every route or handler including wrong input and error paths — plus a security check and a "
+                        "lint that fit the stack. If the code does not exist yet, set the commands the foundation "
+                        "task will make pass; for work without code (documents, research), a check that each "
+                        "deliverable exists is enough (for example: test -s report.md). They run on every "
+                        "submission and every merge.")
     summary = (a.get("summary") or "").strip()
     if not summary:
         raise ToolError("Give a short plan summary for the team and the user.")
@@ -474,6 +567,104 @@ def verdict(ctx: Ctx, a: dict) -> str:
     return "Verdict recorded and posted. End your turn."
 
 
+def reply_owner(ctx: Ctx, a: dict) -> str:
+    text = (a.get("text") or "").strip()
+    if not text:
+        raise ToolError("Write your answer to the owner.")
+    if len(text) > 4000:
+        raise ToolError("Keep it under 4000 characters: the owner reads it on a phone too.")
+    share = (a.get("share_with_team") or "").strip()
+    names = [str(n).strip().lstrip("@").lower() for n in (a.get("mention") or []) if str(n).strip()]
+    team = {s["name"].lower() for s in ctx.store.seats()}
+    unknown = [n for n in names if n not in team and n != "lead"]
+    if unknown:
+        raise ToolError(f"There is no {', '.join('@' + n for n in unknown)} on this team. The team: {_roster(ctx)}.")
+    if len(share) > 2500:
+        raise ToolError("Keep what you pass on to the team under 2500 characters; details go in a task note.")
+    ctx.store.post(ctx.seat, "direct", text, recipient="you")
+    ctx.store.event("owner_reply", seat=ctx.seat, shared=bool(share))
+    if not share:
+        return "Sent to the owner. Carry on with your work."
+    lead = _lead(ctx)
+    tags = []
+    for n in ([lead] if lead else []) + [lead if n == "lead" else n for n in names]:
+        if n and n != ctx.seat and n not in tags:
+            tags.append(n)
+    body, _, _ = _address(ctx, share)
+    missing = [n for n in tags if f"@{n}" not in body.lower()]
+    body += (" " + " ".join(f"@{n}" for n in missing)) if missing else ""
+    seat = ctx.store.seat(ctx.seat) or {}
+    ctx.store.post(ctx.seat, "update", f"From the owner (told to me directly): {body}", urgent=True,
+                   task_id=seat.get("current_task"))
+    return ("Sent to the owner, and passed on to the team" + (f" ({', '.join('@' + t for t in tags)})" if tags else "")
+            + ". Carry on with your work.")
+
+
+# -------------------------------------------------------------- sharing
+
+SHARE_LIMIT = 60_000
+
+
+def share(ctx: Ctx, a: dict) -> str:
+    title = (a.get("title") or "").strip()
+    note = (a.get("text") or "").strip()
+    rel = (a.get("path") or "").strip()
+    if not title:
+        raise ToolError("Give what you share a short title (what it is and why it matters).")
+    if not note and not rel:
+        raise ToolError("Share a note (text) or a file from your worktree (path), or both.")
+    content, path = note, None
+    if rel:
+        seat = ctx.store.seat(ctx.seat) or {}
+        base = Path(seat.get("worktree") or os.getcwd()).resolve()
+        target = (base / rel).resolve()
+        if base != target and base not in target.parents:
+            raise ToolError("Share files from your own worktree only (a path inside it).")
+        if not target.is_file():
+            raise ToolError(f"There is no file {rel} in your worktree.")
+        raw = target.read_bytes()
+        if len(raw) > SHARE_LIMIT:
+            raise ToolError(f"{rel} is {len(raw) // 1000} KB; share files up to {SHARE_LIMIT // 1000} KB, or the "
+                            "part that matters as text.")
+        try:
+            body = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ToolError(f"{rel} is not a text file; describe it in a note instead.") from None
+        path = target.relative_to(base).as_posix()
+        content = (note + "\n\n" if note else "") + f"--- {path} ---\n" + body
+    names = [str(n).strip().lstrip("@").lower() for n in (a.get("for") or []) if str(n).strip()]
+    team = {s["name"].lower() for s in ctx.store.seats()}
+    lead = _lead(ctx)
+    names = [lead if n == "lead" else n for n in names]
+    unknown = [n for n in names if n not in team and n != "all"]
+    if unknown:
+        raise ToolError(f"There is no {', '.join('@' + n for n in unknown)} on this team. The team: {_roster(ctx)}.")
+    sid = ctx.store.add_shared(ctx.seat, title, content, path=path, audience=names)
+    first = next((line.strip() for line in (note or content).splitlines() if line.strip() and not line.startswith("---")), "")
+    what = f"{path}, {content.count(chr(10)) + 1} lines" if path else "a note"
+    tags = " ".join(f"@{n}" for n in names if n != ctx.seat)
+    seat = ctx.store.seat(ctx.seat) or {}
+    ctx.store.post(ctx.seat, "share", f"Shared #{sid} “{title}” ({what}): {clip(first, 200)} — read it with "
+                   f"team_shared id={sid}. {tags}".strip(), task_id=seat.get("current_task"))
+    return f"Shared as #{sid}" + (f" and {tags} notified" if tags else "") + ". Anyone can read it with team_shared."
+
+
+def shared_view(ctx: Ctx, a: dict) -> str:
+    sid = a.get("id")
+    if sid:
+        item = ctx.store.shared(int(sid))
+        if item is None:
+            raise ToolError(f"Nothing is shared as #{sid}. team_shared without an id lists what is shared.")
+        head = f"#{item['id']} “{item['title']}” shared by {item['seat']} at {hhmm(item['ts'])}"
+        return head + (f" ({item['path']})" if item["path"] else "") + ":\n\n" + clip(item["content"], 20_000)
+    items = ctx.store.shared_list(40)
+    if not items:
+        return "Nothing is shared yet. Share interfaces, commands that work, pitfalls and useful files with team_share."
+    return "Shared with the team (read one with team_shared id=N):\n" + "\n".join(
+        f"#{x['id']} {x['title']} — {x['seat']}, {hhmm(x['ts'])}" + (f", {x['path']}" if x["path"] else "")
+        + (f", for {', '.join('@' + n for n in x['audience'].split(','))}" if x["audience"] else "") for x in items)
+
+
 # ---------------------------------------------------------- escalate/lessons
 
 
@@ -512,9 +703,11 @@ def lessons_view(ctx: Ctx, a: dict) -> str:
 
 TOOLS: list[Tool] = [
     Tool("team_chat_post",
-         "Post to the ONE team group chat (everyone, including the human owner, sees it; there are no private messages). "
-         "Use @name to address someone. Keep it short and factual. Kinds: update, question, answer, blocker "
-         "(always allowed), concern (planning round only, once). Messages are budgeted: work first, talk second.",
+         "Post to the team chat (the whole team and the owner see it). Start with @name for the person you need "
+         "(@lead for the lead, @all only when everyone must act): only named agents are woken. Short and "
+         "self-contained: what, where (file, function, command), why, what you need. No acknowledgements — silence "
+         "means agreement. Kinds: update, question, answer, blocker (always allowed), concern (planning round only, "
+         "once). Messages are budgeted: work first, talk second.",
          _obj({"text": S, "kind": {"type": "string", "enum": list(CHAT_KINDS)}, "task_id": I}, ["text"]),
          chat_post),
     Tool("team_chat_read", "Read unread group-chat messages (marks them read).",
@@ -586,6 +779,22 @@ TOOLS: list[Tool] = [
                    "required": ["task_id", "effort"], "additionalProperties": False}}},
               ["kind", "verdict", "notes"]),
          verdict, roles=("ceo",)),
+    Tool("team_reply_owner",
+         "Answer the owner's private message to you. text: your answer (only the owner sees it) in plain, "
+         "non-technical words — what you are doing, what you found, what you need. share_with_team: REQUIRED "
+         "decision — if the owner's message changes the plan, the scope, a decision or anyone else's work, write "
+         "exactly what the team must know (the lead and whoever you name in mention are notified); keeping such an "
+         "instruction to yourself is a fault. Leave it \"\" only when nothing affects anyone else (a question about "
+         "your own work, an opinion). Then carry on with your work.",
+         _obj({"text": S, "share_with_team": S, "mention": LIST_S}, ["text", "share_with_team"]), reply_owner,
+         roles=("lead", "member")),
+    Tool("team_share",
+         "Share something a teammate needs: an interface or data format, a command that works, a pitfall, what you "
+         "learned, or a file from your worktree (path; text files up to 60 KB, shared as a snapshot). Name who "
+         "needs it in for (they are notified). Short title; the note says why it matters.",
+         _obj({"title": S, "text": S, "path": S, "for": LIST_S}, ["title"]), share, roles=("lead", "member")),
+    Tool("team_shared", "List what teammates have shared, or read one item in full (id).",
+         _obj({"id": I}), shared_view, roles=("lead", "member", "reviewer", "ceo")),
     Tool("team_escalate",
          "Ask the CEO model for ONE binding ruling on a disagreement or a hard design choice. Include the options "
          "and the evidence. Use rarely; tests and experiments beat rulings.",

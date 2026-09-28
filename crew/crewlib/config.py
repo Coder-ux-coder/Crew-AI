@@ -110,6 +110,8 @@ class TeamSettings:
     web_port: int = 8765
     workhorse_seats: int = 2  # GPT-6 Sol seats per ChatGPT subscription (they do most tasks by count)
     head_to_head: str = "off"  # off | some | all: parts built by both tiers' models, judged blind (feeds the scorecard)
+    head_to_head_style: str = "combine"  # combine: keep the better version and fold in what the other did better
+    prompt_writer: bool = True  # the owner's messages to a team are written up clearly before the agents read them
 
 
 @dataclass
@@ -181,6 +183,8 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
         raise ConfigError("team.workhorse_seats must be between 1 and 6")
     if team.head_to_head not in ("off", "some", "all"):
         raise ConfigError('team.head_to_head must be "off", "some" or "all"')
+    if team.head_to_head_style not in ("compete", "combine"):
+        raise ConfigError('team.head_to_head_style must be "compete" or "combine"')
 
     accounts = [Account(**_known(Account, a)) for a in data.get("account", [])]
     if not accounts:

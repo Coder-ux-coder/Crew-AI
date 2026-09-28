@@ -30,6 +30,29 @@ screens unless you ask.
   are told. Optional **head-to-head** comparisons (Settings → The team, or per
   project) have both models build the same part; a manager compares the two
   versions without knowing which is which and keeps the better one.
+  With **Combine the best of both** (the default), the kept version also takes
+  in what the other did better, so the result is a joint one.
+- **Talk to any agent privately:** in a team project, the **To** button next to
+  the message box lists every agent, grouped by subscription (for example
+  *Claude · claude-1 → Ada, the lead*), plus the CEO. Only that agent sees what
+  you write, and its answer comes back into the same conversation. A helper
+  (sub-agent) is reached through the agent that runs it. **Ask now** makes a
+  busy agent stop its current step and answer at once. If what you say changes
+  anyone else's work, the agent must pass it on to the lead and to them.
+- **A prompt writer:** before the team reads your words — typed or spoken — a
+  writer turns them into a clear, precise instruction; your own words stay
+  attached so nothing is lost. In chats, the ✦ button does the same for one
+  message (you see the result before sending), or switch it on for every
+  message (Settings → Models → Claude).
+- **Quality checked automatically:** every project sets up automated checks
+  before building starts — tests (for any backend, every route with wrong input
+  and error paths), a security check and lint — and they run on every piece of
+  work. Crew also scans every change itself: a leaked password or API key sends
+  the work straight back; risky code (injection, security switched off, errors
+  swallowed) is shown to the reviewer.
+- **A team that works like one:** agents address each other by name, never
+  debate or send "ok"/"thanks" messages, share files and what they learn, and
+  know each other's strengths from the scorecard.
 - **You choose the subscription when you want to:** each chat has a
   subscription button (Automatic, or e.g. claude-2); a team project can be
   limited to the subscriptions you tick; each workflow can name one.
@@ -38,12 +61,14 @@ screens unless you ask.
 - **Usage spread out:** work goes to whichever subscription has the most room;
   if one reaches its limit, another carries on — also in the middle of a chat.
 - **Keeps itself current:** Claude Code is updated automatically, and Crew
-  updates itself with one click, keeping all your data.
+  updates itself — at a quiet moment by itself, or with one click — keeping all
+  your data. The window reconnects by itself after an update.
 
 ## Install on Windows (once, about 10 minutes)
 
-1. **Download** this project from GitHub (green **Code** button →
-   **Download ZIP**), then right-click the ZIP → **Extract All**.
+1. **Download** this project from GitHub (github.com/Coder-ux-coder/Crew-AI:
+   green **Code** button → **Download ZIP**), then right-click the ZIP →
+   **Extract All**.
 2. In the extracted folder open **crew → install** and double-click
    **Install Crew.cmd**. If Windows warns that the publisher is unknown, choose
    **Run** (or **More info → Run anyway**).
@@ -57,8 +82,16 @@ screens unless you ask.
 **Already have an older Crew?** Run the new **Install Crew.cmd** once, the same
 way. It installs over the old version and keeps everything: chats, projects,
 sign-ins, API keys, workflows and settings. **From then on Crew updates itself:**
-when a new version is ready, a banner says so — press **Update now** (or
-**Settings → Updates & check-up**). Nothing to download, reinstall or re-enter.
+when a new version is ready it installs it at a quiet moment (nothing running,
+and you have not used Crew for half an hour), or press **Update now** on the
+banner (or in **Settings → Updates & check-up**, where automatic updating can
+be switched off). Nothing to download, reinstall or re-enter.
+
+**Opening Crew:** closing Crew's window leaves Crew running in the background
+(so workflows run and your phone can reach it). The desktop icon finds that
+Crew and shows its window again; if it has stopped answering, the icon replaces
+it. A Crew started from a terminal keeps running when the terminal closes.
+Every start is written to `~/.crew/app.log`.
 
 To remove Crew, run **Uninstall Crew.cmd**.
 
@@ -68,7 +101,7 @@ To remove Crew, run **Uninstall Crew.cmd**.
 |---|---|
 | **New chat** | One box, like Claude. Choose **Claude**, **ChatGPT** or the **Team**; pick the model and the effort (named exactly as Anthropic and OpenAI name them: Claude *auto, low, medium, high, xhigh, max*; ChatGPT (GPT-6 Sol or Astra) *auto, low, medium, high, xhigh, max, ultra*). **Plan** mode: it plans first and changes nothing until you press **Approve**. Type **/** for commands (/compact, /context, /usage, /plan, skills such as /docx or /xlsx). The ring shows how full the conversation's context is. |
 | **Chats** | Answers stream in with everything Claude Code shows: thinking, each step it takes, its to-do list, the helpers (sub-agents) it starts, files it makes (they open beside the chat), tokens and time. Attach files or pictures; the microphone types for you; the sound-wave button starts a spoken conversation. |
-| **Projects** | The team at work: the team chat (you can write to them), and a panel with every agent and helper — tier, product, model, effort, what it is doing, tokens — plus estimates of time and tokens left, **who did the work** (each tier's share of the tokens against your targets), the plan with each task's tier, and your subscriptions. Optional timer. Stop and continue any time. |
+| **Projects** | The team at work: the team chat (you can write to them — to everyone, or with **To** to one agent or the CEO privately), and a panel with every agent and helper — tier, product, model, effort, what it is doing, tokens, a **Message** button, and **Ask** beside each helper — plus estimates of time and tokens left, **who did the work** (each tier's share of the tokens against your targets), the plan with each task's tier, and your subscriptions. Optional timer. Stop and continue any time. |
 | **Workflows** | Jobs you repeat — a morning briefing, a weekly investor round-up, a letter in your style — run with one click or on a schedule, by Claude, ChatGPT or the team. |
 | **Library** | Files made for you in chats, and your screenshots and recordings (draw on them, or ask Claude about one). |
 | **Skills** | Anthropic's official skills (Word, Excel, PowerPoint, PDF, design, writing — installed automatically), Claude Code's built-in ones, and Crew's and your own. |
@@ -103,6 +136,15 @@ both devices.
   Astra cannot run, the CEO's work passes automatically to Claude Fable 5.1.
 - Scheduled workflows run while Crew is running (Settings → General → Start
   Crew with Windows keeps it available).
+- Private messages: helpers (sub-agents) cannot be written to directly — their
+  agent answers for them and passes your message on. Claude agents read a
+  message within a step or two; ChatGPT agents read it when their current step
+  ends (**Ask now** stops that step at once). A finished project's agents no
+  longer run, so they cannot answer. The CEO answers each question as a short,
+  separate review.
+- Crew's own security scan looks for well-known patterns; it is a safety net
+  under the team's tests and the reviewer's judgement, not a full security
+  audit.
 - Google may refuse sign-in inside automated browsers ("this browser may not be
   secure"). Sign in to Google in your normal browser instead, or use sites
   that do not need it.
@@ -123,6 +165,7 @@ Everything the app does is also available as commands (`./crew` on macOS/Linux,
 | start something new | `crew start "a website for my bakery with a menu and an order form"` |
 | work on an existing folder | `crew start --repo path/to/folder "what to change"` |
 | tell the team something | `crew say "use green as the main colour"` |
+| tell one agent (or the CEO) privately | `crew say --to boole "how far are you?"` · `crew say --to ceo "is the plan sound?"` |
 | see progress | `crew status` or `crew chat -f` |
 | pause, then continue later | `crew stop` … `crew resume` |
 | read the final report | `crew report` |
@@ -141,8 +184,14 @@ chat, log and report).
 - **No slop:** each piece has written acceptance criteria, must be submitted
   with evidence, passes the tests, and is reviewed by a fresh agent before it is
   merged. Merges that break the tests are undone automatically.
-- **No endless arguing:** chat is budgeted, the lead makes binding decisions,
-  and disagreements are settled by a test or one ruling from the CEO model.
+- **No endless arguing:** chat is budgeted, acknowledgements are refused, the
+  lead makes binding decisions, and disagreements are settled by a test or one
+  ruling from the CEO model.
+- **No lost messages:** a question that names no one goes to the lead; a name
+  that is not on the team is flagged; an instruction you give one agent
+  privately must be passed on to everyone it affects.
+- **No silent security holes:** the automated checks are required before the
+  plan starts, and Crew's own scan runs on every change and on the final result.
 - **No corruption:** each agent works in its own copy; only the orchestrator
   combines work; everything is saved so a stopped project resumes exactly.
 - **Solo or team is chosen for you.** Small jobs, or jobs that do not split

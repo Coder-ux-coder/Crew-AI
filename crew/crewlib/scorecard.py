@@ -158,6 +158,25 @@ def _pct(rate: float | None) -> str:
     return "–" if rate is None else f"{round(100 * rate)}%"
 
 
+def profile(model: str, data: dict | None = None, limit: int = 3) -> str:
+    """One model's measured record in a line, for every agent's roster ('' before there is a record)."""
+    m = ((data or stats())["models"]).get(model)
+    if not m or not m["n"]:
+        return ""
+    words = lambda keys: ", ".join(f"{KIND_WORDS.get(m['by_kind'][k]['kind'], m['by_kind'][k]['kind'])} "  # noqa: E731
+                                   f"({m['by_kind'][k]['size']})" for k in keys)
+    strong = sorted(m["strong"], key=lambda k: -m["by_kind"][k]["n"])[:limit]
+    weak = sorted(m["weak"], key=lambda k: -m["by_kind"][k]["n"])[:limit]
+    parts = [f"{_pct(m['rate'])} of {m['n']} pieces passed the first check"]
+    if strong:
+        parts.append("strong at " + words(strong))
+    if weak:
+        parts.append("weak at " + words(weak))
+    if m.get("wins") or m.get("losses"):
+        parts.append(f"head-to-head {m['wins']} won, {m['losses']} lost")
+    return "; ".join(parts)
+
+
 def render(workhorse: str, manager: str, limit: int = 4) -> str:
     """A short, factual summary for the lead's and the CEO's instructions ('' when there is no record yet)."""
     data = stats()

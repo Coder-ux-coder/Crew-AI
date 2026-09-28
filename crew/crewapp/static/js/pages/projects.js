@@ -1,5 +1,7 @@
 // Projects: jobs handed to the team. The list, and one project's live view — the team's chat on the left;
 // on the right every agent and helper (product, model, effort, what it is doing, tokens), estimates, and the plan.
+// The owner can also talk to one agent privately, or put a question to the CEO: only that agent sees the message,
+// and its answer comes back into the same conversation. Helpers are reached through the agent that runs them.
 
 import { h, icon, btn, api, toast, fail, confirmBox, store, bus, markdown, ago, clock, colorFor, tokens, pct, minutes, productBadge, menu, clear } from '../ui.js';
 import { dictate, canDictate } from '../voice.js';
@@ -70,6 +72,14 @@ class ProjectView {
     this.stats = h('div', { class: 'proj-stats' });
     this.feed = h('div', { class: 'feed' });
     this.report = h('div', { class: 'card report-card hidden' });
+    this.to = '';          // who the owner writes to: '' the whole team, else one agent's name, or 'ceo'
+    this.convLast = {};    // per private conversation: who spoke last ('you' or 'them')
+    this.unreadConv = {};  // per private conversation: answers the owner has not opened yet
+    this.convBar = h('div', { class: 'conv-bar hidden' });
+    this.convEmpty = h('div', { class: 'conv-empty hidden' });
+    this.waitEl = h('div', { class: 'sysline conv-wait' }, h('span', { class: 'spinner' }), h('span', null, ''));
+    this.toBtn = h('button', { class: 'chip-btn to-btn', type: 'button', title: 'Who reads your message: the whole team, or one agent privately', onclick: () => this.toMenu() });
+    this.hint = h('span', { class: 'muted small say-hint' });
     this.say = h('textarea', { rows: 1, placeholder: 'Message the team — they read it at their next step', 'aria-label': 'Message the team' });
     this.say.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); } });
     this.say.addEventListener('input', () => { this.say.style.height = 'auto'; this.say.style.height = Math.min(this.say.scrollHeight, 200) + 'px'; });
@@ -82,9 +92,9 @@ class ProjectView {
     this.tasks = h('div', { class: 'card pad-sm' });
     this.accounts = h('div', { class: 'card pad-sm stack' });
     this.body = h('div', { class: 'proj-body show-chat' },
-      h('div', { class: 'col main' }, h('div', { class: 'team-chat' }, this.report, this.feed,
+      h('div', { class: 'col main' }, h('div', { class: 'team-chat' }, this.convBar, this.report, this.feed, this.convEmpty,
         h('div', { class: 'say-dock' }, h('div', { class: 'composer' }, this.say, h('div', { class: 'c-row' },
-          h('span', { class: 'muted small' }, 'The team chat — everything they say, as it happens'), h('span', { class: 'grow' }), mic, sendBtn))))),
+          this.toBtn, this.hint, h('span', { class: 'grow' }), mic, sendBtn))))),
       h('div', { class: 'col side' },
         h('div', { class: 'side-title' }, icon('clock'), h('span', { class: 'grow' }, 'Estimates')), this.estimate,
         h('div', { class: 'side-title' }, icon('layers'), h('span', { class: 'grow' }, 'Who did the work'),
@@ -93,18 +103,16 @@ class ProjectView {
         h('div', { class: 'side-title' }, icon('bot'), h('span', { class: 'grow' }, 'Agents and helpers')), this.agents,
         h('div', { class: 'side-title' }, icon('listcheck'), h('span', { class: 'grow' }, 'The plan')), this.tasks,
         h('div', { class: 'side-title' }, icon('gauge'), h('span', { class: 'grow' }, 'Subscriptions')), this.accounts));
-    const tabs = h('div', { class: 'seg proj-tabs' }, [['chat', 'Team chat'], ['agents', 'Agents & plan']].map(([k, l]) => h('button', {
-      type: 'button', class: k === 'chat' ? 'on' : '', onclick: (e) => {
-        [...tabs.children].forEach((b) => b.classList.toggle('on', b === e.currentTarget));
-        this.body.className = 'proj-body show-' + k;
-      },
+    this.tabs = h('div', { class: 'seg proj-tabs' }, [['chat', 'Team chat'], ['agents', 'Agents & plan']].map(([k, l]) => h('button', {
+      type: 'button', class: k === 'chat' ? 'on' : '', dataset: { tab: k }, onclick: () => this.showTab(k),
     }, l)));
     this.root = h('div', { class: 'proj' },
       h('div', { class: 'proj-top' },
         h('div', { class: 'proj-title' }, h('div', { class: 'stack tight grow' }, this.pills, this.titleEl), this.actions),
-        this.phases, this.stats, tabs),
+        this.phases, this.stats, this.tabs),
       this.body);
     this.view.append(this.root);
+    this.syncTo();
     this.view.style.overflow = 'hidden';
     store.setTop(h('a', { class: 'title-btn', href: '#/projects' }, icon('left'), 'Projects'), []);
     this.feed.append(h('div', { class: 'sysline', dataset: { placeholder: '1' } }, 'Getting the team ready…'));
@@ -186,10 +194,6 @@ class ProjectView {
         h('small', { class: 'muted starget', title: 'Your target for this tier' }, x.target[0] ? `${x.target[0]}–${x.target[1]}%` : `~${x.target[1]}%`))),
       total ? null : h('div', { class: 'muted small' }, 'Fills in as the team works.'));
 
-    // agents
-    const agents = s.agents || [];
-    clear(this.agents, ...(agents.length ? agents.map((a) => agentCard(a, phase)) : [h('div', { class: 'muted small' }, 'The team is starting…')]));
-
     // plan
     const tasks = s.tasks || [];
     clear(this.tasks, ...(tasks.length ? tasks.map((x) => h('div', { class: 'task-line' },
@@ -216,27 +220,187 @@ class ProjectView {
       h('div', { class: 'answer md', html: markdown(s.report) }));
     }
 
-    // team chat
+    // team chat (and the owner's private conversations with single agents)
     const scroller = this.body.querySelector('.col.main');
     const stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
     for (const m of s.messages || []) {
       this.after = Math.max(this.after, m.id);
       if (this.seen.has(m.id)) continue;
       this.seen.add(m.id);
-      this.feed.append(message(m));
+      const conv = convOf(m);
+      const el = message(m, s);
+      el.dataset.conv = conv;
+      if (this.to && conv !== this.to) el.classList.add('conv-off');
+      // the prompt writer's version of the owner's message takes the place of the owner's draft
+      const draft = m.ref ? this.feed.querySelector(`[data-id="${m.ref}"]`) : null;
+      if (draft) draft.replaceWith(el); else this.feed.append(el);
+      if (!conv) continue;
+      this.convLast[conv] = m.who === 'you' ? 'you' : 'them';
+      if (m.who !== 'you' && this.loaded) {
+        const seenHere = this.to === conv || (!this.to && this.body.classList.contains('show-chat'));
+        if (!seenHere) this.unreadConv[conv] = (this.unreadConv[conv] || 0) + 1;
+        if (this.to && this.to !== conv) toast(`${cap(this.nameOf(conv))} answered you.`, { action: 'Open', onAction: () => this.talkTo(conv) });
+      }
     }
     const ph = this.feed.querySelector('[data-placeholder]');
     if (ph && this.seen.size) ph.remove();
+    this.syncTo();
+    this.syncWait();
+    this.applyEmpty();
     if (stick) scroller.scrollTop = scroller.scrollHeight;
+
+    // agents
+    const agents = s.agents || [];
+    const talk = { open: (to, prefill) => this.talkTo(to, prefill), unread: this.unreadConv, active: this.to };
+    clear(this.agents, ...(agents.length ? agents.map((a) => agentCard(a, phase, talk)) : [h('div', { class: 'muted small' }, 'The team is starting…')]));
+    this.loaded = true;
+  }
+
+  showTab(k) {
+    [...this.tabs.children].forEach((b) => b.classList.toggle('on', b.dataset.tab === k));
+    this.body.className = 'proj-body show-' + k;
+  }
+
+  nameOf(to) {
+    if (!to) return 'the team';
+    if (to === 'ceo') return 'the CEO';
+    const a = ((this.last && this.last.agents) || []).find((x) => x.name === to);
+    return a ? (a.title || cap(a.name)) : cap(to);
+  }
+
+  agentOf(to) {
+    return to && to !== 'ceo' ? ((this.last && this.last.agents) || []).find((x) => x.name === to) || null : null;
+  }
+
+  // The picker: the whole team, or one agent privately — grouped by subscription, each agent with its helpers —
+  // or the CEO.
+  toMenu() {
+    const s = this.last || {};
+    const done = s.raw_phase === 'done';
+    const groups = new Map();
+    for (const a of (s.agents || []).filter((x) => x.standing)) {
+      const key = `${a.product || 'Claude'}${a.account ? ' · ' + a.account : ''}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(a);
+    }
+    const items = [{ label: 'Everyone — the team chat', hint: 'The whole team reads it at their next step', ic: 'users', checked: !this.to, value: { to: '' } }];
+    for (const [key, list] of groups) {
+      items.push({ section: key });
+      for (const a of list) {
+        const name = a.title || cap(a.name);
+        items.push({ label: `${name} · ${a.role}`, hint: [modelName(a.model), statusWord(a)].filter(Boolean).join(' · '),
+          ic: PRODUCT_KEY[a.product] === 'codex' ? 'gpt' : 'spark', checked: this.to === a.name, value: { to: a.name }, disabled: done });
+        for (const x of (a.helpers || []).filter((y) => y.status === 'working')) {
+          items.push({ label: `↳ ${name}’s helper: ${x.what}`, hint: `Helpers take instructions from ${name}, so your message goes to ${name}, who passes it on`,
+            ic: 'bot', value: { to: a.name, about: x.what }, disabled: done });
+        }
+      }
+    }
+    items.push({ section: 'The CEO' });
+    items.push({ label: `The CEO · ${tierModel('ceo')}`, hint: 'Questions about the plan, priorities and progress; each is a short, separate review',
+      ic: 'brain', checked: this.to === 'ceo', value: { to: 'ceo' }, disabled: done });
+    menu(this.toBtn, items, { above: true, minWidth: 300, onPick: (v) => this.talkTo(v.to, v.about ? `About your helper “${v.about}”: ` : '') });
+  }
+
+  talkTo(to, prefill = '') {
+    this.to = to || '';
+    if (this.to) delete this.unreadConv[this.to];
+    for (const el of this.feed.children) {
+      if (el !== this.waitEl) el.classList.toggle('conv-off', !!this.to && el.dataset.conv !== this.to);
+    }
+    this.syncTo();
+    this.syncWait();
+    this.applyEmpty();
+    if (this.last) this.update({ ...this.last, messages: [] });  // redraw the cards (their Message buttons)
+    if (this.body.classList.contains('show-agents')) this.showTab('chat');
+    if (prefill) { this.say.value = prefill; this.say.dispatchEvent(new Event('input')); }
+    const scroller = this.body.querySelector('.col.main');
+    scroller.scrollTop = scroller.scrollHeight;
+    this.say.focus();
+  }
+
+  // The composer and the conversation bar follow who the owner is talking to.
+  syncTo() {
+    const s = this.last || {};
+    const to = this.to;
+    const name = this.nameOf(to);
+    clear(this.toBtn, icon(!to ? 'users' : to === 'ceo' ? 'brain' : 'lock'), h('span', null, to ? `To ${name} only` : 'To everyone'), icon('down', 'down'));
+    this.toBtn.classList.toggle('on', !!to);
+    this.say.placeholder = to ? `Message ${name} — only ${name} sees it` : 'Message the team — they read it at their next step';
+    this.say.setAttribute('aria-label', to ? `Message ${name} privately` : 'Message the team');
+    this.hint.textContent = to ? 'A private conversation — the answer comes back here' : 'The team chat — everything they say, as it happens';
+    this.root && this.root.classList.toggle('in-conv', !!to);
+    if (!to) { this.convBar.classList.add('hidden'); return; }
+    const a = this.agentOf(to);
+    const phase = s.raw_phase;
+    const busy = a && (a.status === 'busy' || a.status === 'working');
+    const Name = cap(name);
+    let status = '';
+    if (phase === 'done') status = `This project is finished, so ${name} no longer runs and cannot answer.`;
+    else if (!s.running) status = `The team is paused. ${Name} answers when you press Continue.`;
+    else if (to === 'ceo') status = 'Each question is a short, separate review; the answer comes back here, usually within a few minutes.';
+    else if (a && a.status === 'down') status = `${Name} is unavailable for this run and cannot answer.`;
+    else if (a && a.status === 'waiting') status = `${Name} is waiting for ${a.account || 'its subscription'} to reset, and answers then.`;
+    else if (busy) status = `Working${a.task ? ` on task #${a.task}` : ''}. ` + (a.product === 'ChatGPT'
+      ? 'Reads your message when this step ends; “Ask now” stops the step at once.'
+      : 'Reads your message at its next step, usually within a minute.');
+    else if (a) status = a.status === 'standby' ? 'Standing by — starts up to answer you.' : 'Ready — answers straight away.';
+    const waiting = this.convLast[to] === 'you';
+    const sub = to === 'ceo' ? ['Checks the work; does not build', tierModel('ceo')] : a ? [a.role, modelName(a.model), a.account] : [];
+    clear(this.convBar,
+      to === 'ceo' ? h('span', { class: 'av', style: { background: 'var(--tier-ceo)' } }, icon('brain'))
+        : h('span', { class: 'av', style: { background: colorFor(to) } }, to.replace(/[^a-z0-9]/gi, '').slice(0, 2)),
+      h('div', { class: 'grow cb-text' }, h('div', { class: 'cb-title' }, h('b', null, Name),
+        h('span', { class: 'pill dm-on', title: 'Only you and this agent see this conversation' }, icon('lock'), 'Private conversation')),
+        h('small', null, sub.filter(Boolean).join(' · ')),
+        status ? h('small', { class: 'cb-status' }, status) : null),
+      busy && waiting && s.running && to !== 'ceo'
+        ? btn('Ask now', () => this.askNow(), { cls: 'sm', ic: 'zap', title: `${Name} stops its current step, answers you, then carries on` }) : null,
+      h('button', { class: 'icon-btn sm', type: 'button', title: 'Back to the team chat', 'aria-label': 'Back to the team chat', onclick: () => this.talkTo('') }, icon('x')));
+    this.convBar.classList.remove('hidden');
+  }
+
+  // "Waiting for Ada's answer…" under the owner's last message in a private conversation
+  syncWait() {
+    const s = this.last || {};
+    if (this.to && this.convLast[this.to] === 'you' && s.running && s.raw_phase !== 'done') {
+      this.waitEl.lastChild.textContent = `Waiting for ${this.nameOf(this.to)}’s answer…`;
+      this.feed.append(this.waitEl);
+    } else this.waitEl.remove();
+  }
+
+  applyEmpty() {
+    const to = this.to;
+    const any = !!to && [...this.feed.children].some((el) => el !== this.waitEl && el.dataset.conv === to);
+    this.convEmpty.classList.toggle('hidden', !to || any);
+    if (!to || any) return;
+    const name = this.nameOf(to);
+    clear(this.convEmpty, icon(to === 'ceo' ? 'brain' : 'lock'), h('b', null, `Talk to ${name} privately`),
+      h('p', null, to === 'ceo'
+        ? 'Ask about the plan, the priorities or how the project is going. The CEO reads the brief, the plan and the team chat, answers in plain words, and can make a binding decision for the team if your question needs one.'
+        : `Only ${name} sees what you write here, and the answer comes back here. If what you say changes anyone else’s work, ${name} passes it on to them and to the lead, so the whole team stays on the same page.`));
+  }
+
+  async askNow() {
+    const name = cap(this.nameOf(this.to));
+    try {
+      await api(`/api/runs/${this.id}/interrupt`, { method: 'POST', body: { seat: this.to } });
+      toast(`${name} stops its current step, answers you, then carries on.`);
+    } catch (e) { fail(e); }
   }
 
   async send() {
     const text = this.say.value.trim();
     if (!text) return;
+    if (this.to && this.last && this.last.raw_phase === 'done') {
+      toast(`This project is finished, so ${this.nameOf(this.to)} no longer runs and cannot answer.`);
+      return;
+    }
     this.say.value = '';
     this.say.style.height = 'auto';
     try {
-      await api(`/api/runs/${this.id}/say`, { method: 'POST', body: { text } });
+      await api(`/api/runs/${this.id}/say`, { method: 'POST', body: { text, to: this.to || null } });
+      if (this.to) this.convLast[this.to] = 'you';
       clearTimeout(this.timer);
       this.tick();
     } catch (e) { fail(e); this.say.value = text; }
@@ -280,17 +444,29 @@ const tierModel = (tier) => {
   return modelName({ workhorse: m.codex, manager: m.work, ceo: m.ceo }[tier] || '');
 };
 
-function agentCard(a, phase) {
+const statusWord = (a) => {
+  if (a.status === 'busy' || a.status === 'working') return `working${a.task ? ` on task #${a.task}` : ''}`;
+  return { idle: 'ready', standby: 'standing by', starting: 'starting', stopped: 'stopped', waiting: 'waiting for its subscription', down: 'unavailable', done: 'done' }[a.status] || a.status || '';
+};
+
+// Which private conversation a message belongs to ('' for the team chat).
+const convOf = (m) => (!m.to ? '' : m.who === 'you' ? m.to : m.to === 'you' ? m.who : '');
+
+function agentCard(a, phase, talk) {
   const busy = a.status === 'busy' || a.status === 'working';
   if (phase === 'done' && ['stopped', 'idle', 'standby'].includes(a.status)) a = { ...a, status: 'done', doing: '' };
   const product = PRODUCT_KEY[a.product] || 'claude';
   const helpers = a.helpers || [];
   const workingHelpers = helpers.filter((x) => x.status === 'working').length;
+  const name = a.title || cap(a.name);
+  const to = a.role === 'CEO' ? 'ceo' : a.name;
+  const canTalk = talk && phase !== 'done' && (a.standing || a.role === 'CEO');
+  const unread = canTalk ? talk.unread[to] || 0 : 0;
   return h('div', { class: 'agent' + (a.status === 'done' ? ' done' : '') },
     h('div', { class: 'a-top' },
       h('span', { class: 'av' + (busy ? ' busy' : ''), style: { background: a.role === 'CEO' ? 'var(--team)' : colorFor(a.name) } },
         a.role === 'CEO' ? icon(product === 'codex' ? 'gpt' : 'spark') : a.name.replace(/[^a-z0-9]/gi, '').slice(0, 2)),
-      h('div', { class: 'a-name' }, h('b', null, a.title || cap(a.name)), h('small', null, [a.title && a.title.startsWith(a.role) ? '' : a.role, a.account].filter(Boolean).join(' · '))),
+      h('div', { class: 'a-name' }, h('b', null, name), h('small', null, [a.title && a.title.startsWith(a.role) ? '' : a.role, a.account].filter(Boolean).join(' · '))),
       a.status === 'done' ? h('span', { class: 'pill ok' }, 'Done') : a.status === 'failed' ? h('span', { class: 'pill bad' }, 'Stopped') : busy ? h('span', { class: 'pill live' }, 'Working') : h('span', { class: 'pill' }, STATE[a.status] || a.status || 'Ready')),
     h('div', { class: 'a-tags' }, productBadge(product, a.product || 'Claude'), a.model ? h('span', { class: 'pill outline' }, modelName(a.model)) : null,
       a.tier ? h('span', { class: 'pill t-' + a.tier, title: TIER_HINT[a.tier] || '' }, TIER_LABEL[a.tier] || a.tier) : null,
@@ -298,19 +474,41 @@ function agentCard(a, phase) {
     a.doing && !['stopped', 'finished', 'ready'].includes(String(a.doing).toLowerCase()) ? h('div', { class: 'a-doing' }, busy ? h('span', { class: 'spinner' }) : null, h('span', null, cap(a.doing) + (a.task ? ` · task #${a.task}` : ''))) : null,
     h('div', { class: 'a-stats' }, h('span', null, `${tokens(a.tokens || 0)} tokens`), a.turns ? h('span', null, `${a.turns} turn${a.turns === 1 ? '' : 's'}`) : null,
       a.seconds ? h('span', null, minutes(a.seconds / 60)) : null, a.restarts ? h('span', null, `${a.restarts} restart${a.restarts === 1 ? '' : 's'}`) : null,
-      a.helpers_total ? h('span', null, `${a.helpers_total} helper${a.helpers_total === 1 ? '' : 's'}${workingHelpers ? ` (${workingHelpers} working)` : ''}`) : null),
+      a.helpers_total ? h('span', null, `${a.helpers_total} helper${a.helpers_total === 1 ? '' : 's'}${workingHelpers ? ` (${workingHelpers} working)` : ''}`) : null,
+      canTalk ? h('button', {
+        class: 'talk-btn' + (talk.active === to ? ' on' : ''), type: 'button', onclick: () => talk.open(to),
+        title: a.role === 'CEO' ? 'Ask the CEO a question privately' : `Talk to ${name} privately — only ${name} sees your message`,
+      }, icon(a.role === 'CEO' ? 'brain' : 'chat'), a.role === 'CEO' ? 'Ask' : 'Message', unread ? h('span', { class: 'dot-count', title: `${unread} new answer${unread === 1 ? '' : 's'}` }, String(unread)) : null) : null),
     helpers.length ? h('div', { class: 'helpers' }, helpers.slice(-5).map((x) => h('div', { class: 'hl' },
       x.status === 'working' ? h('span', { class: 'spinner' }) : icon(x.status === 'failed' ? 'x' : 'check'),
-      h('span', null, x.what), h('small', { class: 'muted' }, x.seconds ? `${x.seconds}s` : x.type)))) : null);
+      h('span', null, x.what), h('small', { class: 'muted' }, x.seconds ? `${x.seconds}s` : x.type),
+      canTalk && a.standing ? h('button', {
+        class: 'hl-ask', type: 'button', title: `Helpers take instructions from ${name}: your message goes to ${name}, who passes it on`,
+        onclick: () => talk.open(a.name, `About your helper “${x.what}”${x.status === 'working' ? '' : ' (finished)'}: `),
+      }, 'Ask') : null))) : null);
 }
 
-function message(m) {
-  const who = m.who === 'you' ? 'You' : m.who === 'crew' ? 'Crew' : cap(m.who);
+function message(m, s) {
+  const who = m.who === 'you' ? 'You' : m.who === 'crew' ? 'Crew' : m.who === 'ceo' ? 'CEO' : cap(m.who);
+  const direct = !!m.to;
+  const drafting = m.kind === 'draft' || m.kind === 'drafted';
   const kind = m.who === 'you' ? 'you' : ({ decision: 'decision', blocker: 'blocker', concern: 'blocker', lesson: 'lesson', system: 'system' }[m.kind] || '');
-  const label = { question: 'question', answer: 'answer', blocker: 'needs help', concern: 'concern', decision: 'decision', lesson: 'lesson learned' }[m.kind];
-  if (kind === 'system' || m.who === 'crew') return h('div', { class: 'sysline' }, h('time', null, clock(m.t)), h('span', null, m.text));
-  return h('div', { class: 'tmsg ' + kind },
-    h('span', { class: 'av', style: { background: m.who === 'you' ? 'var(--ink-2)' : colorFor(m.who) } }, m.who === 'you' ? 'You'.slice(0, 1) : m.who.replace(/[^a-z0-9]/gi, '').slice(0, 2)),
-    h('div', { class: 'stack tight' }, h('div', { class: 'who' }, h('b', null, who), h('span', null, clock(m.t)), label ? h('span', { class: 'pill' }, label) : null),
-      h('div', { class: 'body' }, m.text)));
+  const label = { question: 'question', answer: 'answer', blocker: 'needs help', concern: 'concern', decision: 'decision', lesson: 'lesson learned', share: 'shared' }[m.kind];
+  if (!direct && (kind === 'system' || m.who === 'crew')) return h('div', { class: 'sysline', dataset: { id: m.id } }, h('time', null, clock(m.t)), h('span', null, m.text));
+  const toName = m.to === 'ceo' ? 'the CEO' : cap(m.to);
+  const dm = direct ? h('span', { class: 'pill dm-pill', title: 'Private: only you and this agent see it' }, icon('lock'), m.who === 'you' ? `to ${toName} · private` : 'to you · private') : null;
+  const pending = drafting && m.kind === 'draft'
+    ? h('span', { class: 'pill writer-pill', title: 'The prompt writer turns your words into a clear instruction before the team reads them' },
+      s && s.running ? h('span', { class: 'spinner' }) : icon('pen'), s && s.running ? 'writing it up for the team…' : 'written up when the team continues')
+    : null;
+  // The prompt writer's version: the owner's own words are one tap away.
+  const own = !drafting && m.original && m.original.trim() !== m.text.trim()
+    ? h('details', { class: 'own-words' }, h('summary', null, icon('pen'), 'Written up by the prompt writer · your words'), h('div', null, m.original))
+    : null;
+  const avatar = m.who === 'ceo' ? h('span', { class: 'av', style: { background: 'var(--tier-ceo)' } }, icon('brain'))
+    : h('span', { class: 'av', style: { background: m.who === 'you' ? 'var(--ink-2)' : colorFor(m.who) } }, m.who === 'you' ? 'Y' : m.who.replace(/[^a-z0-9]/gi, '').slice(0, 2));
+  return h('div', { class: 'tmsg ' + kind + (direct ? ' direct' : '') + (m.kind === 'share' ? ' share' : ''), dataset: { id: m.id } },
+    avatar,
+    h('div', { class: 'stack tight' }, h('div', { class: 'who' }, h('b', null, who), h('span', null, clock(m.t)), label ? h('span', { class: 'pill' }, m.kind === 'share' ? icon('clip') : null, label) : null, dm, pending),
+      h('div', { class: 'body' }, m.text), own));
 }

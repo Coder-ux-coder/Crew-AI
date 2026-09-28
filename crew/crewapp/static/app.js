@@ -348,13 +348,63 @@ function showUpdate(info) {
   bannerEl.classList.remove('hidden');
 }
 
-export async function installUpdate(info) {
-  const cover = h('div', { class: 'overlay-full' }, h('div', { class: 'stack', style: { justifyItems: 'center' } },
+function updatingCover(info) {
+  return h('div', { class: 'overlay-full' }, h('div', { class: 'stack', style: { justifyItems: 'center' } },
     h('span', { class: 'logo-mark', style: { width: '48px', height: '48px' } }, icon('spark')),
     h('h1', null, 'Updating Crew…'),
-    h('p', { class: 'muted' }, `Installing version ${info && info.latest ? info.latest : 'the newest version'}. Crew will reopen by itself in a moment.`),
+    h('p', { class: 'muted' }, `Installing version ${info && info.latest ? info.latest : 'the newest version'}. Crew reopens by itself — this can take a minute or two.`),
     h('p', { class: 'muted small' }, 'Your chats, projects, sign-ins, API keys and settings are kept.'),
     h('span', { class: 'spinner', style: { width: '26px', height: '26px' } })));
+}
+
+// Where is Crew now? Here, or — after a restart — on one of its other ports (Windows can keep a port for a few
+// minutes after a program closes). Another port cannot be read from this page, but it can be reached.
+async function findCrew(expected) {
+  const here = Number(location.port || (location.protocol === 'https:' ? 443 : 80));
+  try {
+    const r = await fetch('/api/ping', { cache: 'no-store' });
+    if (r.ok) {
+      const d = await r.json();
+      if (!expected || d.version === expected) return here;
+    }
+  } catch (e) { /* not here (yet) */ }
+  for (let p = 8765; p < 8775; p++) {
+    if (p === here) continue;
+    try {
+      await fetch(`${location.protocol}//${location.hostname}:${p}/api/ping`, { mode: 'no-cors', cache: 'no-store' });
+      return p;
+    } catch (e) { /* nothing there */ }
+  }
+  return null;
+}
+
+function goTo(port) {
+  const here = Number(location.port || (location.protocol === 'https:' ? 443 : 80));
+  if (port === here) location.reload();
+  else location.href = `${location.protocol}//${location.hostname}:${port}/${location.hash}`;
+}
+
+// Crew restarts after an update (by the owner's click, or automatically at a quiet moment): wait for it and
+// reconnect, wherever it comes back.
+function waitForRestart(cover, expected) {
+  const started = Date.now();
+  const tick = async () => {
+    await new Promise((r) => setTimeout(r, 2000));
+    if (Date.now() - started > 5000) {
+      const port = await findCrew(expected);
+      if (port) { goTo(port); return; }
+    }
+    if (Date.now() - started < 6 * 60000) tick();
+    else {
+      cover.remove();
+      toast('Crew has not come back yet. Close this window and click the Crew icon: it finds Crew wherever it is.', { bad: true, ms: 30000 });
+    }
+  };
+  tick();
+}
+
+export async function installUpdate(info) {
+  const cover = updatingCover(info);
   document.body.append(cover);
   try {
     await api('/api/update', { method: 'POST', body: {} });
@@ -363,16 +413,25 @@ export async function installUpdate(info) {
     fail(e);
     return;
   }
-  const started = Date.now();
-  const wait = async () => {
-    await new Promise((r) => setTimeout(r, 1500));
-    try {
-      const r = await fetch('/api/health', { cache: 'no-store' });
-      if (r.ok && Date.now() - started > 3000) { location.reload(); return; }
-    } catch (e) { /* restarting */ }
-    if (Date.now() - started < 180000) wait(); else { cover.remove(); toast('Crew did not come back by itself. Double-click the Crew icon to open it.', { bad: true, ms: 15000 }); }
-  };
-  wait();
+  waitForRestart(cover, info && info.latest);
+}
+
+function showUpdating(info) {
+  if (document.querySelector('.overlay-full')) return;
+  const cover = updatingCover(info);
+  document.body.append(cover);
+  waitForRestart(cover, info && info.latest);
+}
+
+// After an update: say so once.
+function sayUpdated(info) {
+  const u = info && info.updated;
+  if (!u || u.to !== info.current) return;
+  let seen = '';
+  try { seen = localStorage.getItem('crew-updated-seen') || ''; } catch (e) { /* private window */ }
+  if (seen === u.to) return;
+  try { localStorage.setItem('crew-updated-seen', u.to); } catch (e) { /* private window */ }
+  toast(`Crew ${u.auto ? 'updated itself' : 'is updated'} to version ${u.to}.` + ((info.notes || []).length ? ` New: ${info.notes.slice(0, 2).join(' · ')}` : ''), { ms: 12000 });
 }
 store.installUpdate = installUpdate;
 
@@ -399,12 +458,13 @@ async function boot() {
   setInterval(refreshMeters, 60000);
   stream('/api/events', {
     update: (info) => showUpdate(info),
+    updating: (info) => showUpdating(info),
     notice: (n) => {
       toast(n.text || 'Done.', { bad: n.status === 'failed', ms: 7000, action: n.kind === 'workflow' ? 'Open' : null, onAction: () => { location.hash = '#/workflows'; } });
       if (n.kind === 'workflow') { bus.emit('workflows'); refreshRecent(); }
     },
   });
-  api('/api/update').then(showUpdate).catch(() => {});
+  api('/api/update').then((info) => { showUpdate(info); sayUpdated(info); }).catch(() => {});
   if ('serviceWorker' in navigator && window.isSecureContext) {
     navigator.serviceWorker.register('/sw.js').catch(() => { /* offline support is optional */ });
   }

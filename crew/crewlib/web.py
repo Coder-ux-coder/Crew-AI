@@ -43,7 +43,8 @@ def friendly_activity(label: str, status: str) -> str:
                       ("websearch", "researching online"), ("webfetch", "researching online"),
                       ("task", "working with a helper"), ("agent", "working with a helper"),
                       ("team_chat", "talking to the team"), ("team_task_submit", "handing in work"),
-                      ("team_task", "updating the plan"), ("team_", "coordinating"), ("toolsearch", "getting ready"),
+                      ("team_task", "updating the plan"), ("team_reply_owner", "answering you"),
+                      ("team_", "coordinating"), ("toolsearch", "getting ready"),
                       ("writing", "thinking"), ("tool result", "working")):
         if low.startswith(key):
             return text
@@ -64,7 +65,8 @@ def state(store: Store, run_dir: Path, after: int) -> dict:
         "done": store.get("phase") in ("done", "stopped", "failed"),
         "progress": [sum(1 for t in tasks if t["status"] == "merged"),
                      sum(1 for t in tasks if t["status"] != "cancelled")],
-        "messages": [{"id": m["id"], "t": m["ts"], "who": m["sender"], "kind": m["kind"], "text": m["text"]}
+        "messages": [{"id": m["id"], "t": m["ts"], "who": m["sender"], "kind": m["kind"], "text": m["text"],
+                      "to": m.get("recipient"), "ref": m.get("ref"), "original": m.get("original")}
                      for m in store.messages_after(after, 300)],
         "seats": [{"name": s["name"], "role": s["role"], "status": s["status"],
                    "doing": friendly_activity(s["note"] or "", s["status"]),

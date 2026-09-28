@@ -67,6 +67,24 @@ def check() -> dict:
     return out
 
 
+def newer(info: dict) -> bool:
+    """Is the version found by the last check newer than the one running now?"""
+    return bool(info.get("latest")) and _parse(info.get("latest", "0")) > _parse(current().get("version", "0"))
+
+
+def note_updated(old: str, new: str, auto: bool) -> None:
+    """Remembered across the restart, so the reopened window can say that Crew was updated."""
+    atomic_write(crew_home() / "updated.json", json.dumps({"from": old, "to": new, "auto": auto, "at": time.time()}))
+
+
+def recent_update(minutes: float = 30) -> dict | None:
+    try:
+        data = json.loads((crew_home() / "updated.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if time.time() - float(data.get("at") or 0) < minutes * 60 else None
+
+
 def last_check() -> dict:
     try:
         return json.loads((crew_home() / "update.json").read_text(encoding="utf-8"))
@@ -123,7 +141,10 @@ def install() -> dict:
 
 
 def restart_later(port: int, delay: float = 1.0) -> None:
-    """Start a fresh copy of Crew once this one has closed, then close this one."""
+    """Start a fresh copy of Crew once this one has closed, then close this one. On Windows the new copy runs
+    without a console (pythonw), like the desktop icon: it writes to ~/.crew/app.log and can show a message."""
+    exe = Path(sys.executable)
+    runner = exe.with_name("pythonw.exe") if os.name == "nt" and exe.with_name("pythonw.exe").is_file() else exe
     script = (
         "import os, socket, subprocess, sys, time\n"
         f"port = {int(port)}\n"
@@ -133,7 +154,7 @@ def restart_later(port: int, delay: float = 1.0) -> None:
         "        s.connect(('127.0.0.1', port)); s.close(); time.sleep(0.5)\n"
         "    except OSError:\n"
         "        break\n"
-        f"subprocess.Popen([sys.executable, '-X', 'utf8', '-m', 'crewlib', 'app', '--port', str(port), '--no-open'],"
+        f"subprocess.Popen([{str(runner)!r}, '-X', 'utf8', '-m', 'crewlib', 'app', '--port', str(port), '--no-open'],"
         f" cwd={str(ROOT)!r})\n"
     )
     kwargs = {"creationflags": 0x00000008 | 0x00000200} if os.name == "nt" else {"start_new_session": True}

@@ -45,6 +45,8 @@ APP_DEFAULTS = {
     "font": "serif",
     "owner_name": "",
     "phone_enabled": False,
+    "auto_update": True,
+    "improve_prompts": False,
     "settings_version": 3,
 }
 

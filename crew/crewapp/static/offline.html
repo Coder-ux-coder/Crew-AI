@@ -16,5 +16,31 @@
   <img src="/icons/icon.svg" alt="">
   <h1>Crew is not running</h1>
   <p>Start Crew on your computer (double-click the Crew icon on the desktop). If you are on your phone, make sure it is on the same Wi-Fi as the computer.</p>
+  <p id="auto" style="font-size:14px">This page reconnects by itself as soon as Crew is back.</p>
   <button onclick="location.reload()">Try again</button>
-</main></body></html>
+</main>
+<script>
+  // Crew may come back on another of its ports (for example right after an update): look for it and go there.
+  (function () {
+    var here = Number(location.port || 80);
+    function probe(port) {
+      var url = port === here ? '/api/ping' : location.protocol + '//' + location.hostname + ':' + port + '/api/ping';
+      return fetch(url, port === here ? { cache: 'no-store' } : { mode: 'no-cors', cache: 'no-store' })
+        .then(function (r) { if (port === here && !r.ok) throw new Error('no'); return port; });
+    }
+    function scan() {
+      var ports = [here];
+      for (var p = 8765; p < 8775; p++) if (p !== here) ports.push(p);
+      var i = 0;
+      (function next() {
+        if (i >= ports.length) { setTimeout(scan, 4000); return; }
+        var port = ports[i++];
+        probe(port).then(function (p) {
+          location.href = (p === here) ? location.href : location.protocol + '//' + location.hostname + ':' + p + '/' + location.hash;
+        }, next);
+      })();
+    }
+    setTimeout(scan, 1500);
+  })();
+</script>
+</body></html>

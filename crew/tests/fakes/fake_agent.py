@@ -21,6 +21,13 @@ injected through CREW_FAKE_SCENARIO (JSON):
   reject_twice: [ids]        the reviewer requests changes the first two times (a workhorse task moves up)
   contest_winner: vendor     the head-to-head judge prefers this vendor's version (default "codex")
   contest_fail: vendor       the judge finds problems in this vendor's version
+  contest_borrow: text       what the judge says the losing version does better (default: nothing)
+  no_reply_tool: true        an agent answers the owner's private message without team_reply_owner
+  leak_task: [ids]           the first version of these tasks contains an API key (Crew's scan must send it back)
+
+The owner's private messages are answered with team_reply_owner; when the owner says "tell the team", the agent
+also passes it on (share_with_team). The CEO answers the owner's questions, and the prompt writer writes the
+owner's words up as "Clarified: <words>".
 
 With a Codex account in the run, the lead makes odd-numbered features workhorse tasks (GPT-6 Sol) and even ones
 manager tasks. A CEO asked for a JSON answer (--output-schema / --json-schema) on Codex answers in JSON only,
@@ -100,6 +107,7 @@ class Brain:
     def __init__(self, emit, mcp: Mcp | None, seat: str, role: str, schema: dict | None = None, vendor: str = "claude"):
         self.emit, self.mcp, self.seat, self.role = emit, mcp, seat, role
         self.schema, self.vendor = schema, vendor
+        self.structured = None  # a structured answer this turn produced (the prompt writer's)
 
     def json_only(self) -> bool:
         """The CEO on Codex with an output schema answers in JSON and leaves the recording to the orchestrator."""
@@ -109,9 +117,34 @@ class Brain:
         self.emit("tool_use", f"mcp__crew_team__{name}", args)
         text, err = self.mcp.call(name, **args)
         self.emit("tool_result", name, text)
+        # Like a real agent, notice the owner's private question in a tool answer mid-task, and answer it.
+        if "THE OWNER ASKS YOU DIRECTLY" in text and not SCEN.get("no_reply_tool") and not getattr(self, "_answering", False):
+            self._answering = True
+            try:
+                self.answer_owner(text)
+            finally:
+                self._answering = False
         return text, err
 
+    def answer_owner(self, text: str) -> None:
+        after = text.split("DIRECTLY", 1)[1]
+        asked = re.findall(r"^- (.+)$", after, re.M) or re.findall(r"then carry on\): (.+)$", after, re.M)
+        said = asked[0] if asked else ""
+        share = "The owner wants every module to have a docstring." if "tell the team" in said.lower() else ""
+        self.tool("team_reply_owner", text=f"{self.seat} here: I am on my tasks and nothing blocks me. You asked: "
+                                           f"{said[:80]}", share_with_team=share)
+
     def turn(self, text: str) -> str:
+        if "You are the team's prompt writer" in text:
+            words = re.search(r'The owner\'s words:\n"""(.*?)"""', text, re.S)
+            self.structured = {"message": "Clarified: " + (words.group(1).strip() if words else ""), "changed": True}
+            return json.dumps(self.structured)
+        if "You are the CEO of this AI team" in text:
+            return "CEO here: the plan is sound, and the team is on track to finish today."
+        if "THE OWNER MESSAGED YOU DIRECTLY" in text or "THE OWNER ASKS YOU DIRECTLY" in text:
+            if SCEN.get("no_reply_tool"):
+                return f"{self.seat}: I am working through my tasks; nothing is blocking me."
+            self.answer_owner(text)
         if "You are judging a head-to-head" in text:
             return "judged"  # the verdict is the structured answer (see judge_verdict)
         if "Turn the owner's request below into a precise brief" in text:
@@ -217,6 +250,8 @@ class Brain:
         else:
             i = int(re.search(r"Feature (\d+)", detail).group(1))
             files[f"app/feat{i}.py"] = f"def feat{i}():\n    return {i}\n"
+            if tid in SCEN.get("leak_task", []) and once(f"leak-{tid}"):
+                files[f"app/feat{i}.py"] = f'API_KEY = "sk-ant-api03-Qw3rTy7UiOp9AsDfGhJkLzXcVbNm1234"\n\n\ndef feat{i}():\n    return {i}\n'
             files[f"tests/test_feat{i}.py"] = (f"import unittest\nfrom app.feat{i} import feat{i}\n\n\n"
                                                f"class T(unittest.TestCase):\n    def test(self):\n"
                                                f"        self.assertEqual(feat{i}(), {i})\n")
@@ -264,6 +299,7 @@ def judge_verdict() -> dict:
     prefer = SCEN.get("contest_winner", "codex")
     out["winner"] = next((k for k in ("a", "b") if v[k] == prefer), "a")
     out["reason"] = f"The {prefer} version is simpler and fully tested."
+    out["borrow"] = SCEN.get("contest_borrow", "")
     return out
 
 
@@ -614,6 +650,8 @@ def claude_main(argv: list[str]) -> int:
                    "total_cost_usd": 0.02, "num_turns": 1, "duration_ms": 50, "session_id": sid}
         if schema and '"winner"' in schema:
             payload["structured_output"] = judge_verdict()
+        elif schema and '"changed"' in schema:
+            payload["structured_output"] = brain.structured or {"message": result, "changed": False}
         elif schema and '"builder_tier"' in schema:
             payload["structured_output"] = {
                 "title": "Feature pack", "goal": "Build a small package of features with tests.",

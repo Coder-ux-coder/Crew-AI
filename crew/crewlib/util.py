@@ -107,6 +107,10 @@ class Redactor:
             {v for v in (secrets or {}).values() if len(v) >= 6}, key=len, reverse=True
         )
 
+    def values(self) -> list[str]:
+        """The secret values themselves (for Crew's own leak scan; never shown anywhere)."""
+        return list(self._values)
+
     def __call__(self, text: str) -> str:
         if not text or not self._values:
             return text

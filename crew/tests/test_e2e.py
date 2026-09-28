@@ -65,7 +65,8 @@ def make_run(scenario: dict, accounts: list[tuple[str, str]], stall: float = 0.5
     return cfg, run_dir, repo, run_id
 
 
-def run_orch(cfg, run_dir, repo, run_id, resume=False, timeout=240, stop_after=None) -> Orchestrator:
+def run_orch(cfg, run_dir, repo, run_id, resume=False, timeout=240, stop_after=None, during=None) -> Orchestrator:
+    """Run a project to the end. during(store) is called every half second while it runs (the owner's hand)."""
     orch = Orchestrator(cfg, run_dir, repo, "Build a small feature pack with tests", run_id, resume=resume)
     os.environ["CREW_FAKE_INTEGRATION"] = orch.integration
     t = threading.Thread(target=orch.run, daemon=True)
@@ -75,6 +76,8 @@ def run_orch(cfg, run_dir, repo, run_id, resume=False, timeout=240, stop_after=N
         if stop_after and stop_after(orch.store):
             orch.store.set("stop_requested", time.time())
             stop_after = None
+        if during:
+            during(orch.store)
         time.sleep(0.5)
     if t.is_alive():
         orch.store.set("stop_requested", time.time())
@@ -258,6 +261,24 @@ class E2E(unittest.TestCase):
         self.assertEqual((models["gpt-6-sol"]["wins"], models["claude-opus-5-5"]["losses"]), (2, 2))
         self.assertIn("Head-to-head", (orch.run_dir / "REPORT.md").read_text())
 
+    def test_head_to_head_combines_the_best_of_both(self):
+        """Collaborative head-to-head (the default style): the judge names what the other version does better, and
+        the kept version takes it in before the usual check — one joint result."""
+        borrow = "Handle an empty input the way the other version does (app/feat1.py)."
+        cfg, run_dir, repo, rid = make_run({"tasks": 2, "contest_borrow": borrow},
+                                           [("claude-1", "claude"), ("claude-2", "claude"), ("codex-1", "codex")],
+                                           team_extra='head_to_head = "all"')
+        orch = run_orch(cfg, run_dir, repo, rid)
+        self.assert_finished(orch, repo, 2)
+        st = orch.store
+        self.assertEqual(len(st.events("contest")), 2, dump_chat(st))
+        kept = [t for t in st.tasks() if t["status"] == "merged" and t["title"].startswith("Feature")]
+        self.assertEqual(len(kept), 2)
+        for t in kept:
+            self.assertIn("Joint submission", t["notes"])
+            self.assertTrue(st.get(f"joint:{t['id']}"))
+        self.assertTrue(any("combining the best of both" in m["text"] for m in st.messages_after(0, 5000)))
+
     def test_solo_head_to_head(self):
         cfg, run_dir, repo, rid = make_run({"tasks": 2, "size": "small", "parts": 1, "contest_winner": "claude"},
                                            [("claude-1", "claude"), ("claude-2", "claude"), ("codex-1", "codex")],
@@ -273,6 +294,75 @@ class E2E(unittest.TestCase):
         self.assertEqual((kept["status"], kept["owner"]), ("merged", "boole"))  # the rival's version was kept
         turns = {s["name"]: s["turns"] for s in st.seats()}
         self.assertEqual(turns["dijkstra"], 0)
+
+    def test_talk_to_one_agent_and_the_ceo(self):
+        """The owner writes privately to one agent and to the CEO. The prompt writer writes each message up first
+        (the owner's words travel with it); the agent answers the owner alone and passes the instruction on to the
+        lead; the CEO answers the question. Nobody else sees the private messages."""
+        cfg, run_dir, repo, rid = make_run({"tasks": 2}, [("claude-1", "claude"), ("claude-2", "claude")])
+        asked: dict[str, int] = {}
+
+        def owner(st: Store) -> None:
+            if not asked and st.get("phase") == "build":
+                asked["boole"] = st.owner_message("How is it going? Please tell the team: every module needs a "
+                                                  "docstring.", "boole")
+                asked["ceo"] = st.owner_message("Is the plan sound?", "ceo")
+
+        orch = run_orch(cfg, run_dir, repo, rid, during=owner)
+        self.assert_finished(orch, repo, 2)
+        st = orch.store
+        msgs = st.messages_after(0, 5000)
+        by_id = {m["id"]: m for m in msgs}
+        self.assertEqual(by_id[asked["boole"]]["kind"], "drafted")
+        final = next(m for m in msgs if m.get("ref") == asked["boole"])
+        self.assertEqual((final["kind"], final["recipient"]), ("direct", "boole"))
+        self.assertTrue(final["text"].startswith("Clarified: How is it going?"))
+        self.assertEqual(final["original"], by_id[asked["boole"]]["text"])
+        replies = [m for m in msgs if m["sender"] == "boole" and m.get("recipient") == "you"]
+        self.assertTrue(replies, dump_chat(st))
+        relay = [m for m in msgs if m["sender"] == "boole" and not m.get("recipient")
+                 and m["text"].startswith("From the owner (told to me directly)")]
+        self.assertTrue(relay and "@ada" in relay[0]["text"], dump_chat(st))
+        ceo = [m for m in msgs if m["sender"] == "ceo" and m.get("recipient") == "you"]
+        self.assertTrue(ceo and "CEO here" in ceo[0]["text"], dump_chat(st))
+        writers = [r for r in self.oneoffs(st) if r["seat"].startswith("writer-")]
+        self.assertEqual(len(writers), 2)
+        questions = [r for r in self.oneoffs(st) if r["seat"].startswith("ceo-question-")]
+        self.assertTrue(questions and questions[0]["effort"] == "high")
+
+    def test_an_unanswered_question_is_answered_from_the_turn(self):
+        """An agent that does not use team_reply_owner still answers: its own words at the end of the turn."""
+        cfg, run_dir, repo, rid = make_run({"tasks": 2, "no_reply_tool": True},
+                                           [("claude-1", "claude"), ("claude-2", "claude")],
+                                           team_extra="prompt_writer = false")
+        asked: dict[str, int] = {}
+
+        def owner(st: Store) -> None:
+            if not asked and st.get("phase") == "build":
+                asked["boole"] = st.owner_message("Are you blocked on anything?", "boole")
+
+        orch = run_orch(cfg, run_dir, repo, rid, during=owner)
+        self.assert_finished(orch, repo, 2)
+        st = orch.store
+        self.assertEqual(st.messages_after(asked["boole"] - 1)[0]["kind"], "direct")  # no prompt writer
+        replies = [m for m in st.messages_after(asked["boole"], 5000)
+                   if m["sender"] == "boole" and m.get("recipient") == "you"]
+        self.assertTrue(replies, dump_chat(st))
+        self.assertEqual([m["id"] for m in st.owner_asks("boole")], [])
+
+    def test_a_leaked_secret_goes_back_to_its_author(self):
+        """Crew's own scan finds an API key in a change, sends the work back before any reviewer sees it, and the
+        corrected version is merged."""
+        cfg, run_dir, repo, rid = make_run({"tasks": 2, "leak_task": [2]}, [("claude-1", "claude"),
+                                                                            ("claude-2", "claude")])
+        orch = run_orch(cfg, run_dir, repo, rid)
+        self.assert_finished(orch, repo, 2)
+        st = orch.store
+        scanned = [e for e in st.events("review") if e["task_id"] == 2 and e["data"].get("by") == "scan"]
+        self.assertEqual([e["data"]["verdict"] for e in scanned], ["changes"], dump_chat(st))
+        self.assertTrue(any(e["data"].get("secrets") for e in st.events("scan")))
+        self.assertNotIn("sk-ant-", (repo / "app" / "feat1.py").read_text())
+        self.assertNotIn("Qw3rTy7UiOp9", dump_chat(st))  # the key is never repeated anywhere
 
     def test_workhorse_task_moves_up_after_two_failed_checks(self):
         cfg, run_dir, repo, rid = make_run({"tasks": 1, "reject_twice": [2]},

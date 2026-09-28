@@ -65,8 +65,12 @@ def new_run_id(request: str) -> str:
 
 def print_message(m: dict) -> None:
     who = "Crew" if m["sender"] == "crew" else ("You" if m["sender"] == "you" else m["sender"])
+    if m.get("recipient"):  # a direct message between the owner and one agent
+        who += " → " + ("you" if m["recipient"] == "you" else m["recipient"]) + " (direct)"
     color = {"crew": "2", "you": "36"}.get(m["sender"], "1")
-    kind = "" if m["kind"] in ("update", "human", "system") else c(f" [{m['kind']}]", "33")
+    kind = "" if m["kind"] in ("update", "human", "system", "direct") else c(f" [{m['kind']}]", "33")
+    if m["kind"] in ("draft", "drafted"):
+        kind = c(" [your words — the prompt writer is writing them up]" if m["kind"] == "draft" else " [your words]", "2")
     print(f"{c(hhmm(m['ts']), '2')} {c(who, color)}{kind}: {m['text']}", flush=True)
 
 
@@ -173,7 +177,16 @@ def cmd_resume(args) -> int:
 
 def cmd_say(args) -> int:
     store = Store(resolve_run(args.run) / "team.db")
-    store.post("you", "human", " ".join(args.message), urgent=True)
+    to = (args.to or "").strip().lower()
+    if to:
+        if to != "ceo" and store.seat(to) is None:
+            names = ", ".join(s["name"] for s in store.seats())
+            print(f"There is no agent called {to} in this project (agents: {names}; or ceo).")
+            return 2
+        store.owner_message(" ".join(args.message), to)
+        print(f"Sent to {to} only. The answer appears in `crew chat`.")
+        return 0
+    store.owner_message(" ".join(args.message))
     print("Sent to the team.")
     return 0
 
@@ -298,6 +311,13 @@ def cmd_app(args) -> int:
     except ImportError:
         sys.path.insert(0, str(CREW_DIR))
         from crewapp.server import main as app_main
+    if os.name == "nt" and not args.foreground and sys.stdin is not None and sys.stdin.isatty():
+        # From a terminal: Crew runs on its own, so closing the terminal never stops it (as from the icon).
+        from crewapp import launcher
+
+        code = launcher.start_detached(args.port, args.phone, not args.no_open)
+        if code is not None:
+            return code
     return app_main(port=args.port, phone=args.phone, open_window=not args.no_open)
 
 
@@ -331,11 +351,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--phone", action="store_true", help="also allow your phone to connect (pairing required)")
     p.add_argument("--no-open", action="store_true", help="do not open a browser window")
+    p.add_argument("--foreground", action="store_true",
+                   help="Windows: keep Crew in this terminal (it stops when the terminal closes)")
     p.set_defaults(fn=cmd_app)
 
-    p = sub.add_parser("say", help="send the team a message")
+    p = sub.add_parser("say", help="send the team a message (or, with --to, one agent)")
     p.add_argument("message", nargs="+")
     p.add_argument("--run")
+    p.add_argument("--to", help="talk to one agent directly (its name, or ceo); only it sees the message")
     p.set_defaults(fn=cmd_say)
 
     for name, fn, text in (("stop", cmd_stop, "save the work and stop"), ("status", cmd_status, "who is doing what"),

@@ -114,11 +114,24 @@ class RunManager:
         st.set("stop_requested", now())
         return True
 
-    def say(self, run_id: str, text: str) -> bool:
+    def say(self, run_id: str, text: str, to: str | None = None) -> bool:
+        """A message from the owner: to the whole team, or directly to one agent (or "ceo"); only that agent sees
+        a direct message, and its answer comes back to the owner."""
         st = self.store(run_id)
         if st is None or not text.strip():
             return False
-        st.post("you", "human", text.strip()[:4000], urgent=True)
+        to = (to or "").strip().lower()
+        if to and to != "ceo" and st.seat(to) is None:
+            raise ValueError(f"There is no agent called {to} in this project.")
+        st.owner_message(text.strip()[:4000], to or None)  # through the prompt writer when the project uses it
+        return True
+
+    def interrupt(self, run_id: str, seat: str) -> bool:
+        """The owner's "Ask now": the agent stops its current step and answers."""
+        st = self.store(run_id)
+        if st is None or st.seat(seat) is None:
+            return False
+        st.set(f"interrupt:{seat}", now())
         return True
 
     def project_dir(self, run_id: str) -> Path | None:
@@ -214,6 +227,8 @@ def agent_title(name: str, role: str, task=None) -> str:
         what = {"ceo-plan": "plan review", "ceo-final": "final review", "ceo-effort": "effort", "ceo-solo": "effort"}.get(n)
         if what is None and n.startswith("ceo-ruling"):
             what = "decision"
+        if what is None and n.startswith("ceo-question"):
+            what = "your question"
         return "CEO" + (f" · {what}" if what else "")
     if n.startswith("reviewer"):
         return "Reviewer" + (f" · task #{task}" if task else "")
@@ -221,8 +236,11 @@ def agent_title(name: str, role: str, task=None) -> str:
         return "Head-to-head judge" + (f" · task #{task}" if task else "")
     if n == "refiner":
         return "Brief writer"
+    if n.startswith("writer"):
+        return "Prompt writer"
     return (name or "").replace("-", " ").strip().capitalize()
-ROLES = {"lead": "Lead", "member": "Builder", "reviewer": "Reviewer", "ceo": "CEO", "refiner": "Brief writer"}
+ROLES = {"lead": "Lead", "member": "Builder", "reviewer": "Reviewer", "ceo": "CEO", "refiner": "Brief writer",
+         "writer": "Prompt writer"}
 SIZE_WEIGHT = {"S": 1, "M": 2, "L": 4}
 
 
@@ -258,8 +276,9 @@ def agents_view(st: Store) -> list[dict]:
                                    "product": PRODUCTS.get(d.get("vendor"), d.get("vendor") or ""),
                                    "model": d.get("model") or "", "account": d.get("account") or "",
                                    "effort": d.get("effort") or "auto", "status": "working", "task": ev["task_id"],
-                                   "doing": {"ceo": "thinking it through", "refiner": "writing the brief"}.get(
-                                       d.get("role"), "checking the work"),
+                                   "doing": {"ceo": "thinking it through", "refiner": "writing the brief",
+                                             "writer": "writing up your message"}.get(d.get("role"),
+                                                                                      "checking the work"),
                                    "tokens": 0, "turns": 1, "started": ev["ts"], "helpers": [], "helpers_total": 0,
                                    "standing": False}
         elif ev["seat"] in oneoffs:
