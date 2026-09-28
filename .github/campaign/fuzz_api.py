@@ -25,6 +25,7 @@ import http.client
 import inspect
 import io
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -523,4 +524,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    status = main()
+    from crewapp import browser  # the app's own browser (the browser route started it): stopped before leaving
+    browser.service.stop()
+    if browser.service.thread is not None:
+        browser.service.thread.join(20)
+    sys.stdout.flush()
+    sys.__stdout__.flush()
+    os._exit(status)  # a Playwright instance can crash while Python shuts down (a segfault after the report)
