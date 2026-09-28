@@ -459,6 +459,41 @@ Found by the API fuzzer (`.github/campaign/fuzz_api.py`, round 1 dynamic sweep):
   list(5) · only the shapes Crew uses are imported · test_a39_an_odd_connectors_file_from_the_claude_app.
 - Not bugs (checked): GET /api/settings creates team_rules.md from the template when it is missing (by
   design); anthropic-skills.json written by the background install of Anthropic's skills.
+- A41 · P2 · chat.send, config.ModelPolicy.check · a model name with a stray character (NUL): the owner's
+  message was kept unanswered and the name saved as the chat's model, so every later message in that chat
+  failed with "embedded null byte"; any failure to start other than the three expected kinds did the same ·
+  model names were never checked for sane characters; the start's error handling was too narrow · names
+  like claude-opus-5-5, gpt-6-sol, sonnet[1m], Bedrock ids only; any failure to start is answered in the
+  conversation · test_a41_a_model_name_with_a_stray_character_breaks_nothing.
+
+Found by the browser sweep (`.github/campaign/browser_sweep.py`) and its screenshots:
+
+- F7 · P3 · app.css (sidebar) · "Computer" under the Browser/Phone/Computer buttons was cut off at every
+  laptop width (83 px of words in a 79 px button) · three equal columns · each button as wide as its words
+  (flex) · measured in Chromium before/after; the sweep's clipped-text check now finds it (flagged with the
+  old stylesheet, clean with the new) — CSS, no unit test.
+- A40 · P2 · runs/server/projects.js · a project whose program ended before its team began (git missing,
+  a subscription since removed or renamed, a clone that failed) showed "Getting the team ready…" for ever;
+  an unknown or deleted project did the same · the app could not tell "starting" from "never will"; the
+  subscriptions chosen were checked only by the program · 404 for an unknown project (the page already
+  handled it); the page shows why a project could not start (its log's last line); a subscription choice
+  the team cannot use is refused before anything starts · test_a40_a_project_that_cannot_start_says_why.
+
+Follow-ups from the handoff, and what they led to:
+
+- C12 · P2 · lessons.derive_ceo_lessons · the CEO's effort lessons kept their first numbers for ever; worse,
+  when the record turned ("high" no longer enough), the new lesson (same words, other verdict) only
+  reinforced the old "high is enough", so the CEO was told the opposite of its own record · add() merges by
+  word similarity · the worked-out lessons are kept in step with the record: refreshed numbers, weight up
+  when confirmed, a lesson the record no longer supports removed (only lessons from source
+  crew-effort-record; the record and all other lessons untouched; as in 2.2, these are regenerable) ·
+  test_c12_the_ceos_effort_lessons_follow_its_record.
+- C16 · P2 · agents.run_once_claude/run_once_codex · one output line that is JSON but not a message (null,
+  a list) ended a reviewer's, the CEO's or the prompt writer's run with an AttributeError (C6 fixed this for
+  the standing seats only) · lines that are not messages are skipped · test_c16_a_stray_line_…
+- C17 · P3 · chat.py, agents.py · every answer's program left its output pipes open until Python collected
+  them (the suite's ResourceWarnings); over weeks, open handles pile up · each reader closes its pipe when it
+  reaches the end (agents.drain) · test_c17_finished_answers_let_go_of_their_pipes.
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
