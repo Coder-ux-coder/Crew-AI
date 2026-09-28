@@ -117,7 +117,13 @@ const RENDER = {
     })));
     const name = h('input', { type: 'text', value: app.owner_name || '', placeholder: 'Your name', style: { width: '220px' } });
     name.addEventListener('change', async () => { await save({ app: { owner_name: name.value.trim() } }); bus.emit('chats'); });
+    const p = s.problem;
+    const recent = p && p.at && Date.now() / 1000 - p.at < 30 * 86400;
     return [
+      recent ? card('Your settings file', '',
+        h('p', { class: 'muted', style: { margin: 0 } }, `On ${new Date(p.at * 1000).toLocaleString()} Crew could not read its settings file (${p.error}). `
+          + `So that Crew still opens, it is using ${p.restored}; the file as it was is kept as ${p.kept} in Crew’s folder, `
+          + 'where you can compare the two. Settings you change here are saved as usual.')) : null,
       card('You', '', row('Your name', 'Used to greet you', name)),
       card('Look', '',
         row('Theme', 'Light, dark, or follow Windows', seg([['system', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']], app.theme || 'system',
@@ -190,7 +196,9 @@ const RENDER = {
       const draw = () => clear(box, ...list.map((x) => h('span', { class: 'pill' }, x, h('button', {
         type: 'button', title: 'Remove', 'aria-label': 'Remove ' + x, onclick: async () => {
           if (warn && !(await warn(x))) return;
-          list.splice(list.indexOf(x), 1); draw(); await save({ models: { [key]: list } });
+          const at = list.indexOf(x);
+          list.splice(at, 1); draw();
+          try { await save({ models: { [key]: list } }); } catch (e) { list.splice(at, 0, x); draw(); }  // refused: shown as it still is
         },
       }, '×'))), h('button', {
         class: 'btn sm ghost', type: 'button', onclick: async () => {

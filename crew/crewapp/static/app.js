@@ -390,6 +390,7 @@ function waitForRestart(cover, expected) {
   const started = Date.now();
   const tick = async () => {
     await new Promise((r) => setTimeout(r, 2000));
+    if (!cover.isConnected) return;  // the update did not go ahead (see update_failed): nothing to wait for
     if (Date.now() - started > 5000) {
       const port = await findCrew(expected);
       if (port) { goTo(port); return; }
@@ -435,6 +436,17 @@ function sayUpdated(info) {
 }
 store.installUpdate = installUpdate;
 
+// A settings file Crew could not read was set aside and the last good settings are in use: say so, once.
+function tellSettingsProblem(p) {
+  if (!p || !p.at) return;
+  let seen = '';
+  try { seen = localStorage.getItem('crew.settingsProblemSeen') || ''; } catch (e) { /* private window */ }
+  if (seen === String(p.at)) return;
+  try { localStorage.setItem('crew.settingsProblemSeen', String(p.at)); } catch (e) { /* private window */ }
+  toast(`Crew could not read your settings file, so it is using ${p.restored}. The file is kept as ${p.kept} in Crew’s folder.`,
+    { bad: true, ms: 20000, action: 'Details', onAction: () => { location.hash = '#/settings'; } });
+}
+
 // ------------------------------------------------------------------ start
 
 async function boot() {
@@ -447,6 +459,7 @@ async function boot() {
   }
   store.isLocal = !!store.overview.local;
   applyLook(store.overview.app || {});
+  tellSettingsProblem(store.overview.settings_problem);
   window.addEventListener('hashchange', route);
   route();
   refreshRecent();
@@ -459,6 +472,10 @@ async function boot() {
   stream('/api/events', {
     update: (info) => showUpdate(info),
     updating: (info) => showUpdating(info),
+    update_failed: (d) => {
+      document.querySelectorAll('.overlay-full').forEach((el) => el.remove());
+      toast(d.message || 'The update did not install. Crew carries on as it was.', { bad: true, ms: 15000 });
+    },
     notice: (n) => {
       toast(n.text || 'Done.', { bad: n.status === 'failed', ms: 7000, action: n.kind === 'workflow' ? 'Open' : null, onAction: () => { location.hash = '#/workflows'; } });
       if (n.kind === 'workflow') { bus.emit('workflows'); refreshRecent(); }

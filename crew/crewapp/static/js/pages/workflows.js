@@ -89,11 +89,12 @@ export function workflowsPage(view) {
   async function history(w) {
     let runs = [];
     try { runs = (await api(`/api/workflows/${w.id}/runs`)).runs; } catch (e) { fail(e); return; }
+    let closeBox = null;
     dialog({
-      title: `${w.name} — history`, wide: true,
+      title: `${w.name} — history`, wide: true, onOpen: (form, close) => { closeBox = close; },
       body: h('div', { class: 'list' }, runs.length ? runs.map((r) => h(r.chat_id || r.run_id ? 'a' : 'div', {
         class: 'li', href: r.chat_id ? '#/chat/' + r.chat_id : r.run_id ? '#/projects/' + r.run_id : null,
-        onclick: () => document.querySelector('.dialog') && document.querySelector('.dialog').remove(),
+        onclick: () => closeBox && closeBox(null),  // closed properly: its keyboard listener goes with it
       }, h('span', { class: 'li-ico' }, icon(r.status === 'done' ? 'check' : r.status === 'running' ? 'clock' : 'x')),
       h('span', { class: 'li-main' }, h('b', null, `${new Date(r.started * 1000).toLocaleString()} · ${r.trigger === 'schedule' ? 'on schedule' : 'by you'}`),
         h('small', null, r.summary || (r.status === 'running' ? 'Running…' : ''))),

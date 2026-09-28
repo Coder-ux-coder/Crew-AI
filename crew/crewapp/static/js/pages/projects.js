@@ -412,7 +412,12 @@ class ProjectView {
   }
 
   async resume() {
-    try { await api(`/api/runs/${this.id}/resume`, { method: 'POST', body: {} }); toast('The team is picking up where it left off.'); clearTimeout(this.timer); setTimeout(() => this.tick(), 1200); } catch (e) { fail(e); }
+    try {
+      const r = await api(`/api/runs/${this.id}/resume`, { method: 'POST', body: {} });
+      toast(r.already_running ? 'The team is still working on this project — nothing needed restarting.' : 'The team is picking up where it left off.');
+      clearTimeout(this.timer);
+      setTimeout(() => this.tick(), 1200);
+    } catch (e) { fail(e); }
   }
 
   destroy() {

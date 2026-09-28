@@ -834,6 +834,7 @@ class ChatView {
     store.pendingSend = null;
     if (pending && pending.id === this.id) {
       cm.attachments = pending.attachments || [];
+      if (pending.voice) this.voice = pending.voice;
       this.send(pending.text, cm.attachments, pending.settings);
     }
     this.scrollDown(true);
@@ -957,6 +958,8 @@ class ChatView {
       if (!c.busy && this.composer.busy) {
         const last = c.messages[c.messages.length - 1];
         if (last && last.role === 'assistant') this.finishLive({ text: last.text, meta: last.meta });
+        // Crew restarted in the middle of the answer: nothing more is coming, so do not wait for it for ever.
+        else this.finishLive({ text: 'This answer was interrupted: Crew restarted before it was finished. Please send your message again.', meta: { error: true } });
       }
     } catch (e) { /* still offline */ }
   }
@@ -981,10 +984,15 @@ class ChatView {
       // Create the chat, then continue on its own page (so the address can be bookmarked and reopened).
       try {
         await this.ensureChat();
-        store.pendingSend = { id: this.id, text, attachments: atts, settings: s };
+        // A spoken conversation goes along too: the chat page hears (and reads out) the answer.
+        store.pendingSend = { id: this.id, text, attachments: atts, settings: s, voice: this.voice };
+        this.voice = null;
         cm.clear();
         location.hash = '#/chat/' + this.id;
-      } catch (e) { fail(e); }
+      } catch (e) {
+        if (this.voice) { this.voice.onError(e.message); this.voice = null; }
+        fail(e);
+      }
       return;
     }
     try { await this.ensureChat(); await this.ensureStream(); } catch (e) { fail(e); return; }
@@ -1113,27 +1121,48 @@ export function chatPage(view, params) {
 
 export function chatsPage(view) {
   let all = [];
+  let found = null;  // search results from all chats, however old (the list itself holds the newest ones)
+  let limit = 300;
   let filter = 'all';
+  let alive = true;
+  let searchT = null;
+  let asked = 0;
   const q = h('input', { type: 'search', placeholder: 'Search your chats', 'aria-label': 'Search' });
   const list = h('div', { class: 'list' });
+  const note = h('p', { class: 'muted small hidden', style: { margin: '6px 2px 0' } });
   const seg = h('div', { class: 'seg' }, [['all', 'All'], ['claude', 'Claude'], ['codex', 'ChatGPT'], ['workflow', 'From workflows']].map(([v, l]) => h('button', {
     type: 'button', class: v === filter ? 'on' : '', onclick: (e) => { filter = v; [...seg.children].forEach((b) => b.classList.toggle('on', b === e.currentTarget)); draw(); },
   }, l)));
   function draw() {
     const words = q.value.trim().toLowerCase();
-    const shown = all.filter((c) => (filter === 'all' ? c.kind !== 'workflow' : filter === 'workflow' ? c.kind === 'workflow' : c.engine === filter && c.kind !== 'workflow'))
-      .filter((c) => !words || c.title.toLowerCase().includes(words));
+    const source = words && found ? found : all;
+    const shown = source.filter((c) => (filter === 'all' ? c.kind !== 'workflow' : filter === 'workflow' ? c.kind === 'workflow' : c.engine === filter && c.kind !== 'workflow'))
+      .filter((c) => !words || (c.title || '').toLowerCase().includes(words));
     clear(list, ...(shown.length ? shown.map((c) => h('a', { class: 'li', href: '#/chat/' + c.id },
       h('span', { class: 'li-ico ' + (c.engine || 'claude') }, icon(c.engine === 'codex' ? 'gpt' : 'spark')),
-      h('span', { class: 'li-main' }, h('b', null, c.title), h('small', null, `${c.engine === 'codex' ? 'ChatGPT' : modelLabel('claude', c.model)} · ${ago(c.updated)}`)),
+      h('span', { class: 'li-main' }, h('b', null, c.title || 'Untitled chat'), h('small', null, `${c.engine === 'codex' ? 'ChatGPT' : modelLabel('claude', c.model)} · ${ago(c.updated)}`)),
       c.pinned ? icon('pin') : null)) : [h('div', { class: 'li muted' }, words ? 'No chat matches.' : 'No chats yet.')]));
+    note.textContent = `Showing your ${limit} most recent chats. Search to find an older one.`;
+    note.classList.toggle('hidden', !!words || all.length < limit);
   }
-  api('/api/chats').then((r) => { all = r.chats; draw(); }).catch(fail);
-  q.addEventListener('input', draw);
+  // Search every chat on the computer, not only the newest ones in the list.
+  function search() {
+    clearTimeout(searchT);
+    const words = q.value.trim();
+    if (!words) { found = null; draw(); return; }
+    draw();
+    const ask = ++asked;
+    searchT = setTimeout(() => {
+      api('/api/chats?q=' + encodeURIComponent(words)).then((r) => { if (alive && ask === asked) { found = r.chats; draw(); } }).catch(fail);
+    }, 250);
+  }
+  api('/api/chats').then((r) => { all = r.chats; limit = r.limit || limit; draw(); }).catch(fail);
+  q.addEventListener('input', search);
   store.setTop(null, [h('a', { class: 'btn sm', href: '#/new' }, icon('plus'), 'New chat')]);
   view.append(h('div', { class: 'page narrow' },
     h('div', { class: 'page-head' }, h('div', { class: 't' }, h('h1', null, 'Your chats'))),
     h('div', { class: 'row wrap' }, h('div', { class: 'search grow' }, icon('search'), q), seg),
-    list));
+    list, note));
   setTimeout(() => q.focus(), 50);
+  return () => { alive = false; clearTimeout(searchT); };
 }
