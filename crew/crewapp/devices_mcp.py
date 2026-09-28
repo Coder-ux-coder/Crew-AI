@@ -45,7 +45,7 @@ TOOLS = [
      _obj({"x": N, "y": N, "button": {"type": "string", "enum": ["left", "right", "middle"]}, "double": B}, ["x", "y"])),
     ("computer_drag", "Drag with the mouse from x1, y1 to x2, y2 (pixels of the latest screenshot).",
      _obj({"x1": N, "y1": N, "x2": N, "y2": N}, ["x1", "y1", "x2", "y2"])),
-    ("computer_type", "Type text where the cursor is on the computer. Any language, Urdu included. New lines press "
+    ("computer_type", "Type text where the cursor is on the computer. Any language. New lines press "
                       "Enter.", _obj({"text": S}, ["text"])),
     ("computer_key", "Press a key or a combination on the computer: enter, esc, tab, ctrl+s, alt+tab, win+r, f5, "
                      "ctrl+shift+esc …", _obj({"keys": S}, ["keys"])),

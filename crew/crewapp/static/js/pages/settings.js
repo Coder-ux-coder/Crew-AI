@@ -20,7 +20,7 @@ const SECTIONS = [
 
 const LANGS = [
   ['en-US', 'English (United States)'], ['en-GB', 'English (United Kingdom)'], ['en-IN', 'English (India / Pakistan)'],
-  ['ur-PK', 'اردو — Urdu (Pakistan)'], ['ar-SA', 'العربية — Arabic'], ['hi-IN', 'Hindi'], ['pa-IN', 'Punjabi (Gurmukhi)'],
+  ['ar-SA', 'العربية — Arabic'], ['hi-IN', 'Hindi'], ['pa-IN', 'Punjabi (Gurmukhi)'],
   ['zh-CN', 'Chinese (Mandarin)'], ['tr-TR', 'Turkish'], ['fr-FR', 'French'], ['de-DE', 'German'], ['es-ES', 'Spanish'],
 ];
 
@@ -285,6 +285,8 @@ const RENDER = {
 
   voice(s) {
     const app = s.app;
+    const langs = !app.dictation_lang || LANGS.some(([v]) => v === app.dictation_lang) ? LANGS
+      : [...LANGS, [app.dictation_lang, app.dictation_lang]];  // a language chosen earlier that is no longer listed
     const voiceSel = h('select', { onchange: (e) => save({ app: { voice_name: e.target.value } }) });
     const fillVoices = () => {
       const voices = speech.voices().slice().sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
@@ -303,8 +305,8 @@ const RENDER = {
     });
     return [
       card('Speaking to Crew', canDictate ? 'Press the microphone to type with your voice, or the sound-wave button for a spoken conversation.' : 'Voice typing needs Microsoft Edge or Google Chrome.',
-        row('Language you speak', 'Urdu works too', select(LANGS, app.dictation_lang, (v) => save({ app: { dictation_lang: v } })))),
-      card('Crew speaking to you', canSpeak ? 'Answers can be read aloud. Microsoft Edge has the most natural voices, including Urdu (Uzma, Asad).' : 'Reading aloud needs Microsoft Edge or Google Chrome.',
+        row('Language you speak', '', select(langs, app.dictation_lang, (v) => save({ app: { dictation_lang: v } })))),
+      card('Crew speaking to you', canSpeak ? 'Answers can be read aloud. Microsoft Edge has the most natural voices.' : 'Reading aloud needs Microsoft Edge or Google Chrome.',
         row('Voice', '', voiceSel),
         row('Speed', '', h('div', { class: 'row' }, rate, rateLabel)),
         row('Read every answer aloud', 'Otherwise press the speaker button under an answer', toggle(app.auto_read, (v) => save({ app: { auto_read: v } }))),

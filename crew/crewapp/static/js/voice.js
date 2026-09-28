@@ -88,16 +88,16 @@ export function dictate(textarea, button) {
 function pickVoice(text) {
   const voices = speechSynthesis.getVoices();
   const wanted = app().voice_name;
-  if (/[؀-ۿ]/.test(text)) { // Urdu / Arabic script: use a voice that can read it
-    const ur = voices.find((v) => /^ur/i.test(v.lang)) || voices.find((v) => /^ar/i.test(v.lang));
-    if (ur) return ur;
+  if (/[؀-ۿ]/.test(text)) { // Arabic script: use a voice that can read it
+    const ar = voices.find((v) => /^ar/i.test(v.lang));
+    if (ar) return ar;
   }
   return voices.find((v) => v.name === wanted) || voices.find((v) => v.default) || null;
 }
 
 function chunks(text) {
   // Short pieces: some voices stop after ~15 seconds of continuous speech.
-  const parts = text.match(/[^.!?؟۔\n]+[.!?؟۔]*[\s\n]*/g) || [text];
+  const parts = text.match(/[^.!?؟\n]+[.!?؟]*[\s\n]*/g) || [text];
   const out = [];
   let cur = '';
   for (const p of parts) {
@@ -156,7 +156,7 @@ export class SentenceSpeaker {
     if (this.stopped) return;
     this.buf += delta;
     let m;
-    while ((m = this.buf.match(/^([\s\S]*?[.!?؟۔:](?=\s)|[\s\S]*?\n)/))) {
+    while ((m = this.buf.match(/^([\s\S]*?[.!?؟:](?=\s)|[\s\S]*?\n)/))) {
       const piece = m[0];
       this.buf = this.buf.slice(piece.length);
       this.say(piece);
