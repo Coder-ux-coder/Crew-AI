@@ -72,12 +72,15 @@ TOOLS = [
 ]
 
 
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # the app is on this computer: never via a proxy
+
+
 def call_app(name: str, args: dict) -> dict:
     group, _, action = name.partition("_")
     req = urllib.request.Request(f"{APP}/internal/{group}/{action}", data=json.dumps(args).encode(),
                                  headers={"Content-Type": "application/json", "X-Crew-Token": TOKEN}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with DIRECT.open(req, timeout=120) as resp:
             return json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         try:
