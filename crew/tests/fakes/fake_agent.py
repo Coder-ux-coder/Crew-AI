@@ -24,6 +24,7 @@ injected through CREW_FAKE_SCENARIO (JSON):
   contest_borrow: text       what the judge says the losing version does better (default: nothing)
   no_reply_tool: true        an agent answers the owner's private message without team_reply_owner
   leak_task: [ids]           the first version of these tasks contains an API key (Crew's scan must send it back)
+  codex_delay: N             Codex waits N seconds before it answers (time for the owner to press Stop)
 
 The owner's private messages are answered with team_reply_owner; when the owner says "tell the team", the agent
 also passes it on (share_with_team). The CEO answers the owner's questions, and the prompt writer writes the
@@ -721,6 +722,8 @@ def codex_main(argv: list[str]) -> int:
             out({"type": "item.started", "item": {"id": uuid.uuid4().hex[:8], "type": "mcp_tool_call", "tool": name}})
 
     text = sys.stdin.read()
+    if SCEN.get("codex_delay"):
+        time.sleep(float(SCEN["codex_delay"]))
     schema = None
     if "--output-schema" in argv:
         schema = json.loads(Path(argv[argv.index("--output-schema") + 1]).read_text())

@@ -1,0 +1,761 @@
+"""Regression tests from the debugging campaign (DEBUG-CAMPAIGN.md at the repository root, section 12): one per
+bug fixed, each failing without its fix and passing with it. The ledger ids (C1, A8 …) name the bug each covers.
+Uses the scripted fakes in tests/fakes."""
+
+from __future__ import annotations
+
+import http.client
+import io
+import json
+import os
+import queue
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import types
+import unittest
+import zipfile
+from pathlib import Path
+from unittest import mock
+
+try:  # `python -m unittest discover -s tests` imports the modules by their own names
+    from test_app import ENV, HOME, ROOT, AppServer, until
+except ImportError:
+    from tests.test_app import ENV, HOME, ROOT, AppServer, until
+
+from crewapp import chat as chat_mod  # noqa: E402
+from crewapp import launcher  # noqa: E402
+from crewapp import phone as phone_mod  # noqa: E402
+from crewapp import runs as runs_mod  # noqa: E402
+from crewapp import server  # noqa: E402
+from crewapp import settings as settings_mod  # noqa: E402
+from crewapp import skills as skills_mod  # noqa: E402
+from crewapp import updater  # noqa: E402
+from crewapp import workflows as workflows_mod  # noqa: E402
+from crewapp.sse import hub  # noqa: E402
+from crewlib import agents, claude_cli, cli, connections, gitops, lessons, orchestrator, web  # noqa: E402
+from crewlib.config import Account  # noqa: E402
+from crewlib.store import Store  # noqa: E402
+from crewlib.util import Redactor, load_env_file  # noqa: E402
+
+
+class TempHome:
+    """A Crew folder of its own for one test (CREW_HOME points at it while the test runs)."""
+
+    def __enter__(self) -> Path:
+        self.saved = os.environ.get("CREW_HOME")
+        self.path = Path(tempfile.mkdtemp(prefix="crew-campaign-"))
+        os.environ["CREW_HOME"] = str(self.path)
+        return self.path
+
+    def __exit__(self, *exc) -> None:
+        os.environ["CREW_HOME"] = self.saved or str(HOME)
+        shutil.rmtree(self.path, ignore_errors=True)
+
+
+def drain(q: queue.Queue) -> list:
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    return items
+
+
+def process_running(pid: int) -> bool:
+    """Linux: is this process still there (a zombie waiting to be collected counts as ended)?"""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[-1].split()[0] != "Z"
+
+
+# ====================================================================== the team engine
+
+
+class LessonTests(unittest.TestCase):
+    def test_c1_updates_do_not_make_built_in_lessons_count_for_more(self):
+        with TempHome():
+            lessons.ensure_seeded()
+            before = {x["text"]: x["weight"] for x in lessons.top(1000)}
+            self.assertTrue(before)
+            # Crew 2.3.0 stored the seed file's date as its version, and every update rewrites that file.
+            db = lessons._db()
+            db.execute("UPDATE memo SET value='1700000000.0' WHERE key='seeded'")
+            db.close()
+            lessons.ensure_seeded()
+            lessons.ensure_seeded()
+            self.assertEqual({x["text"]: x["weight"] for x in lessons.top(1000)}, before)
+
+    def test_c2_an_effort_level_crew_does_not_know(self):
+        with TempHome():
+            lessons.record_effort_outcome("build", "M", "high", 1, 5, 1000)
+            db = lessons._db()
+            for effort in ("minimal", None, "ultra"):  # an older record, a hand edit
+                for _ in range(3):
+                    db.execute("INSERT INTO effort_outcomes(ts,project,kind,size,effort,rounds,first_pass,minutes,tokens) "
+                               "VALUES(?,?,?,?,?,?,?,?,?)", (time.time(), "old", "build", "M", effort, 1, 1, 5.0, 1000))
+            db.close()
+            stats = lessons.effort_stats()
+            self.assertEqual(len(stats), 4)
+            self.assertEqual(stats[0]["effort"], "high")  # the levels Crew knows come first
+            self.assertIn("Your record so far", lessons.render_for_ceo())
+            self.assertEqual(lessons.derive_ceo_lessons(), [])  # nothing is learned about unknown levels
+
+
+class OrchestratorTests(unittest.TestCase):
+    def test_c3_a_damaged_or_locked_cost_model_is_ignored(self):
+        with TempHome():
+            db = lessons._db()
+            db.execute("INSERT INTO memo(key,value) VALUES('cost_model','{not json')")
+            db.close()
+            self.assertEqual(orchestrator.lessons_cost_model(), {})
+            for value, want in (("[1, 2]", {}),
+                                ('{"tokens_per_unit": {"a": "lots", "b": 3}, "util_per_token": null}',
+                                 {"tokens_per_unit": {"b": 3.0}, "util_per_token": {}})):
+                db = lessons._db()
+                db.execute("UPDATE memo SET value=? WHERE key='cost_model'", (value,))
+                db.close()
+                self.assertEqual(orchestrator.lessons_cost_model(), want)
+            with mock.patch.object(lessons, "_db", side_effect=sqlite3.OperationalError("database is locked")):
+                self.assertEqual(orchestrator.lessons_cost_model(), {})
+
+    def test_c4_a_delivered_project_stays_delivered(self):
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            logged: list[str] = []
+            # The retrospective saves what it can when the cost model cannot be written …
+            fake = types.SimpleNamespace(store=st, cfg=None, seats={}, lead_name="ada", events=queue.Queue(),
+                                         log=logged.append)
+            with mock.patch.object(orchestrator, "update_cost_model", side_effect=sqlite3.OperationalError("locked")):
+                orchestrator.Orchestrator.retrospective(fake)
+            self.assertTrue((home / "PLAYBOOK.md").is_file())
+            self.assertTrue(any("cost model" in line for line in logged))
+            # … and a retrospective that fails altogether never turns the delivery into a failure.
+            phases: list[str] = []
+            fake = types.SimpleNamespace(
+                cfg=types.SimpleNamespace(team=types.SimpleNamespace(deliver="branch")), store=st,
+                integration="crew/demo/main", repo=home, write_report=lambda where: None, say=lambda *a, **k: None,
+                retrospective=mock.Mock(side_effect=sqlite3.OperationalError("database is locked")),
+                log=logged.append, set_phase=phases.append)
+            orchestrator.Orchestrator.deliver(fake)
+            self.assertEqual(phases, ["done"])
+            self.assertTrue(st.get("delivered"))
+            st.close()
+
+    def test_a4_the_heartbeat_says_whether_a_project_runs(self):
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            self.assertIsNone(st.orchestrator_alive())  # a project from a Crew without the heartbeat
+            fake = types.SimpleNamespace(store=st)
+            orchestrator.Orchestrator.start_heartbeat(fake)
+            self.assertTrue(st.orchestrator_alive())
+            orchestrator.Orchestrator.stop_heartbeat(fake)
+            self.assertFalse(st.orchestrator_alive())
+            st.set("alive", {"pid": 1, "at": time.time() - 3600})
+            self.assertFalse(st.orchestrator_alive())
+            st.set("alive", {"pid": 1, "at": "garbage"})
+            self.assertFalse(st.orchestrator_alive())
+            st.close()
+
+    def test_a4_a_running_project_is_never_started_twice(self):
+        with TempHome() as home:
+            rid = "20260928-120000-bakery-site"
+            (home / "runs" / rid).mkdir(parents=True)
+            st = Store(home / "runs" / rid / "team.db")
+            st.set("phase", "build")
+            st.set("alive", {"pid": 1, "at": time.time()})  # quiet (all subscriptions at their limit), but alive
+            manager = runs_mod.RunManager()
+            with mock.patch.object(manager, "_spawn") as spawn:
+                self.assertTrue(manager.alive(rid))
+                self.assertFalse(manager.resume(rid))
+                spawn.assert_not_called()
+                st.set("alive", {"pid": 1, "at": time.time(), "stopped": True})
+                self.assertFalse(manager.alive(rid))
+                self.assertTrue(manager.resume(rid))
+                spawn.assert_called_once()
+            st.close()
+            for s in manager._stores.values():
+                s.close()
+
+
+class StartTests(unittest.TestCase):
+    def test_a5_a_request_that_looks_like_an_option_starts_its_project(self):
+        with TempHome():
+            manager = runs_mod.RunManager()
+            for request in ("--dark-mode-everywhere", "Make my bakery a website. " * 3000):  # a flag; 81,000 letters
+                with mock.patch.object(manager, "_spawn") as spawn:
+                    rid = manager.start(request)
+                args = spawn.call_args[0][1]
+                self.assertLess(sum(len(a) for a in args), 2000)  # Windows allows about 32,000 on a command line
+                seen = {}
+
+                def fake_run(cfg, run_dir, repo, req, run_id, **kw):
+                    seen.update(request=req, run_id=run_id)
+                    return 0
+
+                with mock.patch.object(cli, "_run", fake_run), mock.patch.object(gitops, "ensure_repo", lambda p: p), \
+                        mock.patch.object(cli.config_mod, "load", lambda *a, **k: mock.MagicMock()):
+                    self.assertEqual(cli.main(args), 0)
+                self.assertEqual(seen, {"request": request.strip(), "run_id": rid})
+
+    def test_a7_two_projects_started_together_get_their_own_folders(self):
+        with TempHome() as home:
+            root = home / "runs"
+            root.mkdir()
+            with mock.patch.object(cli, "new_run_id", return_value="20260928-120000-a-website-for-my-bakery"):
+                first = cli.claim_run_dir(root, "a website for my bakery")
+                second = cli.claim_run_dir(root, "a website for my bakery")
+            self.assertNotEqual(first[0], second[0])
+            self.assertTrue(first[1].is_dir() and second[1].is_dir())
+
+
+class SeatTests(unittest.TestCase):
+    def test_c5_a_codex_turn_that_cannot_run_still_ends(self):
+        with TempHome() as home:
+            events: queue.Queue = queue.Queue()
+            setup = agents.CodexSetup(model="gpt-6-sol", effort="auto", run_dir=home, extra_env={})
+            seat = agents.CodexSeat("curie", "member", Account("mohidzeeshanrana-gmail.com", "codex"), home, setup,
+                                    "system", events, Redactor({}))
+            seat.busy = True
+            with mock.patch.object(agents, "_drive_codex", side_effect=RuntimeError("the program vanished")):
+                seat._turn("Build the order form.")
+            ev = events.get(timeout=5)
+            self.assertEqual((ev.kind, ev.data["is_error"]), ("result", True))
+            self.assertIn("the program vanished", ev.data["text"])
+            self.assertFalse(seat.busy)
+
+    def test_c6_one_odd_message_does_not_silence_a_claude_seat(self):
+        with TempHome() as home:
+            events: queue.Queue = queue.Queue()
+            setup = agents.ClaudeSetup(model="claude-opus-5-5", effort="auto", work_model="claude-opus-5-5",
+                                       permission_mode="bypassPermissions", run_dir=home, extra_env={})
+            seat = agents.ClaudeSeat("ada", "lead", Account("ceo-pbit.gop.pk", "claude"), home, setup, "system", events,
+                                     Redactor({}))
+            lines = [json.dumps({"type": "assistant", "message": {"content": ["not a block"]}}) + "\n",
+                     json.dumps({"type": "result", "subtype": "success", "result": "done", "usage": {}}) + "\n"]
+            seat.proc = types.SimpleNamespace(stdout=iter(lines), wait=lambda timeout=None: 0, poll=lambda: 0)
+            seat._read_stdout()
+            self.assertEqual([ev.kind for ev in drain(events)], ["result", "exit"])
+
+
+class CheckTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "a POSIX shell command")
+    def test_c7_a_check_that_leaves_a_server_running_finishes(self):
+        with TempHome() as home:
+            pid_file = home / "server.pid"
+            started = time.time()
+            res = gitops.run_checks(home, [f"sleep 60 & echo $! > '{pid_file}'; echo checked"], home / "check.log",
+                                    timeout_s=20)
+            self.assertLess(time.time() - started, 15)
+            self.assertTrue(res.ok, res.summary)
+            self.assertIn("checked", (home / "check.log").read_text(encoding="utf-8"))
+            if Path("/proc").is_dir():  # what the check started ended with it
+                pid = int(pid_file.read_text())
+                until(lambda: not process_running(pid), timeout=10, step=0.2)
+
+    @unittest.skipIf(os.name == "nt", "a POSIX shell command")
+    def test_c7_a_check_past_its_time_limit_is_stopped(self):
+        with TempHome() as home:
+            started = time.time()
+            res = gitops.run_checks(home, ["sleep 30"], home / "check.log", timeout_s=1)
+            self.assertLess(time.time() - started, 15)
+            self.assertFalse(res.ok)
+            self.assertIn("timed out after 1s", (home / "check.log").read_text(encoding="utf-8"))
+
+
+class LiveViewTests(unittest.TestCase):
+    def test_c13_only_the_live_view_itself_can_talk_to_the_team(self):
+        with TempHome() as home:
+            Store(home / "team.db").close()
+            live = web.serve(home, port=0)
+            port = live.server_port
+
+            def request(method: str, path: str, headers: dict) -> int:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+                body = json.dumps({"text": "Delete the tests."}) if method == "POST" else None
+                conn.request(method, path, body=body, headers=headers)
+                resp = conn.getresponse()
+                resp.read()
+                conn.close()
+                return resp.status
+
+            try:
+                st = Store(home / "team.db")
+                self.assertEqual(request("POST", "/api/say", {"Content-Type": "text/plain"}), 403)  # another site
+                self.assertEqual(request("POST", "/api/stop", {"Content-Type": "text/plain"}), 403)
+                self.assertEqual(request("POST", "/api/say", {"X-Crew": "1", "Host": "evil.example"}), 403)
+                self.assertEqual(request("GET", "/api/state", {"Host": "evil.example"}), 403)  # DNS rebinding
+                self.assertEqual(st.recent_messages(5), [])
+                self.assertIsNone(st.get("stop_requested"))
+                self.assertEqual(request("POST", "/api/say", {"X-Crew": "1", "Content-Type": "application/json"}), 200)
+                self.assertEqual([m["text"] for m in st.recent_messages(5)], ["Delete the tests."])
+                self.assertEqual(request("GET", "/api/state?after=abc", {}), 200)
+                st.close()
+            finally:
+                live.shutdown()
+                live.server_close()
+
+
+class DataFileTests(unittest.TestCase):
+    def test_c8_a_connections_file_of_the_wrong_shape(self):
+        with TempHome() as home:
+            path = home / "connections.json"
+            for text in ("[1, 2]", '{"mcp": null}', '{"mcp": [1]}', '"text"'):
+                path.write_text(text, encoding="utf-8")
+                self.assertEqual(connections.mcp_servers(), {})
+                self.assertEqual(connections.listing(), [])
+            path.write_text(json.dumps({"mcp": {"a": "odd", "b": {"type": "http"},
+                                                "c": {"type": "stdio", "command": "npx", "args": "not-a-list"}}}),
+                            encoding="utf-8")
+            self.assertEqual(connections.mcp_servers(), {"c": {"type": "stdio", "command": "npx", "args": []}})
+            path.write_text("[1, 2]", encoding="utf-8")
+            connections.add_mcp("notes", "http", url="https://example.com/mcp")
+            self.assertEqual(list(connections.load()["mcp"]), ["notes"])
+            kept = list(home.glob("connections.json.damaged-*"))
+            self.assertEqual([p.read_text(encoding="utf-8") for p in kept], ["[1, 2]"])  # the old file is kept
+
+    def test_c10_the_team_tool_server_survives_a_message_that_is_not_an_object(self):
+        with TempHome() as home:
+            env = {**os.environ, "CREW_DB": str(home / "team.db"), "CREW_SEAT": "ada", "CREW_ROLE": "lead",
+                   "PYTHONPATH": str(ROOT)}
+            lines = "[1, 2]\n" + json.dumps({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {}}) + "\n"
+            proc = subprocess.run([sys.executable, "-m", "crewlib.mcp_server"], input=lines, capture_output=True,
+                                  text=True, encoding="utf-8", env=env, cwd=str(ROOT), timeout=60)
+            answers = [json.loads(x) for x in proc.stdout.splitlines()]
+            self.assertEqual(answers[0]["error"]["code"], -32600)
+            self.assertEqual(answers[1]["id"], 7)
+            self.assertIn("result", answers[1])
+
+    def test_c11_a_damaged_claude_code_record(self):
+        with TempHome() as home:
+            for text in ("[1]", '{"last_update": "yesterday"}'):
+                (home / "claude-cli.json").write_text(text, encoding="utf-8")
+                with mock.patch.object(claude_cli, "update", return_value=(True, "updated")) as update:
+                    self.assertEqual(claude_cli.update_if_stale(), (True, "updated"))
+                    update.assert_called_once()
+
+    def test_a13_a_damaged_record_of_the_running_crew(self):
+        with TempHome() as home:
+            for text in ("[1]", '{"port": "abc"}', "{"):
+                (home / "running.json").write_text(text, encoding="utf-8")
+                self.assertIsInstance(launcher.recorded(), dict)
+                self.assertEqual(launcher._ports(8765)[0], 8765)
+
+
+class SettingsTests(unittest.TestCase):
+    def test_a1_a_damaged_settings_file_is_set_aside_and_crew_opens(self):
+        with TempHome() as home:
+            settings_mod.save({"app": {"theme": "dark"},
+                               "accounts": [{"name": "ceo-pbit.gop.pk", "vendor": "claude", "profile": ""}]})
+            settings_mod.save({"app": {"owner_name": "Zeeshan"}})  # the first version is kept as crew.toml.bak
+            damaged = '[app]\ntheme = "dark\n[[account]\n'  # a typing slip in a hand edit
+            (home / "crew.toml").write_text(damaged, encoding="utf-8")
+            st = settings_mod.load()
+            self.assertEqual(st["app"]["theme"], "dark")
+            self.assertEqual([a["name"] for a in st["accounts"]], ["ceo-pbit.gop.pk"])
+            problem = settings_mod.problem()
+            self.assertEqual(problem["restored"], "the last good copy")
+            self.assertEqual((home / problem["kept"]).read_text(encoding="utf-8"), damaged)
+            # A value Crew refuses, and a last copy that is no better: the defaults, and both files are kept.
+            (home / "crew.toml").write_text('[team]\nmode = "sometimes"\n', encoding="utf-8")
+            (home / "crew.toml.bak").write_text("not toml at all [", encoding="utf-8")
+            time.sleep(1.1)  # the kept copy is named by the second
+            st = settings_mod.load()
+            self.assertEqual([a["name"] for a in st["accounts"]], ["claude-1"])
+            self.assertEqual(settings_mod.problem()["restored"], "the defaults")
+            self.assertEqual((home / "crew.toml.bak").read_text(encoding="utf-8"), "not toml at all [")
+            self.assertEqual(len(list(home.glob("crew.toml.damaged-*"))), 2)
+
+    def test_a23_a_pasted_key_with_a_line_break(self):
+        with TempHome() as home:
+            settings_mod.save_secret("HUNTER_API_KEY", "  hk_test_0123456789  \n")
+            self.assertEqual(load_env_file(home / "secrets.env")["HUNTER_API_KEY"], "hk_test_0123456789")
+            with self.assertRaises(ValueError):
+                settings_mod.save_secret("OTHER_API_KEY", "abc\nEXTRA_SETTING=1")
+            self.assertNotIn("EXTRA_SETTING", (home / "secrets.env").read_text(encoding="utf-8"))
+            with self.assertRaises(ValueError):
+                settings_mod.save_secret("OTHER_API_KEY", 12345)
+
+
+class AppPieceTests(unittest.TestCase):
+    def test_a14_crew_opens_with_a_damaged_app_file_and_a_locked_skill(self):
+        with TempHome() as home:
+            (home / "app.json").write_text("[1, 2]", encoding="utf-8")
+            with mock.patch.object(server.skills, "build_active_pack", side_effect=PermissionError("in use")):
+                app = server.App(0, False)
+            try:
+                self.assertIsInstance(app.pair_token, str)
+                self.assertGreaterEqual(len(app.pair_token), 16)
+                self.assertEqual(json.loads((home / "app.json").read_text(encoding="utf-8"))["pair_token"],
+                                 app.pair_token)
+            finally:
+                app.chats.shutdown()
+
+    def test_a11_one_failing_upkeep_step_does_not_skip_the_others(self):
+        with TempHome():
+            checked = threading.Event()
+            fake = types.SimpleNamespace(install_anthropic_skills=lambda: None)
+
+            def check():
+                checked.set()
+                return {"available": False}
+
+            with mock.patch.object(server.claude_cli, "update_if_stale",
+                                   side_effect=UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")), \
+                    mock.patch.object(server.launcher, "heal_shortcuts", side_effect=OSError("the icon is in use")), \
+                    mock.patch.object(server.updater, "check", side_effect=check):
+                server.App.upkeep(fake)
+                self.assertTrue(checked.wait(20))
+
+    def test_an_automatic_update_that_fails_is_told_and_not_retried_at_once(self):
+        with TempHome():
+            events = hub.subscribe("app")
+            try:
+                fake = types.SimpleNamespace(idle=lambda: True, port=0)
+                info = {"checked": time.time(), "latest": "99.0.0", "available": True}
+                with mock.patch.object(server.updater, "last_check", return_value=info), \
+                        mock.patch.object(server.updater, "install", side_effect=updater.UpdateError("in use")):
+                    self.assertFalse(server.App.update_if_quiet(fake))
+                    self.assertFalse(server.App.update_if_quiet(fake))  # not again at once
+                    self.assertEqual(server.updater.install.call_count, 1)
+                names = [p.split("\n", 1)[0] for p in drain(events)]
+                self.assertIn("event: update_failed", names)
+            finally:
+                hub.unsubscribe("app", events)
+
+    def test_a21_a_skill_description_with_a_colon_and_a_hash(self):
+        with TempHome() as home:
+            when = "writing a report: the board's #1 format, with notes"
+            skill = skills_mod.create("Board report", when,
+                                      "Open the template, fill in each section, then check the numbers twice.")
+            text = (home / "skills" / "skills" / skill["id"] / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn(f'description: "Use when {when}"', text)
+            self.assertEqual(skill["description"], f"Use when {when}")
+            urdu = skills_mod.create("رپورٹ لکھنا", "جب بورڈ کے لیے رپورٹ لکھنی ہو",
+                                     "سانچہ کھولیں، ہر حصہ بھریں، پھر اعداد دو بار جانچیں۔")
+            self.assertTrue(urdu["id"].startswith("skill-"))
+            self.assertIn("رپورٹ لکھنا", urdu["body"])
+
+    def test_a22_a_missing_or_silent_phone_program_is_explained(self):
+        service = phone_mod.PhoneService()
+        with mock.patch.dict(os.environ, {"CREW_ADB": str(Path(tempfile.gettempdir()) / "no-such-adb")}):
+            with self.assertRaises(phone_mod.PhoneError) as cm:
+                service.devices()
+        self.assertIn("could not run", str(cm.exception))
+        silent = types.SimpleNamespace(run=mock.Mock(side_effect=subprocess.TimeoutExpired("adb", 25)),
+                                       TimeoutExpired=subprocess.TimeoutExpired, DEVNULL=subprocess.DEVNULL)
+        with mock.patch.object(phone_mod, "subprocess", silent):
+            with self.assertRaises(phone_mod.PhoneError) as cm:
+                service.devices()
+        self.assertIn("did not answer in time", str(cm.exception))
+
+    def test_a24_attachments_named_like_windows_devices(self):
+        with TempHome():
+            chats = chat_mod.ChatManager()
+            cid = chats.create()["id"]
+            names = [chats.save_attachment(cid, n, b"x")["name"]
+                     for n in ("CON.txt", "nul", "com1.tar.gz", "رپورٹ.pdf", "report.pdf")]
+            self.assertEqual(names, ["file-CON.txt", "file-nul", "file-com1.tar.gz", "رپورٹ.pdf", "report.pdf"])
+
+    def test_a19_a20_workflows(self):
+        with TempHome():
+            chats = chat_mod.ChatManager()
+            flows = workflows_mod.Workflows(types.SimpleNamespace(chats=chats, runs=runs_mod.RunManager()))
+            for schedule in ({"kind": "hourly", "every": "often"}, {"kind": "daily", "days": 5},
+                             {"kind": "weekly", "time": "08:00", "days": ["Monday"]}):
+                with self.assertRaises(ValueError) as cm:
+                    flows.create({"name": "Bad", "prompt": "Say hello briefly.", "engine": "claude",
+                                  "schedule": schedule})
+                self.assertIn("schedule", str(cm.exception))
+            with self.assertRaises(ValueError) as cm:  # the ban list, when the workflow is saved, not when it runs
+                flows.create({"name": "Cheap", "prompt": "Say hello briefly.", "engine": "claude",
+                              "model": "claude-haiku-4-5"})
+            self.assertIn("banned", str(cm.exception))
+            # A19: deleting the chat of a running workflow ends that run (it no longer blocks the next one).
+            w = flows.create({"name": "Morning briefing", "prompt": "Summarise the news.", "engine": "claude"})
+            cid = chats.create()["id"]
+            rid = flows.db.x("INSERT INTO workflow_runs(workflow_id,started,status,trigger,chat_id) VALUES(?,?,?,?,?)",
+                             (w["id"], time.time(), "running", "you", cid))
+            flows._running.add(w["id"])
+            chats.delete(cid)
+            watcher = threading.Thread(target=flows._watch_chat, args=(w["id"], rid, cid), daemon=True)
+            watcher.start()
+            watcher.join(30)
+            self.assertFalse(watcher.is_alive())
+            last = flows.runs(w["id"])[0]
+            self.assertEqual(last["status"], "failed")
+            self.assertIn("deleted", last["summary"])
+            self.assertFalse(flows.get(w["id"])["running"])
+
+
+# ====================================================================== updates
+
+
+class UpdaterSafetyTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="crew-install-"))
+        (self.root / "crewlib").mkdir()
+        (self.root / "crewlib" / "cli.py").write_text("OLD", encoding="utf-8")
+        (self.root / "VERSION.json").write_text(json.dumps({"version": "2.3.0"}), encoding="utf-8")
+        (self.root / "requirements-app.txt").write_text("playwright\n", encoding="utf-8")
+        self.saved = (updater.ROOT, updater._get)
+        updater.ROOT = self.root
+        self.zip = self.make_zip("playwright\n")
+        updater._get = lambda url, timeout=30: self.zip
+
+    def tearDown(self):
+        updater.ROOT, updater._get = self.saved
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    @staticmethod
+    def make_zip(requirements: str) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("Crew-AI-Crew-AI/crew/crewlib/cli.py", "NEW")
+            zf.writestr("Crew-AI-Crew-AI/crew/crewapp/extra.py", "EXTRA")
+            zf.writestr("Crew-AI-Crew-AI/crew/requirements-app.txt", requirements)
+            zf.writestr("Crew-AI-Crew-AI/crew/VERSION.json", json.dumps({"version": "2.3.1"}))
+        return buf.getvalue()
+
+    def program(self) -> dict:
+        return {p.relative_to(self.root).as_posix(): p.read_text(encoding="utf-8")
+                for p in sorted(self.root.rglob("*")) if p.is_file()}
+
+    def test_a8_a_locked_file_leaves_the_old_version_whole(self):
+        before = self.program()
+        locked = self.root / "requirements-app.txt"  # Windows: another program has it open
+        real_replace, real_copy = os.replace, shutil.copy2
+
+        def in_use():
+            return PermissionError(13, "The process cannot access the file because it is being used by another "
+                                       "process", str(locked))
+
+        def replace(src, dst, *a, **k):
+            if Path(src) == locked or Path(dst) == locked:
+                raise in_use()
+            return real_replace(src, dst, *a, **k)
+
+        def copy2(src, dst, *a, **k):
+            if Path(dst) == locked:
+                raise in_use()
+            return real_copy(src, dst, *a, **k)
+
+        with mock.patch.object(updater.os, "replace", replace), mock.patch.object(updater.shutil, "copy2", copy2):
+            with self.assertRaises(updater.UpdateError) as cm:
+                updater.install()
+        self.assertIn("requirements-app.txt", str(cm.exception))
+        self.assertEqual(self.program(), before)  # the old version, whole: nothing new, nothing left beside it
+
+    def test_a8_a_download_cut_short_or_no_network_changes_nothing(self):
+        before = self.program()
+        updater._get = lambda url, timeout=30: self.zip[: len(self.zip) // 2]
+        with self.assertRaises(updater.UpdateError):
+            updater.install()
+
+        def offline(url, timeout=30):
+            raise OSError("Network is unreachable")
+
+        updater._get = offline
+        with self.assertRaises(updater.UpdateError) as cm:
+            updater.install()
+        self.assertIn("could not be downloaded", str(cm.exception))
+        self.assertEqual(self.program(), before)
+
+    def test_a8_add_ons_that_do_not_install_never_stop_an_update(self):
+        self.zip = self.make_zip("playwright\npillow\n")
+        pip = types.SimpleNamespace(run=mock.Mock(side_effect=subprocess.TimeoutExpired("pip", 900)),
+                                    DEVNULL=subprocess.DEVNULL, SubprocessError=subprocess.SubprocessError,
+                                    TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.object(updater, "subprocess", pip):
+            self.assertEqual(updater.install()["version"], "2.3.1")
+        pip.run.assert_called_once()
+        self.assertEqual((self.root / "crewlib" / "cli.py").read_text(encoding="utf-8"), "NEW")
+
+    def test_a8_never_two_installs_at_once(self):
+        with updater._installing:
+            with self.assertRaises(updater.UpdateError):
+                updater.install()
+        self.assertEqual(updater.install()["version"], "2.3.1")
+
+    def test_a8_what_an_interrupted_update_left_is_tidied(self):
+        (self.root / "crewlib" / "cli.py.new").write_text("HALF", encoding="utf-8")
+        (self.root / "crewlib" / "tools.py.old").write_text("TOOLS", encoding="utf-8")  # its file never came back
+        updater.install()
+        files = self.program()
+        self.assertNotIn("crewlib/cli.py.new", files)
+        self.assertEqual(files.get("crewlib/tools.py"), "TOOLS")
+        self.assertEqual(files["crewlib/cli.py"], "NEW")
+
+
+# ====================================================================== the app, end to end
+
+
+class AppCampaignTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.update(ENV)
+        cls.s = AppServer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.stop()
+
+    def tearDown(self):
+        os.environ["CREW_FAKE_SCENARIO"] = ENV["CREW_FAKE_SCENARIO"]
+
+    def new_chat(self, **body):
+        cid = self.s.api("POST", "/api/chats", body)["id"]
+        return cid, self.s.events(f"/api/chats/{cid}/events")
+
+    @staticmethod
+    def done(ev: queue.Queue, timeout: float = 60) -> dict:
+        while True:
+            name, data = ev.get(timeout=timeout)
+            if name == "done":
+                return data
+
+    def with_chatgpt(self):
+        before = self.s.api("GET", "/api/settings")["accounts"]
+        self.s.api("PUT", "/api/settings", {"accounts": before + [{"name": "mohidzeeshanrana-gmail.com",
+                                                                     "vendor": "codex", "profile": ""}]})
+        self.addCleanup(self.s.api, "PUT", "/api/settings", {"accounts": before})
+
+    def test_a2_a3_requests_of_the_wrong_shape_are_refused_plainly(self):
+        s = self.s
+        for method, path, raw in (("POST", "/api/chats", b"[1, 2]"), ("PUT", "/api/settings", b'"text"'),
+                                  ("POST", "/api/runs", b"null")):
+            status, _, payload = s.request(method, path, raw=raw, headers={"X-Crew": "1",
+                                                                           "Content-Type": "application/json"})
+            self.assertEqual(status, 400, (path, payload))
+        cid, _ = self.new_chat()
+        s.api("PUT", f"/api/chats/{cid}", {"title": 5}, expect=400)
+        s.api("POST", f"/api/chats/{cid}/send", {"text": 5}, expect=400)
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "effort": ["high"]}, expect=400)
+        s.api("POST", "/api/chats", {"model": 7}, expect=400)
+        s.api("PUT", "/api/settings", {"app": ["dark"]}, expect=400)
+        s.api("POST", "/api/runs", {"request": 12345}, expect=400)
+        s.api("DELETE", f"/api/chats/{cid}")
+
+    def test_a17_every_chat_can_be_found_however_old(self):
+        s = self.s
+        cid, _ = self.new_chat()
+        s.api("PUT", f"/api/chats/{cid}", {"title": "Budget for the Lahore expo"})
+        db = s.app.chats.db
+        now = time.time()
+        for n in range(310):  # months of newer chats
+            db.x("INSERT INTO chats(id,title,created,updated,engine) VALUES(?,?,?,?,?)",
+                 (f"bulk-{n:04d}", f"Chat {n}", now + 10 + n, now + 10 + n, "claude"))
+        try:
+            self.assertNotIn(cid, [c["id"] for c in s.api("GET", "/api/chats")["chats"]])
+            found = s.api("GET", "/api/chats?q=lahore%20expo")["chats"]
+            self.assertEqual([c["id"] for c in found], [cid])
+            self.assertEqual(s.api("GET", "/api/chats?q=100%25")["chats"], [])  # a % is a letter, not a wildcard
+        finally:
+            db.x("DELETE FROM chats WHERE id LIKE 'bulk-%'")
+            s.api("DELETE", f"/api/chats/{cid}")
+
+    def test_a18_a_model_of_the_other_product_is_refused(self):
+        s = self.s
+        cid, _ = self.new_chat()
+        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "gpt-6-sol"}, expect=400)
+        self.assertIn("ChatGPT model", err["error"])
+        self.assertEqual(s.api("GET", f"/api/chats/{cid}")["messages"], [])  # nothing recorded
+        self.with_chatgpt()
+        cid2, _ = self.new_chat(engine="codex")
+        err = s.api("POST", f"/api/chats/{cid2}/send", {"text": "hi", "model": "claude-opus-5-5"}, expect=400)
+        self.assertIn("Claude model", err["error"])
+
+    def test_a16_a_claude_answer_that_cannot_be_finished_still_ends(self):
+        s = self.s
+        cid, ev = self.new_chat()
+        with mock.patch.object(chat_mod.usage_log, "record_tokens",
+                               side_effect=sqlite3.OperationalError("database is locked")):
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "hello"})
+            done = self.done(ev)
+        self.assertTrue(done["meta"]["error"])
+        self.assertIn("Here is a short answer", done["text"])  # what was said is kept
+        self.assertFalse(s.api("GET", f"/api/chats/{cid}")["busy"])
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "hello again"})  # and the chat carries on
+        self.assertFalse(self.done(ev)["meta"]["error"])
+
+    def test_a15_a_chatgpt_answer_that_cannot_be_finished_still_ends(self):
+        s = self.s
+        self.with_chatgpt()
+        cid, ev = self.new_chat(engine="codex")
+        with mock.patch.object(chat_mod, "read_codex_status", side_effect=RuntimeError("the session file vanished")):
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "hi"})
+            done = self.done(ev)
+        self.assertTrue(done["meta"]["error"])
+        self.assertIn("the session file vanished", done["text"])
+        self.assertFalse(s.api("GET", f"/api/chats/{cid}")["busy"])
+
+    def test_a15_stopping_a_chatgpt_answer_says_stopped(self):
+        s = self.s
+        self.with_chatgpt()
+        cid, ev = self.new_chat(engine="codex")
+        os.environ["CREW_FAKE_SCENARIO"] = json.dumps({"word_delay": 0.005, "codex_delay": 30})
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "hi"})
+        until(lambda: getattr(s.app.chats.sessions.get(cid), "proc", None) is not None, timeout=20, step=0.1)
+        time.sleep(0.5)
+        s.api("POST", f"/api/chats/{cid}/stop", {})
+        done = self.done(ev, timeout=30)
+        self.assertEqual(done["text"], "*Stopped.*")
+        self.assertTrue(done["meta"]["stopped"])
+        self.assertFalse(done["meta"]["error"])
+
+    def test_a15_deleting_a_chatgpt_chat_while_it_answers(self):
+        s = self.s
+        self.with_chatgpt()
+        cid, _ = self.new_chat(engine="codex")
+        os.environ["CREW_FAKE_SCENARIO"] = json.dumps({"word_delay": 0.005, "codex_delay": 30})
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "hi"})
+        session = until(lambda: s.app.chats.sessions.get(cid), timeout=20, step=0.1)
+        until(lambda: session.proc is not None, timeout=20, step=0.1)
+        s.api("DELETE", f"/api/chats/{cid}")
+        until(lambda: not session.busy, timeout=30, step=0.2)
+        self.assertEqual(s.app.chats.db.q("SELECT id FROM messages WHERE chat_id=?", (cid,)), [])
+
+    def test_a25_no_route_is_hidden_by_an_earlier_one(self):
+        import re
+        hidden = []
+        for i, (method, rx, name) in enumerate(server.ROUTES):
+            path = rx.pattern[1:-1]
+            if not re.fullmatch(r"[\w/.-]+", path):
+                continue  # a pattern, not a plain address
+            hidden += [f"{method} {path} ({name}) is answered by {other}" for m, earlier, other in server.ROUTES[:i]
+                       if m == method and earlier.match(path)]
+        self.assertEqual(hidden, [])
+        state = self.s.api("GET", "/api/skills/anthropic")  # the Skills screen follows the install with this
+        self.assertIn(state.get("state"), ("idle", "running", "done", "error"))
+        # A26: a subscription name with @ reaches its sign-in (here: no such subscription, said plainly)
+        err = self.s.api("POST", "/api/accounts/me%40work.pk/login", {}, expect=400)
+        self.assertIn("No such subscription", err["error"])
+
+    def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
+        s = self.s
+        path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"
+        saved = {p: p.read_bytes() for p in (path, backup) if p.is_file()}
+        try:
+            path.write_text('[team]\nmode = "sometimes"\n', encoding="utf-8")
+            backup.unlink(missing_ok=True)  # no last good copy: the defaults are used
+            problem = s.api("GET", "/api/overview")["settings_problem"]
+            self.assertEqual(problem["restored"], "the defaults")
+            self.assertTrue((HOME / problem["kept"]).is_file())
+            self.assertEqual(s.api("GET", "/api/settings")["problem"]["kept"], problem["kept"])
+        finally:
+            for p in HOME.glob("crew.toml.damaged-*"):
+                p.unlink()
+            (HOME / "settings-problem.json").unlink(missing_ok=True)
+            for p in (path, backup):
+                if p in saved:
+                    p.write_bytes(saved[p])
+                else:
+                    p.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
