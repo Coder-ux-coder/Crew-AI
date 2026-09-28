@@ -104,15 +104,24 @@ def record(port: int, state: str = "running") -> None:
 
 
 def recorded() -> dict:
+    """The last record of which Crew runs (a damaged record reads as none: Crew then simply looks for itself)."""
     try:
-        return json.loads(state_path().read_text(encoding="utf-8"))
+        data = json.loads(state_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _number(value, default: float = 0) -> float:
+    try:
+        return float(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _ports(first: int) -> list[int]:
     rec = recorded().get("port")
-    ports = [int(rec)] if isinstance(rec, int) else []
+    ports = [int(rec)] if isinstance(rec, int) and 0 < rec < 65536 else []
     return ports + [p for p in range(first, first + 10) if p not in ports]
 
 
@@ -138,8 +147,8 @@ def wait_running(first_port: int, seconds: float) -> int | None:
 def starting_elsewhere() -> dict | None:
     """Another Crew that is starting right now (the icon clicked twice, or Crew restarting after an update)."""
     rec = recorded()
-    pid = int(rec.get("pid") or 0)
-    if rec.get("state") != "starting" or pid == os.getpid() or time.time() - float(rec.get("started") or 0) > 300:
+    pid = int(_number(rec.get("pid")))
+    if rec.get("state") != "starting" or pid == os.getpid() or time.time() - _number(rec.get("started")) > 300:
         return None
     return rec if pid_alive(pid) and is_crew_app(pid) else None
 
@@ -177,7 +186,7 @@ def pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
         return True
-    except OSError:
+    except (OSError, OverflowError):  # OverflowError: a number no process can have (a hand-edited record)
         return False
 
 
@@ -187,7 +196,8 @@ def command_line(pid: int) -> str:
             return subprocess.run(
                 ["powershell", "-NoProfile", "-Command",
                  f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"],
-                capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW).stdout
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                creationflags=NO_WINDOW).stdout
         return Path(f"/proc/{int(pid)}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
     except Exception:  # noqa: BLE001
         return ""
@@ -202,8 +212,8 @@ def is_crew_app(pid: int) -> bool:
 def stuck_server(first_port: int = 8765) -> int | None:
     """The process of the last Crew, if it still holds its port but no longer answers."""
     rec = recorded()
-    pid, port = int(rec.get("pid") or 0), int(rec.get("port") or first_port)
-    if rec.get("state") == "starting" or pid == os.getpid():
+    pid, port = int(_number(rec.get("pid"))), int(_number(rec.get("port"), first_port))
+    if rec.get("state") == "starting" or pid == os.getpid() or not 0 < port < 65536:
         return None
     if not pid_alive(pid) or not listening(port) or wait_for(port, 8):
         return None
@@ -332,7 +342,8 @@ def heal_shortcuts() -> list[str]:
     )
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-                             capture_output=True, text=True, timeout=60, creationflags=NO_WINDOW).stdout
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                             creationflags=NO_WINDOW).stdout or ""
     except (OSError, subprocess.SubprocessError) as exc:
         log(f"icons: {exc}")
         return []

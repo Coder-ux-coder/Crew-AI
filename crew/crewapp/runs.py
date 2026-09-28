@@ -12,7 +12,7 @@ import threading
 from pathlib import Path
 
 from crewlib import tiers
-from crewlib.cli import new_run_id
+from crewlib.cli import claim_run_dir
 from crewlib.store import Store
 from crewlib.util import crew_home, now
 from crewlib.web import PHASES, friendly_activity, state as run_state
@@ -56,18 +56,26 @@ class RunManager:
             kwargs["creationflags"] = 0x00000200 | 0x08000000  # new process group, no console window
         else:
             kwargs["start_new_session"] = True
-        log = open(run_dir / "app-run.log", "ab")
-        proc = subprocess.Popen([sys.executable, "-X", "utf8", "-m", "crewlib", *args], cwd=str(CREW_ROOT), env=env,
-                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **kwargs)
+        with open(run_dir / "app-run.log", "ab") as log:  # the project keeps its own handle; the app lets go of it
+            proc = subprocess.Popen([sys.executable, "-X", "utf8", "-m", "crewlib", *args], cwd=str(CREW_ROOT),
+                                    env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, **kwargs)
         self.procs[run_id] = proc
 
     def start(self, request: str, repo: str | None = None, mode: str | None = None, hours=None,
               head_to_head: str | None = None, accounts: list[str] | None = None) -> str:
-        request = (request or "").strip()
+        if not isinstance(request, str):
+            raise ValueError("Tell the team what you want first.")
+        request = request.strip()
         if len(request) < 3:
             raise ValueError("Tell the team what you want first.")
-        run_id = new_run_id(request)
-        args = ["start", request, "--headless", "--run-id", run_id]
+        if repo is not None and not isinstance(repo, str):
+            raise ValueError("The project folder must be a folder's path.")
+        run_id, run_dir = claim_run_dir(runs_dir(), request)
+        # The request travels in a file, not on the command line: words that start with "-" would be read as
+        # options, and Windows limits a command line to about 32,000 characters.
+        request_file = run_dir / "request.txt"
+        request_file.write_text(request, encoding="utf-8")
+        args = ["start", "--request-file", str(request_file), "--headless", "--run-id", run_id]
         if repo:
             args += ["--repo", repo]
         if mode in ("auto", "solo", "team"):
@@ -80,21 +88,42 @@ class RunManager:
             args += ["--max-hours", f"{min(hours, 168):g}"]
         if head_to_head in ("off", "some", "all"):
             args += ["--head-to-head", head_to_head]
-        names = [a for a in (accounts or []) if isinstance(a, str) and re.fullmatch(r"[\w.@+-]+", a)]
+        names = [a for a in (accounts if isinstance(accounts, list) else []) if isinstance(a, str)
+                 and re.fullmatch(r"[\w.@+-]+", a)]
         if names:
             args += ["--accounts", ",".join(names)]
         self._spawn(run_id, args)
-        (runs_dir() / "LATEST").write_text(run_id)
+        (runs_dir() / "LATEST").write_text(run_id, encoding="utf-8")
         return run_id
 
-    def resume(self, run_id: str) -> None:
-        if self.running(run_id):
-            return
+    def resume(self, run_id: str) -> bool:
+        """Continue a stopped project. False when it is still running: starting it again would put two
+        orchestrators on one project."""
+        if _run_dir(run_id) is None or self.store(run_id) is None:
+            raise ValueError("That project could not be found.")
+        if self.alive(run_id):
+            return False
         self._spawn(run_id, ["resume", run_id, "--headless"])
+        return True
 
     def running(self, run_id: str) -> bool:
+        """Started by this app, and its process is still alive."""
         proc = self.procs.get(run_id)
         return proc is not None and proc.poll() is None
+
+    def alive(self, run_id: str, st: Store | None = None) -> bool:
+        """Is the project's orchestrator running — started by this app, or by another Crew (before a restart or an
+        update, or from a terminal)? Its heartbeat says so; a project from a Crew that wrote none is judged by its
+        recent activity, as before."""
+        if self.running(run_id):
+            return True
+        st = st if st is not None else self.store(run_id)
+        if st is None:
+            return False
+        beat = st.orchestrator_alive()
+        if beat is not None:
+            return beat
+        return st.get("phase", "refine") in ACTIVE and self._recent(st)
 
     # ---------------------------------------------------------------- state
 
@@ -118,8 +147,10 @@ class RunManager:
         """A message from the owner: to the whole team, or directly to one agent (or "ceo"); only that agent sees
         a direct message, and its answer comes back to the owner."""
         st = self.store(run_id)
-        if st is None or not text.strip():
+        if st is None or not isinstance(text, str) or not text.strip():
             return False
+        if to is not None and not isinstance(to, str):
+            raise ValueError("Choose who reads your message from the list.")
         to = (to or "").strip().lower()
         if to and to != "ceo" and st.seat(to) is None:
             raise ValueError(f"There is no agent called {to} in this project.")
@@ -129,7 +160,7 @@ class RunManager:
     def interrupt(self, run_id: str, seat: str) -> bool:
         """The owner's "Ask now": the agent stops its current step and answers."""
         st = self.store(run_id)
-        if st is None or st.seat(seat) is None:
+        if st is None or not isinstance(seat, str) or st.seat(seat) is None:
             return False
         st.set(f"interrupt:{seat}", now())
         return True
@@ -156,7 +187,7 @@ class RunManager:
             return None
         data = run_state(st, runs_dir() / run_id, after)
         phase = st.get("phase", "refine")
-        running = self.running(run_id) or (phase in ACTIVE and self._recent(st))
+        running = self.alive(run_id, st)
         tasks = st.tasks()
         data.update(id=run_id, running=running, raw_phase=phase, mode=st.get("mode") or "", preview=self.preview(run_id),
                     folder=str(self.project_dir(run_id) or ""), started=st.get("started_at"),
@@ -205,7 +236,7 @@ class RunManager:
             "id": run_dir.name,
             "title": brief.get("title") or (st.get("goal", "") or run_dir.name)[:80],
             "phase": PHASES.get(phase, phase), "raw_phase": phase,
-            "running": self.running(run_dir.name) or (phase in ACTIVE and self._recent(st)),
+            "running": self.alive(run_dir.name, st),
             "done": phase == "done",
             "progress": [sum(1 for t in tasks if t["status"] == "merged"),
                          sum(1 for t in tasks if t["status"] != "cancelled")],

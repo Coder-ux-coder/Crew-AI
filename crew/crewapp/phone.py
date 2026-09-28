@@ -73,7 +73,14 @@ class PhoneService:
             cmd += ["-s", serial]
         cmd += list(args)
         kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
-        proc = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout, **kwargs)
+        except subprocess.TimeoutExpired:
+            raise PhoneError("The phone did not answer in time. Check that it is unlocked, awake and still "
+                             "connected, then try again.") from None
+        except OSError as exc:
+            raise PhoneError(f"The phone connector could not run ({exc.strerror or exc}). Run the Crew installer "
+                             "again to repair it.") from None
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout).decode(errors="replace").strip()
             raise PhoneError(err or f"adb {' '.join(args)} failed")
@@ -163,15 +170,23 @@ class PhoneService:
     def tap(self, xr: float, yr: float, driver: str = "you") -> dict:
         self._mark(driver)
         w, h = self.size()
-        x, y = int(max(0.0, min(1.0, float(xr))) * w), int(max(0.0, min(1.0, float(yr))) * h)
+        try:
+            x, y = int(max(0.0, min(1.0, float(xr))) * w), int(max(0.0, min(1.0, float(yr))) * h)
+        except (TypeError, ValueError, OverflowError):
+            raise PhoneError("Give the position on the screen as numbers.") from None
         self._adb("shell", "input", "tap", str(x), str(y))
         return {"ok": True, "x": x, "y": y}
 
     def swipe(self, x1: float, y1: float, x2: float, y2: float, ms: int = 300, driver: str = "you") -> dict:
         self._mark(driver)
         w, h = self.size()
-        pts = [str(int(float(v) * (w if i % 2 == 0 else h))) for i, v in enumerate((x1, y1, x2, y2))]
-        self._adb("shell", "input", "swipe", *pts, str(int(ms)))
+        try:
+            pts = [str(int(max(0.0, min(1.0, float(v))) * (w if i % 2 == 0 else h)))
+                   for i, v in enumerate((x1, y1, x2, y2))]
+            ms = max(50, min(5000, int(ms)))
+        except (TypeError, ValueError, OverflowError):
+            raise PhoneError("Give the swipe's start and end on the screen as numbers.") from None
+        self._adb("shell", "input", "swipe", *pts, str(ms))
         return {"ok": True}
 
     def swipe_dir(self, direction: str, driver: str = "you") -> dict:

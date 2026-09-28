@@ -20,7 +20,9 @@ READERS = {
 
 def improve(chats, text: str, reader: str = "claude", recent: str = "") -> dict:
     """{'text': the written-up message, 'changed': bool}. Raises ValueError with a plain reason."""
-    text = (text or "").strip()
+    if not isinstance(text, str) or not isinstance(reader, str) or not isinstance(recent, str):
+        raise ValueError("Write or say your message first.")
+    text = text.strip()
     if not text:
         raise ValueError("Write or say your message first.")
     if len(text) > 12000:

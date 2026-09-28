@@ -10,6 +10,8 @@ import json
 import os
 import re
 import shutil
+import threading
+import time
 import tomllib
 from pathlib import Path
 
@@ -95,8 +97,74 @@ def _migrate(raw: dict) -> dict:
     return raw
 
 
+_repair_lock = threading.Lock()
+# What goes wrong when a settings file is edited by hand: a typing slip (TOML), a value Crew refuses (ConfigError),
+# a section of the wrong kind (TypeError / AttributeError), text that is not UTF-8 (a ValueError too).
+DAMAGE = (ValueError, TypeError, AttributeError)
+
+
+def problem_path() -> Path:
+    return crew_home() / "settings-problem.json"
+
+
+def problem() -> dict | None:
+    """The last time a settings file could not be read and was set aside (for the app to tell the owner)."""
+    try:
+        data = json.loads(problem_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("kept") else None
+
+
+def _set_aside(error: Exception) -> bool:
+    """crew.toml cannot be read: keep it under a dated name, put the last good copy (crew.toml.bak, written at
+    every save) in its place if that one loads, else start from the defaults — and record what happened so
+    the owner is told. Crew opens either way. False when nothing could be done (the file could not be moved)."""
+    with _repair_lock:
+        p = path()
+        if not p.is_file():
+            return True  # another request has just repaired it
+        try:
+            _load()
+            return True  # likewise
+        except DAMAGE:
+            pass
+        kept = p.with_name(f"crew.toml.damaged-{time.strftime('%Y%m%d-%H%M%S')}")
+        try:
+            os.replace(p, kept)
+        except OSError:
+            return False
+        backup = p.with_suffix(".toml.bak")
+        restored = False
+        if backup.is_file():
+            try:
+                shutil.copyfile(backup, p)
+                _load()
+                restored = True
+            except (OSError, *DAMAGE):  # the last copy is no better: start from the defaults (it stays as .bak)
+                p.unlink(missing_ok=True)
+        info = {"at": time.time(), "error": str(error)[:300], "kept": kept.name,
+                "restored": "the last good copy" if restored else "the defaults"}
+        try:
+            atomic_write(problem_path(), json.dumps(info))
+        except OSError:
+            pass
+        print(f"settings: {p} could not be read ({error}); kept as {kept.name}, using {info['restored']}")
+        return True
+
+
 def load() -> dict:
-    """Everything the Settings screen shows, with defaults filled in."""
+    """Everything the Settings screen shows, with defaults filled in. A settings file that cannot be read never
+    stops Crew: it is set aside (see _set_aside) and the last good settings are used."""
+    try:
+        return _load()
+    except DAMAGE as exc:
+        if not _set_aside(exc):
+            raise
+    return _load()
+
+
+def _load() -> dict:
     raw = _raw()
     if raw and int((raw.get("app") or {}).get("settings_version") or 1) < SETTINGS_VERSION:
         migrated = _migrate(raw)
@@ -119,9 +187,39 @@ def load() -> dict:
             "codex_efforts": CODEX_EFFORTS}
 
 
+ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}")
+
+
+def _check_update(update, current: dict) -> None:
+    """Refuse, in plain words, an update that is not shaped like settings (before anything is written)."""
+    if not isinstance(update, dict):
+        raise ValueError("Send the settings as a group of named values.")
+    for section in ("team", "models", "app"):
+        value = update.get(section)
+        if value is not None and not isinstance(value, dict):
+            raise ValueError(f"The {section} settings must be a group of named values.")
+    for key in (update.get("app") or {}):
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(key)):
+            raise ValueError(f"Unknown setting: {key}")
+    if "accounts" in update:
+        accounts = update["accounts"]
+        if not isinstance(accounts, list) or not all(isinstance(a, dict) for a in accounts):
+            raise ValueError("The subscriptions must be a list, each with a name and a product.")
+        known = {a["name"] for a in current["accounts"]}
+        for acc in accounts:
+            name = acc.get("name")
+            if not isinstance(name, str) or not isinstance(acc.get("vendor"), str) or \
+                    not isinstance(acc.get("profile", ""), (str, type(None))):
+                raise ValueError("Each subscription needs a name and a product (Claude or ChatGPT).")
+            if name not in known and (not ACCOUNT_NAME.fullmatch(name) or ".." in name):
+                raise ValueError(f"“{name}” cannot be a subscription's name: use letters, digits, dots, dashes, "
+                                 "@ or _ (for example claude-2 or work.max).")
+
+
 def save(update: dict) -> dict:
     """Merge a partial update ({team:{...}, models:{...}, app:{...}, accounts:[...]}) and write the file."""
     current = load()
+    _check_update(update, current)
     data = {
         "team": {**current["team"], **(update.get("team") or {})},
         "models": {**current["models"], **(update.get("models") or {})},
@@ -196,6 +294,8 @@ def rules() -> str:
 
 
 def save_rules(text: str) -> None:
+    if not isinstance(text, str):
+        raise ValueError("Write the team rules as text.")
     atomic_write(crew_home() / "team_rules.md", text.rstrip() + "\n")
 
 
@@ -208,8 +308,13 @@ def secret_names() -> list[dict]:
 
 
 def save_secret(name: str, value: str | None) -> None:
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name or ""):
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         raise ValueError("Use letters, digits and underscores for the key name, e.g. OPENWEATHER_API_KEY")
+    if value is not None and not isinstance(value, str):
+        raise ValueError("Paste the key as text.")
+    value = (value or "").strip()  # a key copied with a line break or spaces around it
+    if "\n" in value or "\r" in value:
+        raise ValueError("Paste the key on its own: it should be one line, without line breaks.")
     p = secrets_path()
     lines = p.read_text(encoding="utf-8").splitlines() if p.is_file() else [
         "# Your API keys. Written by the Crew app; values are hidden from every chat, log and report."]

@@ -373,14 +373,17 @@ class ComputerService:
     def _point(self, body: dict, driver: str) -> tuple[int, int]:
         """Positions: fractions (0–1) from the owner's live view, or picture pixels from the assistant."""
         sw, sh = self.desk().size()
-        if "xr" in body or "yr" in body:
-            return (round(max(0.0, min(1.0, float(body.get("xr", 0.5)))) * (sw - 1)),
-                    round(max(0.0, min(1.0, float(body.get("yr", 0.5)))) * (sh - 1)))
-        if "x" not in body or "y" not in body:
-            raise ComputerError("Give x and y: pixel positions in the latest screenshot.")
-        pw, ph = self.last_shot
-        x = max(0, min(sw - 1, round(float(body["x"]) * sw / pw)))
-        y = max(0, min(sh - 1, round(float(body["y"]) * sh / ph)))
+        try:
+            if "xr" in body or "yr" in body:
+                return (round(max(0.0, min(1.0, float(body.get("xr", 0.5)))) * (sw - 1)),
+                        round(max(0.0, min(1.0, float(body.get("yr", 0.5)))) * (sh - 1)))
+            if "x" not in body or "y" not in body:
+                raise ComputerError("Give x and y: pixel positions in the latest screenshot.")
+            pw, ph = self.last_shot
+            x = max(0, min(sw - 1, round(float(body["x"]) * sw / pw)))
+            y = max(0, min(sh - 1, round(float(body["y"]) * sh / ph)))
+        except (TypeError, ValueError, OverflowError):
+            raise ComputerError("Give the position as numbers.") from None
         return x, y
 
     def _moved(self, driver: str, x: int, y: int) -> None:
@@ -408,7 +411,10 @@ class ComputerService:
             d.drag(*a, *b)
             return {"ok": True}
         if action == "scroll":
-            amount = max(1, min(30, int(body.get("amount") or 3)))
+            try:
+                amount = max(1, min(30, int(body.get("amount") or 3)))
+            except (TypeError, ValueError, OverflowError):
+                raise ComputerError("Say how far to scroll as a number of steps.") from None
             d.scroll(amount if body.get("direction") == "up" else -amount)
             return {"ok": True}
         if action == "type":

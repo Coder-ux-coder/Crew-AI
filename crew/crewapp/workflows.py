@@ -106,6 +106,19 @@ class Workflows:
         self._running: set[str] = set()
         self._lock = threading.Lock()
         self._stop = False
+        self._carry_on()
+
+    def _carry_on(self) -> None:
+        """Runs that were under way when Crew last closed. A team project keeps going in its own program, so it is
+        watched again; a chat's answer ended with Crew, so the history says so instead of "running" for ever."""
+        for r in self.db.q("SELECT * FROM workflow_runs WHERE status='running'"):
+            if r.get("run_id"):
+                self._running.add(r["workflow_id"])
+                threading.Thread(target=self._watch_project, args=(r["workflow_id"], r["id"], r["run_id"]),
+                                 daemon=True).start()
+            else:
+                self.db.x("UPDATE workflow_runs SET finished=?, status='failed', summary=? WHERE id=?",
+                          (now(), "Crew was closed or restarted before this run finished.", r["id"]))
 
     # ------------------------------------------------------------ storage
 
@@ -138,13 +151,33 @@ class Workflows:
         if engine not in ("claude", "codex", "team"):
             raise ValueError("Choose Claude, ChatGPT or the team.")
         schedule = body.get("schedule", cur.get("schedule")) or {"kind": "manual"}
-        if schedule.get("kind") not in ("manual", "daily", "weekly", "hourly", "once"):
+        if not isinstance(schedule, dict) or schedule.get("kind") not in ("manual", "daily", "weekly", "hourly", "once"):
             raise ValueError("Unknown schedule.")
+        try:
+            next_run(schedule)
+        except (ValueError, TypeError, OverflowError):
+            raise ValueError("That schedule cannot be used: choose a time such as 08:00, days of the week, or every "
+                             "few hours (1 to 24).") from None
         account = body.get("account", cur.get("account")) or ""
+        model = body.get("model", cur.get("model")) or ""
+        effort = body.get("effort", cur.get("effort")) or "auto"
+        if not all(isinstance(x, str) for x in (account, model, effort)):
+            raise ValueError("Choose the subscription, model and effort from the lists.")
         if account and engine != "team":
             self.app.chats._valid_account(engine, account)  # a subscription of that product, or an error
-        return {"name": name, "prompt": prompt, "engine": engine,
-                "model": body.get("model", cur.get("model")) or "", "effort": body.get("effort", cur.get("effort")) or "auto",
+        if engine != "team" and ("model" in body or "effort" in body or "engine" in body):
+            from .chat import EFFORTS, ENGINES, LEGACY_EFFORTS, other_product
+            effort = LEGACY_EFFORTS.get(effort, effort) if engine == "codex" else effort
+            if effort not in EFFORTS[engine]:
+                raise ValueError(f"Unknown effort level for {ENGINES[engine]}: {effort}.")
+            if model and other_product(engine, model):
+                raise ValueError(f"{model} is not one of {ENGINES[engine]}'s models.")
+            if model:  # the ban list applies to workflows too
+                from crewlib import config as cfgmod
+
+                from . import settings as settings_mod
+                cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None).models.check(model)
+        return {"name": name, "prompt": prompt, "engine": engine, "model": model, "effort": effort,
                 "schedule": schedule, "enabled": bool(body.get("enabled", cur.get("enabled", True))),
                 "account": "" if engine == "team" else account}
 
@@ -182,6 +215,7 @@ class Workflows:
         w = self.get(wid)
         if w is None:
             raise KeyError(wid)
+        extra = extra if isinstance(extra, str) else ""
         with self._lock:
             if wid in self._running:
                 raise ValueError("This workflow is already running.")
@@ -226,13 +260,16 @@ class Workflows:
         quiet = 0
         while time.time() < deadline and quiet < 3:  # quiet for a few seconds: not between a retry and its answer
             time.sleep(2)
+            if not self.app.chats.db.q("SELECT id FROM chats WHERE id=?", (cid,)):
+                break  # the chat was deleted: this run is over (it must not keep the workflow "running" for hours)
             s = self.app.chats.sessions.get(cid)
             quiet = quiet + 1 if s is not None and not s.busy and not self.app.chats.updating else 0
         chat = self.app.chats.get(cid) or {}
         answers = [m for m in chat.get("messages", []) if m["role"] == "assistant"]
         last = answers[-1] if answers else None
         ok = bool(last) and not (last.get("meta") or {}).get("error")
-        self._finish(wid, rid, "done" if ok else "failed", last["text"] if last else "No answer.")
+        summary = last["text"] if last else ("The chat was deleted before it finished." if not chat else "No answer.")
+        self._finish(wid, rid, "done" if ok else "failed", summary)
 
     def _watch_project(self, wid: str, rid: int, run_id: str) -> None:
         deadline = time.time() + 48 * 3600

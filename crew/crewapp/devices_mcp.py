@@ -115,7 +115,10 @@ def main() -> None:
             msg = json.loads(line)
         except ValueError:
             continue
-        mid, method, params = msg.get("id"), msg.get("method"), msg.get("params") or {}
+        if not isinstance(msg, dict):
+            continue
+        mid, method = msg.get("id"), msg.get("method")
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         if method == "initialize":
             result = {"protocolVersion": params.get("protocolVersion") or "2025-06-18",
                       "capabilities": {"tools": {"listChanged": False}},

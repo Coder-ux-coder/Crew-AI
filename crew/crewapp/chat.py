@@ -9,6 +9,7 @@ its plan in plan mode, how full its context is, and your subscription limits.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -18,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from crewlib import claude_cli, config as cfgmod, connections, usage as usage_log
+from crewlib.tiers import vendor_of
 from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, _kill_tree, _popen, _toml_str, child_env, codex_effort,
                             copy_claude_session, default_claude_home, default_codex_home, which)
 from crewlib.util import atomic_write, clip, crew_home, load_env_file, now
@@ -30,6 +32,20 @@ EFFORTS = {"claude": ("auto", "low", "medium", "high", "xhigh", "max"),
            "codex": ("auto", "low", "medium", "high", "xhigh", "max", "ultra")}  # GPT-6's own names
 LEGACY_EFFORTS = {"minimal": "low"}  # chats started before GPT-6 (it has no "minimal")
 MODES = ("auto", "plan")
+WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
+def other_product(engine: str, model: str | None) -> str:
+    """The other product, when a model plainly belongs to it (a GPT model in a Claude chat, a Claude model in a
+    ChatGPT chat); '' otherwise. Other names are left alone: the owner may use a model Crew does not know yet."""
+    m = (model or "").strip().lower()
+    if not m:
+        return ""
+    if engine == "claude" and vendor_of(m) == "codex":
+        return "codex"
+    if engine == "codex" and (m.startswith("claude") or m in ("opus", "sonnet", "haiku", "fable")):
+        return "claude"
+    return ""
 
 DEFAULT_INSTRUCTIONS = """You are the owner's personal assistant inside the Crew app.
 
@@ -131,6 +147,33 @@ def file_kind(name: str) -> str:
             ".csv": "table", ".docx": "file", ".xlsx": "file", ".pptx": "file"}.get(Path(name).suffix.lower(), "file")
 
 
+# Folders of tools and packages, not of things made for the owner (a web app's node_modules holds thousands).
+NOT_MADE = {".crew", ".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", ".next", "dist-cache"}
+
+
+def workspace_files(root: Path):
+    """(relative path, stat) of the files in a chat's folder that were made for the owner. Files come and go while
+    an assistant works (temporary files, a build): one that vanishes mid-scan is simply skipped."""
+    stack = [root]
+    while stack:
+        folder = stack.pop()
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in NOT_MADE:
+                        stack.append(Path(entry.path))
+                elif entry.is_file():
+                    yield Path(entry.path).relative_to(root).as_posix(), entry.stat()
+            except OSError:
+                continue
+
+
 # ================================================================== storage
 
 
@@ -146,6 +189,8 @@ def instructions() -> str:
 
 
 def save_instructions(text: str) -> None:
+    if text is not None and not isinstance(text, str):
+        raise ValueError("Write the instructions as text.")
     atomic_write(instructions_path(), (text or DEFAULT_INSTRUCTIONS).rstrip() + "\n")
 
 
@@ -178,6 +223,15 @@ class ChatDB:
     def x(self, sql: str, args=()) -> int:
         with self._lock:
             return int(self.db.execute(sql, args).lastrowid or 0)
+
+    def add_message(self, chat_id: str, role: str, text: str, meta: dict) -> int:
+        """A message for a chat that still exists (checked in the same step as the writing, so an answer that ends
+        just as its chat is deleted is not kept on its own); its id, or 0 when the chat is gone."""
+        with self._lock:
+            cur = self.db.execute("INSERT INTO messages(chat_id,role,text,ts,meta) SELECT ?,?,?,?,? "
+                                  "WHERE EXISTS (SELECT 1 FROM chats WHERE id=?)",
+                                  (chat_id, role, text, now(), json.dumps(meta), chat_id))
+            return int(cur.lastrowid or 0) if cur.rowcount == 1 else 0
 
 
 # ================================================================== one turn's state
@@ -281,20 +335,15 @@ class Session:
             self.publish("step", step)
 
     def _record(self, text: str, meta: dict) -> int:
-        mid = self.m.db.x("INSERT INTO messages(chat_id,role,text,ts,meta) VALUES(?,?,?,?,?)",
-                          (self.chat_id, "assistant", text, now(), json.dumps(meta)))
+        mid = self.m.db.add_message(self.chat_id, "assistant", text, meta)
         self.m.db.x("UPDATE chats SET updated=? WHERE id=?", (now(), self.chat_id))
         return mid
 
     def _new_files(self, since: float) -> list[dict]:
-        root = self.workspace()
         out = []
-        for p in root.rglob("*"):
-            parts = p.relative_to(root).parts
-            if p.is_file() and ".crew" not in parts and parts[0] != "attachments" and not p.name.startswith(".") \
-                    and p.stat().st_mtime >= since - 1:
-                rel = p.relative_to(root).as_posix()
-                out.append({"name": rel, "kind": file_kind(p.name), "url": f"/files/chat/{self.chat_id}/{rel}"})
+        for rel, st in workspace_files(self.workspace()):
+            if not rel.startswith("attachments/") and st.st_mtime >= since - 1:
+                out.append({"name": rel, "kind": file_kind(rel), "url": f"/files/chat/{self.chat_id}/{rel}"})
         return sorted(out, key=lambda f: f["name"])[:20]
 
     def _context_event(self) -> None:
@@ -311,6 +360,19 @@ class Session:
         windows = info.get("unifiedWindows") or {}
         self.publish("rate", {"account": self.account.name, "status": info.get("status"),
                               "five": windows.get("five_hour"), "week": windows.get("seven_day")})
+
+    def _give_up(self, exc: Exception) -> None:
+        """Close the turn with what was said so far and a plain note, when finishing it properly failed."""
+        t = self.turn or Turn()
+        text = ((t.text.strip() + "\n\n") if t.text.strip() else "") + f"(Crew could not finish showing this answer: {exc})"
+        meta = {"error": True, "engine": self.engine, "model": self.model or "", "effort": self.effort, "mode": self.mode,
+                "account": self.account.name if self.account else ""}
+        try:
+            mid = self._record(text, meta)
+        except Exception:  # noqa: BLE001 — even the record failed: the answer is still shown
+            mid = 0
+        self.proc, self.busy, self.turn = (self.proc if self.engine == "claude" else None), False, None
+        self.publish("done", {"id": mid, "text": text, "meta": meta})
 
 
 class ClaudeSession(Session):
@@ -567,6 +629,12 @@ class ClaudeSession(Session):
                 self._finish(msg)
 
     def _finish(self, msg: dict) -> None:
+        try:
+            self._finish_turn(msg)
+        except Exception as exc:  # whatever went wrong, the conversation must not wait for ever
+            self._give_up(exc)
+
+    def _finish_turn(self, msg: dict) -> None:
         t = self.turn or Turn()
         raw = (msg.get("result") or "").strip()
         error = bool(msg.get("is_error"))
@@ -688,6 +756,12 @@ class CodexSession(Session):
         return args
 
     def _turn(self, exe: str, prompt: str) -> None:
+        try:
+            self._run_turn(exe, prompt)
+        except Exception as exc:  # the conversation must never be left "still answering"
+            self._give_up(exc)
+
+    def _run_turn(self, exe: str, prompt: str) -> None:
         t = self.turn
         if self.session_id:
             cmd = [exe, "exec", "resume", "--json", "--skip-git-repo-check", *self._args(), self.session_id, "-"]
@@ -703,19 +777,21 @@ class CodexSession(Session):
         if prof is not None:
             prof.mkdir(parents=True, exist_ok=True)
             env["CODEX_HOME"] = str(prof)
-        error_text, usage = "", {}
+        error_text, usage, code = "", {}, 1
         try:
-            self.proc = _popen(cmd, self.workspace(), child_env(env))
-            self.proc.stdin.write(text_in)
-            self.proc.stdin.close()
-            threading.Thread(target=lambda p=self.proc: [None for _ in p.stderr], daemon=True).start()
-            for line in self.proc.stdout:
+            proc = self.proc = _popen(cmd, self.workspace(), child_env(env))
+            proc.stdin.write(text_in)
+            proc.stdin.close()
+            threading.Thread(target=lambda p=proc: [None for _ in p.stderr], daemon=True).start()
+            for line in proc.stdout:
                 try:
                     ev = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(ev, dict):
+                    continue
                 etype = ev.get("type")
-                item = ev.get("item") or {}
+                item = ev.get("item") if isinstance(ev.get("item"), dict) else {}
                 itype = item.get("type")
                 if etype == "thread.started":
                     self.session_id = ev.get("thread_id")
@@ -765,10 +841,14 @@ class CodexSession(Session):
                     error_text = (err.get("message") if isinstance(err, dict) else str(err)) or error_text
                 elif etype == "error":
                     error_text = ev.get("message") or error_text
-            code = self.proc.wait()
+            code = proc.wait()
         except OSError as exc:
             code, error_text = 1, str(exc)
-        failed = code != 0 and not t.text.strip()
+        if not self.m.db.q("SELECT id FROM chats WHERE id=?", (self.chat_id,)):
+            self.proc, self.busy, self.turn = None, False, None  # deleted while it answered: nothing to keep
+            return
+        stopped, self.interrupted = self.interrupted, False
+        failed = code != 0 and not t.text.strip() and not stopped
         usage_log.record_tokens(self.account.name, {
             "input_tokens": int(usage.get("input_tokens") or 0) - int(usage.get("cached_input_tokens") or 0),
             "cache_read_input_tokens": int(usage.get("cached_input_tokens") or 0),
@@ -780,12 +860,14 @@ class CodexSession(Session):
             self.context.update(used=status.get("used") or 0, window=status["window"])
             self._context_event()
         text = t.text.strip() or (self.m.explain_error(error_text) if failed else "")
+        if stopped:  # the owner pressed Stop: what was said so far stays, as with Claude
+            text = (t.text.strip() + "\n\n*Stopped.*") if t.text.strip() else "*Stopped.*"
         for step in t.steps.values():
             if step["status"] == "running":
                 step["status"] = "done"
         meta = {**t.meta(), "files": self._new_files(t.started), "error": failed, "engine": "codex",
                 "model": self.model or "", "effort": self.effort, "mode": self.mode, "account": self.account.name,
-                "seconds": round(now() - t.started, 1),
+                "stopped": stopped, "seconds": round(now() - t.started, 1),
                 "usage": {"input": int(usage.get("input_tokens") or 0), "output": int(usage.get("output_tokens") or 0),
                           "cache_read": int(usage.get("cached_input_tokens") or 0), "cache_write": 0},
                 "context": dict(self.context)}
@@ -799,6 +881,8 @@ class CodexSession(Session):
         self.publish("step", step)
 
     def interrupt(self) -> None:
+        if self.busy:
+            self.interrupted = True
         if self.proc is not None:
             _kill_tree(self.proc, grace=1)
 
@@ -817,11 +901,14 @@ def read_codex_status(account, thread_id: str | None) -> dict:
     except Exception:
         out["rate"] = None
     home = account.profile_dir() or default_codex_home()
-    files = sorted((home / "sessions").glob(f"**/rollout-*{thread_id}*.jsonl"), key=lambda p: p.stat().st_mtime)
+    try:  # Codex may be writing or rotating its files at this very moment
+        files = sorted((home / "sessions").glob(f"**/rollout-*{thread_id}*.jsonl"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        files = []
     if files:
         latest = None
         try:
-            with files[-1].open(encoding="utf-8") as fh:
+            with files[-1].open(encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     if '"token_count"' in line:
                         latest = line
@@ -951,12 +1038,21 @@ class ChatManager:
 
     # ------------------------------------------------------------ conversations
 
-    def list(self) -> list[dict]:
-        return self.db.q("SELECT id,title,created,updated,engine,model,effort,mode,pinned,kind FROM chats "
-                         "ORDER BY pinned DESC, updated DESC LIMIT 300")
+    def list(self, q: str = "", limit: int = 300) -> list[dict]:
+        """The newest chats (pinned first); with `q`, every chat whose title contains those words, however old."""
+        cols = "id,title,created,updated,engine,model,effort,mode,pinned,kind"
+        words = " ".join(str(q or "").split())
+        if words:
+            like = "%" + words.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+            return self.db.q(f"SELECT {cols} FROM chats WHERE title LIKE ? ESCAPE '\\' "
+                             "ORDER BY pinned DESC, updated DESC LIMIT ?", (like, limit))
+        return self.db.q(f"SELECT {cols} FROM chats ORDER BY pinned DESC, updated DESC LIMIT ?", (limit,))
 
     def create(self, engine: str | None = None, model: str | None = None, effort: str | None = None,
                mode: str | None = None, account: str | None = None) -> dict:
+        for value in (engine, model, effort, mode, account):
+            if value is not None and not isinstance(value, str):
+                raise ValueError("Choose the product, model and effort from the lists.")
         app = settings_mod.load()["app"]
         engine = engine if engine in ENGINES else app.get("chat_engine", "claude")
         if engine == "codex":
@@ -1012,8 +1108,14 @@ class ChatManager:
         chat = self.get(cid)
         if chat is None:
             raise KeyError(cid)
+        if text is not None and not isinstance(text, str):
+            raise ValueError("Type or say something first.")
+        for value in (model, effort, mode, engine, account):
+            if value is not None and not isinstance(value, str):
+                raise ValueError("Choose the product, model and effort from the lists.")
         text = (text or "").strip()
-        attachments = [a for a in (attachments or []) if isinstance(a, str) and re.fullmatch(r"attachments/[\w.-]+", a)]
+        attachments = [a for a in (attachments if isinstance(attachments, list) else [])
+                       if isinstance(a, str) and re.fullmatch(r"attachments/[\w.-]+", a)]
         if not text and attachments:
             text = "Please look at what I attached."
         if not text:
@@ -1023,11 +1125,17 @@ class ChatManager:
             raise ValueError("This conversation is with " + ENGINES[chat.get("engine") or "claude"] +
                              ". Start a new conversation to use " + ENGINES[engine] + ".")
         model = chat["model"] if model is None else model
+        if engine == "claude" and not model:  # Claude always runs a named model: the chat's, else the default
+            model = chat.get("model") or settings_mod.load()["app"].get("chat_model") or "claude-opus-5-5"
         effort = effort or chat.get("effort") or "auto"
         effort = LEGACY_EFFORTS.get(effort, effort) if engine == "codex" else effort
         mode = mode if mode in MODES else (chat.get("mode") or "auto")
         if effort not in EFFORTS[engine]:
             raise ValueError(f"Unknown effort level for {ENGINES[engine]}: {effort}.")
+        other = other_product(engine, model)
+        if other:
+            raise ValueError(f"{model} is a {ENGINES[other]} model, and this conversation is with {ENGINES[engine]}. "
+                             f"Choose one of {ENGINES[engine]}'s models, or start a new chat with {ENGINES[other]}.")
         if engine == "claude" or model:
             cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
             cfg.models.check(model)  # a banned or unknown model is refused before anything is recorded
@@ -1039,8 +1147,7 @@ class ChatManager:
         if session.busy:
             raise ValueError("Still answering the last message. Press stop first, or wait a moment.")
         session.chosen = chat.get("account") or ""
-        self.db.x("INSERT INTO messages(chat_id,role,text,ts,meta) VALUES(?,?,?,?,?)",
-                  (cid, "user", text, now(), json.dumps({"attachments": attachments or [], "mode": mode})))
+        self.db.add_message(cid, "user", text, {"attachments": attachments or [], "mode": mode})
         words = " ".join(text.split())
         untitled = chat["title"] in ("New chat", "New conversation")
         title = chat["title"] if not untitled or text.startswith("/") else \
@@ -1054,8 +1161,7 @@ class ChatManager:
             session.send(prompt, model, effort, mode)
         except (RuntimeError, OSError, cfgmod.ConfigError) as exc:  # could not start: say so in the conversation
             session.busy = False
-            mid = self.db.x("INSERT INTO messages(chat_id,role,text,ts,meta) VALUES(?,?,?,?,?)",
-                            (cid, "assistant", str(exc), now(), json.dumps({"error": True})))
+            mid = self.db.add_message(cid, "assistant", str(exc), {"error": True})
             hub.publish(session.topic, "done", {"id": mid, "text": str(exc), "meta": {"error": True}})
             return {"ok": False, "error": str(exc)}
         return {"ok": True}
@@ -1071,12 +1177,15 @@ class ChatManager:
 
     def approve_plan(self, cid: str, note: str = "") -> dict:
         """Leave plan mode and carry out the plan."""
+        note = note if isinstance(note, str) else ""
         self.set_mode(cid, "auto")
         text = "The plan is approved. Carry it out now." + (f" Also: {note.strip()}" if note.strip() else "")
         return self.send(cid, text, mode="auto")
 
     def rename(self, cid: str, title: str) -> None:
-        title = " ".join((title or "").split())[:120]
+        if not isinstance(title, str):
+            raise ValueError("Give the chat a name.")
+        title = " ".join(title.split())[:120]
         if title:
             self.db.x("UPDATE chats SET title=? WHERE id=?", (title, cid))
 
@@ -1092,8 +1201,10 @@ class ChatManager:
         s = self.sessions.pop(cid, None)
         if s:
             s.stop_process()
-        self.db.x("DELETE FROM messages WHERE chat_id=?", (cid,))
+        # The chat first: from then on no answer can be written for it (add_message), and what was written
+        # before goes with the messages.
         self.db.x("DELETE FROM chats WHERE id=?", (cid,))
+        self.db.x("DELETE FROM messages WHERE chat_id=?", (cid,))
 
     def workspace(self, cid: str) -> Path | None:
         if not self.db.q("SELECT id FROM chats WHERE id=?", (cid,)):
@@ -1108,6 +1219,8 @@ class ChatManager:
             raise KeyError(cid)
         stem, dot, ext = (name or "file").rpartition(".")
         safe = re.sub(r"[^\w.-]+", "-", (stem if dot else ext) or "file").strip("-.")[:60] or "file"
+        if safe.split(".")[0].lower() in WINDOWS_RESERVED:  # CON, NUL, COM1 … are devices on Windows, not files
+            safe = "file-" + safe
         ext = re.sub(r"[^\w]", "", ext)[:8] if dot else ""
         folder = root / "attachments"
         folder.mkdir(exist_ok=True)
@@ -1124,14 +1237,9 @@ class ChatManager:
         root = self.workspace(cid)
         if root is None:
             return []
-        out = []
-        for p in sorted(root.rglob("*")):
-            parts = p.relative_to(root).parts
-            if p.is_file() and ".crew" not in parts and not p.name.startswith("."):
-                rel = p.relative_to(root).as_posix()
-                out.append({"name": rel, "size": p.stat().st_size, "url": f"/files/chat/{cid}/{rel}",
-                            "modified": p.stat().st_mtime, "kind": file_kind(p.name)})
-        return out[:200]
+        out = [{"name": rel, "size": st.st_size, "url": f"/files/chat/{cid}/{rel}", "modified": st.st_mtime,
+                "kind": file_kind(rel)} for rel, st in workspace_files(root)]
+        return sorted(out, key=lambda f: f["name"])[:200]
 
     def as_project_request(self, cid: str) -> str:
         chat = self.get(cid) or {}

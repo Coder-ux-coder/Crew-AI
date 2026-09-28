@@ -6,6 +6,7 @@ a skill is added or switched on/off, so a switched-off skill never reaches them.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -47,20 +48,34 @@ def _state_path() -> Path:
 
 def _disabled() -> set[str]:
     try:
-        return set(json.loads(_state_path().read_text(encoding="utf-8")).get("disabled", []))
-    except (OSError, ValueError):
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
+        return {str(x) for x in data.get("disabled", [])} if isinstance(data, dict) else set()
+    except (OSError, ValueError, TypeError):
         return set()
 
 
+def _unquote(value: str) -> str:
+    """A front-matter value as written: plain, "double-quoted" (JSON escapes) or 'single-quoted'."""
+    v = value.strip()
+    if len(v) >= 2 and v[0] == v[-1] == '"':
+        try:
+            return str(json.loads(v))
+        except ValueError:
+            return v[1:-1]
+    if len(v) >= 2 and v[0] == v[-1] == "'":
+        return v[1:-1].replace("''", "'")
+    return v
+
+
 def _parse(skill_md: Path) -> dict:
-    text = skill_md.read_text(encoding="utf-8", errors="replace")
+    text = skill_md.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
     meta = {}
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.S)
     if m:
         for line in m.group(1).splitlines():
             if ":" in line:
                 k, _, v = line.partition(":")
-                meta[k.strip()] = v.strip()
+                meta[k.strip()] = _unquote(v)
         body = text[m.end():]
     else:
         body = text
@@ -92,17 +107,25 @@ def get(skill_id: str) -> dict | None:
 
 
 def create(name: str, when: str, steps: str) -> dict:
-    skill_id = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")[:48]
-    if not skill_id:
+    if not all(isinstance(x, str) for x in (name, when, steps)):
+        raise ValueError("Give the skill a name, say when it is used, and describe its steps.")
+    if not name.strip():
         raise ValueError("Give the skill a name.")
-    if len((when or "").strip()) < 10 or len((steps or "").strip()) < 20:
+    skill_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48]
+    if not skill_id:  # a name in Urdu (or any other script): the id is made from it, the title keeps it
+        skill_id = "skill-" + hashlib.sha1(name.strip().encode("utf-8")).hexdigest()[:8]
+    if skill_id == "anthropic":  # the app's address for Anthropic's own skills
+        skill_id = "anthropic-skill"
+    if len(when.strip()) < 10 or len(steps.strip()) < 20:
         raise ValueError("Say when the skill should be used and describe its steps.")
     if (BUILTIN / skill_id).exists() or (user_dir() / skill_id).exists():
         raise ValueError("A skill with this name already exists.")
     description = " ".join(when.split())
     if not description.lower().startswith("use when"):
         description = "Use when " + description[0].lower() + description[1:]
-    text = f"---\nname: {skill_id}\ndescription: {description}\n---\n\n# {name.strip()}\n\n{steps.strip()}\n"
+    # Quoted, so that a colon or a # in the owner's words cannot break the skill's front matter for Claude Code.
+    text = (f"---\nname: {skill_id}\ndescription: {json.dumps(description, ensure_ascii=False)}\n---\n\n"
+            f"# {' '.join(name.split())}\n\n{steps.strip()}\n")
     folder = user_dir() / skill_id
     folder.mkdir(parents=True)
     atomic_write(folder / "SKILL.md", text)
@@ -111,7 +134,7 @@ def create(name: str, when: str, steps: str) -> dict:
 
 
 def set_enabled(skill_id: str, enabled: bool) -> dict | None:
-    if get(skill_id) is None:
+    if not isinstance(skill_id, str) or get(skill_id) is None:
         return None
     disabled = _disabled()
     (disabled.discard if enabled else disabled.add)(skill_id)

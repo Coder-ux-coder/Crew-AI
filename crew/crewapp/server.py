@@ -53,7 +53,9 @@ class App:
         self.phone_access = phone
         self.internal_token = secrets.token_urlsafe(24)
         conf = self._conf()
-        self.pair_token = conf.setdefault("pair_token", secrets.token_urlsafe(24))
+        if not isinstance(conf.get("pair_token"), str) or len(conf["pair_token"]) < 16:
+            conf["pair_token"] = secrets.token_urlsafe(24)
+        self.pair_token = conf["pair_token"]
         atomic_write(crew_home() / "app.json", json.dumps(conf))
         url = f"http://127.0.0.1:{port}"
         extra = {"CREW_APP_URL": url, "CREW_APP_TOKEN": self.internal_token}
@@ -64,29 +66,35 @@ class App:
         self.computer = computer_mod.service
         self._auth_cache: dict[str, tuple[float, dict]] = {}
         self.lan_servers: list = []
-        skills.build_active_pack()
+        try:
+            skills.build_active_pack()
+        except Exception as exc:  # e.g. Windows keeps a skill file locked for a moment: the last pack stays in use
+            print(f"skills: the active pack could not be rebuilt ({exc}); the previous one stays in use")
         self.workflows = Workflows(self)
         self.skill_install = {"state": "idle", "message": ""}
         self.last_action = time.time()  # the owner's last change (sending, starting, saving): updates wait for quiet
 
     def upkeep(self) -> None:
-        """Once a day, in the background: keep Claude Code current and look for a newer Crew."""
-        def work():
-            try:
-                claude_cli.update_if_stale()
-            except Exception as exc:
-                print(f"claude update: {exc}")
-            launcher.heal_shortcuts()
-            refresh_windows_icons()
+        """Once a day, in the background: keep Claude Code current and look for a newer Crew. Each step on its own:
+        one that fails (say, Windows refusing to touch an icon) never skips the others."""
+        def skills_once():
             if not (crew_home() / "anthropic-skills.json").is_file() and settings.load()["accounts"]:
                 self.install_anthropic_skills()  # once: Anthropic's official skills for every Claude subscription
-            try:
-                if time.time() - float(updater.last_check().get("checked") or 0) > 20 * 3600:
-                    info = updater.check()
-                    if info.get("available"):
-                        hub.publish("app", "update", info)
-            except Exception as exc:
-                print(f"update check: {exc}")
+
+        def check_for_update():
+            if time.time() - float(updater.last_check().get("checked") or 0) > 20 * 3600:
+                info = updater.check()
+                if info.get("available"):
+                    hub.publish("app", "update", info)
+
+        def work():
+            for name, step in (("claude update", claude_cli.update_if_stale), ("icons", launcher.heal_shortcuts),
+                               ("icon cache", refresh_windows_icons), ("Anthropic's skills", skills_once),
+                               ("update check", check_for_update)):
+                try:
+                    step()
+                except Exception as exc:  # noqa: BLE001 — upkeep must never stop Crew, nor the steps after it
+                    print(f"{name}: {exc}")
         threading.Thread(target=work, daemon=True, name="crew-upkeep").start()
 
     def idle(self, quiet_minutes: float = 30) -> bool:
@@ -123,11 +131,19 @@ class App:
                 hub.publish("app", "update", info)
         if not updater.newer(info) or not settings.load()["app"].get("auto_update", True) or not self.idle():
             return False
+        if time.time() - getattr(self, "auto_update_failed", 0.0) < 6 * 3600:
+            return False  # it did not install a moment ago (a locked file, no network): not again every half hour
         old = updater.current().get("version")
         launcher.log(f"updating Crew from {old} to {info.get('latest')} automatically (nothing was running)")
         hub.publish("app", "updating", info)
         time.sleep(2)
-        result = updater.install()
+        try:
+            result = updater.install()
+        except Exception as exc:  # nothing was changed: Crew carries on as it is, and the window is told
+            self.auto_update_failed = time.time()
+            launcher.log(f"the automatic update did not install: {exc}")
+            hub.publish("app", "update_failed", {"message": str(exc)})
+            return False
         updater.note_updated(old, result.get("version") or info.get("latest"), auto=True)
         self.chats.shutdown()
         self.workflows.stop()
@@ -188,9 +204,10 @@ class App:
     @staticmethod
     def _conf() -> dict:
         try:
-            return json.loads((crew_home() / "app.json").read_text(encoding="utf-8"))
+            data = json.loads((crew_home() / "app.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
+        return data if isinstance(data, dict) else {}
 
     # ------------------------------------------------------------- accounts
 
@@ -233,11 +250,14 @@ class App:
             return {"signed_in": False, "detail": f"{'Claude Code' if tool == 'claude' else 'Codex'} is not installed"}
         cmd = [exe, "auth", "status", "--json"] if tool == "claude" else [exe, "login", "status"]
         kwargs = {"creationflags": 0x08000000} if os.name == "nt" else {}
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=25, env=self._account_env(acc), **kwargs)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25,
+                              env=self._account_env(acc), stdin=subprocess.DEVNULL, **kwargs)
         if tool == "claude":
             try:
                 data = json.loads(proc.stdout or "{}")
             except ValueError:
+                data = {}
+            if not isinstance(data, dict):
                 data = {}
             return {"signed_in": bool(data.get("loggedIn")), "detail": data.get("email") or data.get("authMethod", "")}
         return {"signed_in": proc.returncode == 0, "detail": (proc.stdout or "").strip().splitlines()[-1:] and
@@ -356,10 +376,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length") or 0)
-        if length > 5 * 1024 * 1024:
+        if length < 0 or length > 5 * 1024 * 1024:
             raise ValueError("Request too large.")
         raw = self.rfile.read(length) if length else b""
-        return json.loads(raw or b"{}")
+        body = json.loads(raw or b"{}")
+        if not isinstance(body, dict):
+            raise ValueError("Send the details as a JSON object.")
+        return body
 
     def _file(self, path: Path, sandbox: bool = False, cache: bool = False) -> None:
         if not path.is_file():
@@ -599,7 +622,7 @@ class Handler(BaseHTTPRequestHandler):
             "accounts": st["accounts"],
             "runs": self.app.runs.list()[:12], "chats": self.app.chats.list()[:30],
             "browser": self.app.browser.status(), "phone_access": self.app.phone_access,
-            "local": self._loopback(),
+            "local": self._loopback(), "settings_problem": settings.problem(),
         })
 
     # ----------------------------------------------------------------- runs
@@ -642,8 +665,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("POST", r"/api/runs/([\w.-]+)/resume")
     def api_run_resume(self, rid):
-        self.app.runs.resume(rid)
-        return self._json({"ok": True})
+        started = self.app.runs.resume(rid)
+        return self._json({"ok": True, "already_running": not started})
 
     @route("POST", r"/api/runs/([\w.-]+)/open-folder")
     def api_run_folder(self, rid):
@@ -657,7 +680,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", "/api/chats")
     def api_chats(self):
-        return self._json({"chats": self.app.chats.list()})
+        """The newest 300 chats; with ?q=words, every chat whose title has those words (older ones too)."""
+        return self._json({"chats": self.app.chats.list(self.query.get("q", "")), "limit": 300})
 
     @route("POST", "/api/chats")
     def api_chat_new(self):
@@ -767,7 +791,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("POST", r"/api/phone/(\w+)")
     def api_phone_action(self, action):
-        b = self._body()
+        b = _text_fields(self._body(), "address", "code")
         if action == "pair":
             return self._json({"message": self.app.phone.pair(b.get("address", ""), b.get("code", ""))})
         if action == "connect":
@@ -824,6 +848,16 @@ class Handler(BaseHTTPRequestHandler):
     def api_skills(self):
         return self._json({"skills": skills.list_all()})
 
+    # Before the skill route below: the first route that matches answers, and "anthropic" looks like a skill's id.
+    @route("POST", "/api/skills/anthropic")
+    def api_skills_anthropic(self):
+        self.app.install_anthropic_skills()
+        return self._json(self.app.skill_install)
+
+    @route("GET", "/api/skills/anthropic")
+    def api_skills_anthropic_state(self):
+        return self._json(self.app.skill_install)
+
     @route("GET", r"/api/skills/([a-z0-9-]+)")
     def api_skill(self, sid):
         s = skills.get(sid)
@@ -848,7 +882,7 @@ class Handler(BaseHTTPRequestHandler):
     @route("GET", "/api/settings")
     def api_settings(self):
         return self._json({**settings.load(), "rules": settings.rules(), "assistant": chat.instructions(),
-                           "secrets": settings.secret_names()})
+                           "secrets": settings.secret_names(), "problem": settings.problem()})
 
     @route("PUT", "/api/settings")
     def api_settings_save(self):
@@ -874,7 +908,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_accounts(self):
         return self._json({"accounts": self.app.account_status(self.query.get("refresh") == "1")})
 
-    @route("POST", r"/api/accounts/([\w.-]+)/login")
+    @route("POST", r"/api/accounts/([\w.@+-]+)/login")  # every name Settings accepts (settings.ACCOUNT_NAME)
     def api_account_login(self, name):
         return self._json({"message": self.app.open_login(name)})
 
@@ -900,17 +934,6 @@ class Handler(BaseHTTPRequestHandler):
     def api_claude_update(self):
         ok, message = claude_cli.update()
         return self._json({"ok": ok, "message": message})
-
-    # ---------------------------------------------------------- Anthropic's skills
-
-    @route("POST", "/api/skills/anthropic")
-    def api_skills_anthropic(self):
-        self.app.install_anthropic_skills()
-        return self._json(self.app.skill_install)
-
-    @route("GET", "/api/skills/anthropic")
-    def api_skills_anthropic_state(self):
-        return self._json(self.app.skill_install)
 
     # ---------------------------------------------------------- connections
 
@@ -1051,7 +1074,19 @@ class Handler(BaseHTTPRequestHandler):
 # ====================================================================== actions
 
 
+def _text_fields(body: dict, *names: str) -> dict:
+    """The words an action types or looks for, as text (a number sent by a tool becomes its digits)."""
+    out = dict(body)
+    for name in names:
+        if name in out and out[name] is not None and not isinstance(out[name], str):
+            if isinstance(out[name], (dict, list)):
+                raise ValueError(f"'{name}' must be text.")
+            out[name] = str(out[name])
+    return out
+
+
 def browser_action(b: browser_mod.BrowserService, action: str, body: dict, driver: str):
+    body = _text_fields(body, "url", "text", "key", "field", "device", "direction")
     if action in ("navigate", "open"):
         return b.navigate(body.get("url", ""), driver=driver)
     if action == "click":
@@ -1083,6 +1118,7 @@ def browser_action(b: browser_mod.BrowserService, action: str, body: dict, drive
 
 
 def phone_action(p: phone_mod.PhoneService, action: str, body: dict, driver: str):
+    body = _text_fields(body, "text", "key", "name", "direction")
     if action == "status":
         return p.status()
     if action == "tap":
@@ -1092,7 +1128,7 @@ def phone_action(p: phone_mod.PhoneService, action: str, body: dict, driver: str
     if action == "swipe":
         if body.get("direction"):
             return p.swipe_dir(body["direction"], driver=driver)
-        return p.swipe(body["x1"], body["y1"], body["x2"], body["y2"], int(body.get("ms", 300)), driver=driver)
+        return p.swipe(body["x1"], body["y1"], body["x2"], body["y2"], body.get("ms", 300), driver=driver)
     if action == "type":
         return p.type(body.get("text", ""), driver=driver)
     if action == "key":
@@ -1110,20 +1146,33 @@ def set_start_with_windows(enabled: bool) -> str:
     """Add or remove Crew from Windows' Startup folder (so workflows and the phone can always reach it)."""
     if os.name != "nt":
         return "Starting with the computer is set up by the installer on Windows."
-    startup = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
+    if not os.environ.get("APPDATA"):
+        raise ValueError("Windows did not say where its Startup folder is, so Crew cannot add itself to it.")
+    startup = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
     link = startup / "Crew.lnk"
     if not enabled:
-        link.unlink(missing_ok=True)
+        try:
+            link.unlink(missing_ok=True)
+        except OSError as exc:
+            raise ValueError(f"Crew could not remove itself from the programs that start with Windows ({exc}).") from None
         return "Crew will no longer start with Windows."
     root = Path(__file__).resolve().parent.parent
     pyw = Path(sys.executable).with_name("pythonw.exe")
     target = pyw if pyw.is_file() else Path(sys.executable)
     icon = root / "crewapp" / "static" / "icons" / "crew.ico"
-    ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{link}');"
-          f"$s.TargetPath='{target}';$s.Arguments='-X utf8 -m crewlib app --no-open';"
-          f"$s.WorkingDirectory='{root}';$s.IconLocation='{icon},0';$s.Save()")
-    subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
-                   capture_output=True, timeout=60, creationflags=launcher.NO_WINDOW)
+    q = launcher._ps  # PowerShell text in single quotes: a quote in a folder's name (O'Brien) is written twice
+    ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{q(link)}');"
+          f"$s.TargetPath='{q(target)}';$s.Arguments='-X utf8 -m crewlib app --no-open';"
+          f"$s.WorkingDirectory='{q(root)}';$s.IconLocation='{q(icon)},0';$s.Save()")
+    try:
+        proc = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+                              capture_output=True, timeout=60, creationflags=launcher.NO_WINDOW)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"Windows did not let Crew add itself to the programs that start with it ({exc}).") from None
+    if proc.returncode != 0 or not link.is_file():
+        detail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()[-1:] or [""]
+        raise ValueError("Windows did not let Crew add itself to the programs that start with it"
+                         + (f" ({detail[0][:200]})." if detail[0] else ".") + " Try again, or run the Crew installer.")
     return "Crew will start quietly when you sign in to Windows."
 
 
@@ -1137,7 +1186,7 @@ def refresh_windows_icons() -> None:
     try:
         if os.name != "nt" or json.loads(flag.read_text(encoding="utf-8")).get("version") == ICON_VERSION:
             return
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):  # AttributeError: a record that is not an object
         pass
     if os.name != "nt":
         return
@@ -1145,7 +1194,7 @@ def refresh_windows_icons() -> None:
     ps = ("$w=New-Object -ComObject WScript.Shell;"
           "foreach($d in @([Environment]::GetFolderPath('Desktop'),[Environment]::GetFolderPath('Programs'),"
           "[Environment]::GetFolderPath('Startup'))){$f=Join-Path $d 'Crew.lnk';"
-          f"if(Test-Path $f){{$l=$w.CreateShortcut($f);$l.IconLocation='{icon},0';$l.Save()}}}};"
+          f"if(Test-Path $f){{$l=$w.CreateShortcut($f);$l.IconLocation='{launcher._ps(icon)},0';$l.Save()}}}};"
           "Start-Process -FilePath ie4uinit.exe -ArgumentList '-show' -WindowStyle Hidden")
     try:
         subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
@@ -1241,7 +1290,8 @@ def main(port: int = 8765, phone: bool = False, open_window: bool = True) -> int
     stuck = launcher.stuck_server(port)
     if stuck:
         launcher.log(f"the previous Crew (process {stuck}) stopped answering; replacing it")
-        launcher.stop_process(stuck, launcher.recorded().get("port"))
+        old_port = launcher.recorded().get("port")
+        launcher.stop_process(stuck, old_port if isinstance(old_port, int) else None)
     launcher.record(port, "starting")
     server = _bind(port, patient=not open_window)
     if isinstance(server, int):  # a Crew answered on that port after all

@@ -59,6 +59,9 @@ def check() -> dict:
     except Exception as exc:
         out["error"] = f"Could not reach GitHub: {exc}"
         return out
+    if not isinstance(latest, dict) or not isinstance(latest.get("version"), str):
+        out["error"] = "GitHub's answer was not a Crew version (a web proxy may have replaced it). Try again later."
+        return out
     out["latest"] = latest.get("version")
     out["notes"] = latest.get("notes") or []
     out["available"] = _parse(latest.get("version", "0")) > _parse(mine.get("version", "0"))
@@ -80,64 +83,189 @@ def note_updated(old: str, new: str, auto: bool) -> None:
 def recent_update(minutes: float = 30) -> dict | None:
     try:
         data = json.loads((crew_home() / "updated.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        at = float(data.get("at") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
         return None
-    return data if time.time() - float(data.get("at") or 0) < minutes * 60 else None
+    return data if time.time() - at < minutes * 60 else None
 
 
 def last_check() -> dict:
     try:
-        return json.loads((crew_home() / "update.json").read_text(encoding="utf-8"))
+        data = json.loads((crew_home() / "update.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
+
+
+class UpdateError(ValueError):
+    """An update that could not be installed, in plain words. Nothing of Crew was changed."""
+
+
+def _replace(src: Path, dst: Path) -> None:
+    """Rename a file over another; tried a few times, because an antivirus program or Windows' search indexer
+    often holds a new file for a moment."""
+    for attempt in range(6):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.4)
+
+
+def _leftovers() -> None:
+    """Tidy what an interrupted update left beside the program files: a copy that was never swapped in
+    (name.new) goes; an original (name.old) goes back in place if its file is missing, else it goes."""
+    for folder in [ROOT, *(ROOT / d for d in PROGRAM_DIRS)]:
+        if not folder.is_dir():
+            continue
+        for p in list(folder.rglob("*") if folder != ROOT else folder.glob("*")):
+            try:
+                if not p.is_file() or p.suffix not in (".new", ".old"):
+                    continue
+                live = p.with_suffix("")
+                if p.suffix == ".old" and not live.exists():
+                    os.replace(p, live)
+                else:
+                    p.unlink()
+            except OSError:
+                pass
+
+
+def _put_in_place(files: list[tuple[Path, str]]) -> None:
+    """Every new file is first copied beside its target (name.new); only then are they swapped in, the old ones
+    kept (name.old) until all are in place. If one cannot be replaced — Windows keeps a file that is in use
+    locked — every file already swapped goes back: Crew never runs half old and half new."""
+    staged: list[tuple[Path, Path, str]] = []
+    try:
+        for src, rel in files:
+            target = ROOT / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            new = target.with_name(target.name + ".new")
+            shutil.copy2(src, new)
+            staged.append((target, new, rel))
+    except OSError as exc:
+        for _, new, _ in staged:
+            new.unlink(missing_ok=True)
+        raise UpdateError(f"The update could not be copied into Crew's folder ({exc.strerror or exc}). Nothing was "
+                          "changed; check that the disk is not full, then try again.") from None
+    swapped: list[tuple[Path, Path | None]] = []
+    try:
+        for target, new, rel in staged:
+            old = target.with_name(target.name + ".old") if target.exists() else None
+            if old is not None:
+                _replace(target, old)
+            try:
+                _replace(new, target)
+            except OSError:
+                if old is not None:
+                    _replace(old, target)
+                raise
+            swapped.append((target, old))
+    except OSError as exc:
+        for target, old in reversed(swapped):
+            try:
+                if old is not None:
+                    _replace(old, target)
+                else:
+                    target.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for _, new, _ in staged:
+            new.unlink(missing_ok=True)
+        name = Path(getattr(exc, "filename", "") or "").name or "a file"
+        raise UpdateError(f"Crew could not replace {name}: another program is using it. Nothing was changed. Close "
+                          "that program (or restart the computer) and update again.") from None
+    for _, old in swapped:
+        if old is not None:
+            old.unlink(missing_ok=True)
+
+
+_installing = threading.Lock()
 
 
 def install() -> dict:
-    """Download the newest version and copy it over the program files."""
-    data = _get(f"https://github.com/{REPO}/archive/refs/heads/{BRANCH}.zip", timeout=180)
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        top = zf.namelist()[0].split("/")[0]
-        tmp = Path(tempfile.mkdtemp(prefix="crew-update-"))
-        zf.extractall(tmp)
-    source = tmp / top / "crew"
-    if not (source / "crewlib" / "cli.py").is_file():
-        shutil.rmtree(tmp, ignore_errors=True)
-        raise RuntimeError("The download did not contain Crew.")
-    new_version = json.loads((source / "VERSION.json").read_text(encoding="utf-8")).get("version")
-    old_requirements = (ROOT / "requirements-app.txt").read_text(encoding="utf-8") if (ROOT / "requirements-app.txt").is_file() else ""
-    if ROOT.resolve() == source.resolve():
-        raise RuntimeError("Nothing to update.")
+    """Download the newest version and put it in place of the program files — all of them, or (if that is not
+    possible) none, with a plain explanation (UpdateError). Never two at once (a click and the automatic update)."""
+    if not _installing.acquire(blocking=False):
+        raise UpdateError("Crew is already installing the update. It reopens by itself in a minute or two.")
     try:
-        previous = set(json.loads((ROOT / MANIFEST).read_text(encoding="utf-8")))
-    except (OSError, ValueError):
-        previous = set()
-    installed = []
-    for path in source.rglob("*"):
-        rel = path.relative_to(source)
-        if any(part in SKIP for part in rel.parts):
-            continue
-        target = ROOT / rel
-        if path.is_dir():
-            target.mkdir(parents=True, exist_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            tmp_target = target.with_name(target.name + ".new")
-            shutil.copy2(path, tmp_target)
-            os.replace(tmp_target, target)
-            installed.append(rel.as_posix())
-    # Program files an older version had and this one no longer ships (never anything of the owner's).
-    for rel in sorted(previous - set(installed)):
-        old_file = (ROOT / rel).resolve()
-        if ROOT.resolve() in old_file.parents and old_file.is_file() and rel.split("/")[0] in PROGRAM_DIRS:
-            old_file.unlink(missing_ok=True)
-    atomic_write(ROOT / MANIFEST, json.dumps(sorted(installed)))
-    new_requirements = (source / "requirements-app.txt").read_text(encoding="utf-8") if (source / "requirements-app.txt").is_file() else ""
-    shutil.rmtree(tmp, ignore_errors=True)
+        return _install()
+    finally:
+        _installing.release()
+
+
+def _install() -> dict:
+    try:
+        data = _get(f"https://github.com/{REPO}/archive/refs/heads/{BRANCH}.zip", timeout=180)
+    except Exception as exc:  # noqa: BLE001 — no network, a proxy, GitHub down …
+        raise UpdateError(f"The update could not be downloaded ({exc}). Nothing was changed; try again later.") from None
+    tmp = Path(tempfile.mkdtemp(prefix="crew-update-"))
+    try:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                names = zf.namelist()
+                if not names:
+                    raise zipfile.BadZipFile("empty")
+                top = names[0].split("/")[0]
+                zf.extractall(tmp)
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, ValueError) as exc:
+            raise UpdateError(f"The download was incomplete or damaged ({exc}). Nothing was changed; try again.") from None
+        except OSError as exc:
+            raise UpdateError(f"The update could not be unpacked ({exc.strerror or exc}). Nothing was changed; check "
+                              "that the disk is not full, then try again.") from None
+        source = tmp / top / "crew"
+        if not (source / "crewlib" / "cli.py").is_file():
+            raise UpdateError("The download did not contain Crew. Nothing was changed.")
+        if ROOT.resolve() == source.resolve():
+            raise UpdateError("Nothing to update.")
+        try:
+            new_version = json.loads((source / "VERSION.json").read_text(encoding="utf-8")).get("version")
+        except (OSError, ValueError, AttributeError):
+            raise UpdateError("The download is not a complete version of Crew (its version file is missing). "
+                              "Nothing was changed.") from None
+        old_requirements = _text(ROOT / "requirements-app.txt")
+        new_requirements = _text(source / "requirements-app.txt")
+        try:
+            previous = set(json.loads((ROOT / MANIFEST).read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError):
+            previous = set()
+        files = []
+        for path in source.rglob("*"):
+            rel = path.relative_to(source)
+            if path.is_file() and not any(part in SKIP for part in rel.parts):
+                files.append((path, rel.as_posix()))
+        files.sort(key=lambda f: f[1])  # the same order every time (the folder listing's order is not)
+        _leftovers()
+        _put_in_place(files)
+        installed = [rel for _, rel in files]
+        # Program files an older version had and this one no longer ships (never anything of the owner's).
+        for rel in sorted(previous - set(installed)):
+            old_file = (ROOT / rel).resolve()
+            if ROOT.resolve() in old_file.parents and old_file.is_file() and rel.split("/")[0] in PROGRAM_DIRS:
+                try:
+                    old_file.unlink()
+                except OSError:
+                    pass  # an unused old file does no harm; it goes at the next update
+        atomic_write(ROOT / MANIFEST, json.dumps(sorted(installed)))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     if new_requirements and new_requirements != old_requirements:
-        subprocess.run([sys.executable.replace("pythonw", "python"), "-m", "pip", "install", "--user", "--quiet",
-                        "--disable-pip-version-check", "-r", str(ROOT / "requirements-app.txt")],
-                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
+        try:  # the add-ons (browser, pictures); Crew works without them, so this never stops an update
+            subprocess.run([sys.executable.replace("pythonw", "python"), "-m", "pip", "install", "--user", "--quiet",
+                            "--disable-pip-version-check", "-r", str(ROOT / "requirements-app.txt")],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=900)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"update: the add-ons were not updated ({exc}); Crew works without them")
     return {"version": new_version}
+
+
+def _text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return ""
 
 
 def restart_later(port: int, delay: float = 1.0) -> None:
