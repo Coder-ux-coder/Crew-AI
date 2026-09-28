@@ -7,6 +7,7 @@ layout on every save (a backup of the previous version is kept).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -168,10 +169,13 @@ def _load() -> dict:
     raw = _raw()
     if raw and int((raw.get("app") or {}).get("settings_version") or 1) < SETTINGS_VERSION:
         migrated = _migrate(raw)
+        text = dump({"team": migrated.get("team") or {}, "models": migrated.get("models") or {},
+                     "app": migrated.get("app") or {}, "account": migrated.get("account") or [],
+                     "seat": migrated.get("seat") or []})
+        _check_readable(text)  # one the engine cannot read is set aside as the owner left it, not rewritten first
         try:
-            atomic_write(path(), dump({"team": migrated.get("team") or {}, "models": migrated.get("models") or {},
-                                       "app": migrated.get("app") or {}, "account": migrated.get("account") or [],
-                                       "seat": migrated.get("seat") or []}))
+            shutil.copyfile(path(), path().with_suffix(".toml.bak"))  # the file as it was, like every save
+            atomic_write(path(), text)
         except OSError:
             pass
         raw = _raw()
@@ -190,6 +194,20 @@ def _load() -> dict:
 ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}")
 
 
+def _app_value_ok(key: str, value) -> bool:
+    """An app setting keeps the kind of its default: a switch stays on or off ("false" as text would switch phone
+    access on), a number stays a number, text stays text. A setting Crew does not list may be any single value."""
+    finite = not (isinstance(value, float) and not math.isfinite(value))
+    if key not in APP_DEFAULTS:
+        return isinstance(value, (str, bool, int, float)) and finite
+    default = APP_DEFAULTS[key]
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, (int, float)):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and finite
+    return isinstance(value, str)
+
+
 def _check_update(update, current: dict) -> None:
     """Refuse, in plain words, an update that is not shaped like settings (before anything is written)."""
     if not isinstance(update, dict):
@@ -198,9 +216,18 @@ def _check_update(update, current: dict) -> None:
         value = update.get(section)
         if value is not None and not isinstance(value, dict):
             raise ValueError(f"The {section} settings must be a group of named values.")
-    for key in (update.get("app") or {}):
+    for key, value in (update.get("app") or {}).items():
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", str(key)):
             raise ValueError(f"Unknown setting: {key}")
+        if key == "settings_version" and value != current["app"].get(key):
+            # Crew's own record of the file's format: set lower, the migrations would run again over the owner's
+            # choices; set to text, the file could not be read at all.
+            raise ValueError("settings_version is Crew's own record and cannot be changed.")
+        if value is not None and not _app_value_ok(key, value):  # None: back to the default
+            default = APP_DEFAULTS.get(key)
+            kind = ("on or off" if isinstance(default, bool) else "a number" if isinstance(default, (int, float))
+                    else "text" if key in APP_DEFAULTS else "a single value")
+            raise ValueError(f"The setting {key} must be {kind}.")
     if "accounts" in update:
         accounts = update["accounts"]
         if not isinstance(accounts, list) or not all(isinstance(a, dict) for a in accounts):
@@ -216,8 +243,27 @@ def _check_update(update, current: dict) -> None:
                                  "@ or _ (for example claude-2 or work.max).")
 
 
+def _check_readable(text: str) -> None:
+    """Raise (a ValueError, in plain words) unless the engine can load these settings. Nothing is written."""
+    tmp = crew_home() / f".crew.toml.check-{os.getpid()}-{threading.get_ident()}"  # its own: saves may overlap
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        cfgmod.load(str(tmp))
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+_save_lock = threading.Lock()
+
+
 def save(update: dict) -> dict:
-    """Merge a partial update ({team:{...}, models:{...}, app:{...}, accounts:[...]}) and write the file."""
+    """Merge a partial update ({team:{...}, models:{...}, app:{...}, accounts:[...]}) and write the file. One at a
+    time: two changes made at the same moment (the theme and the voice speed) must not undo each other."""
+    with _save_lock:
+        return _save(update)
+
+
+def _save(update: dict) -> dict:
     current = load()
     _check_update(update, current)
     data = {
@@ -228,14 +274,8 @@ def save(update: dict) -> dict:
     }
     if current["explicit_seats"] and "accounts" not in update:
         data["seat"] = current["seats"]
-    # Validate before writing: the engine must be able to load what we save.
     text = dump(data)
-    tmp = crew_home() / ".crew.toml.check"
-    tmp.write_text(text, encoding="utf-8")
-    try:
-        cfgmod.load(str(tmp))
-    finally:
-        tmp.unlink(missing_ok=True)
+    _check_readable(text)  # the engine must be able to load what we save
     if path().is_file():
         shutil.copyfile(path(), path().with_suffix(".toml.bak"))
     atomic_write(path(), text)

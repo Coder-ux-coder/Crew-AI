@@ -9,10 +9,11 @@ Opus 5.5 the manager (Claude seats, the lead among them), GPT-6 Astra the CEO.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from .tiers import vendor_of
@@ -190,6 +191,18 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
         raise ConfigError('team.head_to_head must be "off", "some" or "all"')
     if team.head_to_head_style not in ("compete", "combine"):
         raise ConfigError('team.head_to_head_style must be "compete" or "combine"')
+    # Numbers that would stop the team working: no time for the checks, a watchdog that never waits …
+    for name in ("stall_minutes", "ledger_minutes", "checks_timeout_minutes"):
+        if getattr(team, name) <= 0:
+            raise ConfigError(f"team.{name} must be more than 0")
+    for name in ("max_hours", "max_cost_usd"):
+        if getattr(team, name) < 0:
+            raise ConfigError(f"team.{name} cannot be below 0 (0 means no limit)")
+    for name in ("chat_budget", "max_review_rounds"):
+        if getattr(team, name) < 1:
+            raise ConfigError(f"team.{name} must be 1 or more")
+    if not 0 <= team.web_port <= 65535:
+        raise ConfigError("team.web_port must be a port number (0 to 65535)")
 
     accounts = [Account(**_known(Account, a)) for a in data.get("account", [])]
     if not accounts:
@@ -244,9 +257,36 @@ def _seat_name(i: int, vendor: str) -> str:
     return base if i < len(_NAMES) else f"{base}-{i}"
 
 
+SECTIONS = {"TeamSettings": "team", "ModelPolicy": "models", "Account": "account", "SeatSpec": "seat"}
+
+
 def _known(cls, values: dict) -> dict:
-    fields = cls.__dataclass_fields__
-    unknown = set(values) - set(fields) - {"seats"}
+    """The settings a section may have, each of the kind its default is: text where a number belongs (a hand
+    edit, or a stray request) would otherwise be saved and stop every project later, far from its cause."""
+    known = cls.__dataclass_fields__
+    unknown = set(values) - set(known) - {"seats"}
     if unknown:
         raise ConfigError(f"unknown setting(s) for {cls.__name__}: {', '.join(sorted(unknown))}")
-    return {k: v for k, v in values.items() if k in fields}
+    out = {k: v for k, v in values.items() if k in known}
+    for f in fields(cls):
+        if f.name not in out:
+            continue
+        v, kind, where = out[f.name], str(f.type), f"{SECTIONS.get(cls.__name__, cls.__name__)}.{f.name}"
+        if kind == "bool":
+            if not isinstance(v, bool):
+                raise ConfigError(f"{where} must be true or false")
+        elif kind in ("int", "float"):
+            infinite = isinstance(v, float) and not math.isfinite(v)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or infinite:
+                raise ConfigError(f"{where} must be a number")
+            if kind == "int":
+                if v != int(v):
+                    raise ConfigError(f"{where} must be a whole number")
+                out[f.name] = int(v)
+        elif kind == "str":
+            if not isinstance(v, str):
+                raise ConfigError(f"{where} must be text")
+        elif kind.startswith("list"):
+            if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+                raise ConfigError(f"{where} must be a list of names")
+    return out
