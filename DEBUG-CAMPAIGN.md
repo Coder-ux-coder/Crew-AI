@@ -643,6 +643,16 @@ no network, add-ons that will not install, two installs at once, an interrupted 
   error text in the message; the notes were used as they came · plain sentences (the details go to the
   log); a proxy's page is named as such; notes are always a list · test_a56_an_update_check_that_fails_says_
   so_plainly, and test_a8_a_download_cut_short… now also checks the wording.
+- A57 · P2 · server.api_update_install · "Update now" installed and restarted Crew at once: an answer being
+  written was cut off, and a running project carried on with old and new program files mixed (its later
+  imports load the new ones); the automatic update already waited for a quiet moment · the manual path
+  checked nothing · it now says what is running and waits ("The team is working on “…”. Updating now would
+  stop it midway: update when it has finished, or stop it first …"); the same check serves the automatic
+  update (App.busy_with) · test_a57_update_now_waits_for_work_in_progress.
+- F8 · P3 · ui.toast · every red notice went after 6.5 seconds, however long: a notice that explains what to
+  do (a refused update, every subscription at its limit, a damaged file kept) was gone before it could be
+  read · a fixed time · about a fifth of a second a word, never less than before · test_f8_a_long_notice_…
+  (in Chromium, in a process of its own).
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
