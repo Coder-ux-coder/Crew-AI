@@ -13,32 +13,22 @@ never copy it onto the owner's computer.)
 
 ## 0. Campaign state (updated after every step — read this first after any break or context summary)
 
-- Status: RUNNING — the owner gave the go-ahead ("execute this prompt and do whatever it says").
-- Round: 1 — reading pass done; fixes for every candidate written; regression tests written
-  (crew/tests/test_campaign.py). First run of test_campaign: 40 tests, 39 passed; the one failure was a
-  real race (A15, deleting a ChatGPT chat while it answers) — fixed, re-run pending. The shell's safety
-  check keeps failing intermittently, so the full suite, ruff and eslint have not run yet. Nothing is
-  committed yet.
-- Done:
-  - brief written;
-  - every source file read line by line (crewlib, crewapp, static, install, tests) — findings triaged into
-    section 12 as candidates C*/A*/F*;
-  - code fixes for C1–C11, A1–A8, A10–A24, F1–F6 (see "Fixed — written, not yet verified" in section 12);
-  - custom scans done by search (section 4): every read_text/write_text/open names an encoding (one devnull
-    fallback fixed); subprocess calls without a time limit fixed (taskkill in agents, crew setup/doctor);
-    json.loads guards (icon record); os.kill only on POSIX paths (OverflowError guard added);
-  - new finding C13 (security): the terminal live view accepted messages and "stop" from any web page —
-    fixed (X-Crew header + Host check), test written;
-  - new finding C9b: `crew setup` / `crew doctor` ran a bare "claude"/"codex" (not found on Windows when it
-    is claude.cmd) — now the full path from agents.which.
-- Next (in order): run `python3 -m unittest discover -s tests` from crew/ → fix what fails → confirm each
-  new test fails on the old code (git stash the fix, run the one test) → ruff + eslint + node --check →
-  commit in small commits → push to the working branch → dynamic sweep (API fuzzer, Playwright).
-- Open questions: releases — the brief says branch `Crew-AI`; this session's instructions say to push to
-  `claude/exciting-heisenberg-6w6gge`. Work is pushed there; merging to `Crew-AI` (which the owner's
-  updater reads) needs the owner's explicit go-ahead.
-- Release plan: fixes accumulate on the working branch; version 2.3.1 with plain notes once rounds 1–4
-  are in; the release reaches the owner's updater only when `Crew-AI` is updated.
+- Status: Cloud setup in progress (2026-09-28). The owner explicitly requires all further repository
+  work and execution in GitHub/cloud, not on their Windows computer.
+- Branch: `claude/exciting-heisenberg-6w6gge`; starting revision `d842ae7`.
+- Round: 1. The earlier handoff reports 156 tests passing (1 skipped), 41 campaign tests passing,
+  and clean lint. Those results have not yet been independently rerun in this continuation.
+- Done in this continuation: both root handoff files read fully; branch confirmed directly through
+  GitHub; no existing Actions workflow or runs found on this branch.
+- Cloud setup: add a read-only GitHub-hosted Linux test job, isolated Crew home, fake agents,
+  Chromium, the full suite, Python/JavaScript syntax checks and lint. The owner approved the necessary
+  exception to the test-before-push rule for setting up and running these cloud checks.
+- Next: inspect the first cloud run; then prove the requested P1 tests against pre-fix revisions and
+  record individual results. Then build/run the route-derived API fuzzer and whole-app browser sweep,
+  followed by rounds 2–11. C12 and Codex pipe cleanup remain open.
+- No application fixes made in this continuation yet. No new test results claimed.
+- Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
+  Version 2.3.1 and the installed-updater rehearsal require the owner's explicit approval.
 
 Rules for keeping this state: after each fix, add a ledger line (section 12) and update "Done" and "Next".
 After each round, write a one-paragraph round summary (section 11). Never rely on memory alone: if it is
@@ -399,7 +389,10 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
 
 (id · area · symptom · root cause · fix · test)
 
-### Fixed — written, not yet verified (the suite has not run yet; see section 0)
+Cloud continuation (2026-09-28): no new application fixes yet. Test infrastructure is being added;
+no additional before/after verification has run. See section 0.
+
+### Earlier fixes — passing suite reported in handoff; old-code proof still pending
 
 Tests are in crew/tests/test_campaign.py; each test's name starts with the ledger id.
 
