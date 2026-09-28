@@ -363,6 +363,7 @@ select { appearance: none; padding-right: 32px; cursor: pointer;
 .notice-line { justify-self: center; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); padding: 5px 12px;
                border-radius: 99px; background: var(--sunk); max-width: 92%; }
 .notice-line .i { width: 15px; height: 15px; }
+.thread > .earlier { justify-self: center; }
 .notice-line.bad { color: var(--bad); background: color-mix(in srgb, var(--bad) 10%, transparent); }
 .notice-line.good { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); }
 .typing { display: inline-flex; gap: 4px; padding: 6px 0; }

@@ -803,6 +803,55 @@ with sync_playwright() as p:
         self.assertEqual(delays["short"], 6500)
         self.assertGreaterEqual(delays["long"], 250 * 55)  # about a fifth of a second a word
 
+    LONG_CHAT = r"""
+import json, sys, time
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    page.goto(sys.argv[1].rsplit("#", 1)[0] + "#/chats")
+    page.wait_for_timeout(500)
+    page.goto(sys.argv[1])
+    page.wait_for_function("document.querySelectorAll('.turn-ai').length > 0", timeout=60000)
+    page.wait_for_timeout(300)
+    out = {"drawn": page.evaluate("document.querySelectorAll('.turn-ai').length"),
+           "button": page.evaluate("(document.querySelector('.thread > .earlier') || {}).textContent || ''")}
+    first = page.evaluate("document.querySelector('.thread > .turn-user .bubble').textContent")
+    if out["button"]:
+        page.click(".thread > .earlier")
+        page.wait_for_timeout(500)
+    out["after"] = page.evaluate("document.querySelectorAll('.turn-ai').length")
+    out["first_still_in_view"] = page.evaluate('''(text) => {
+        const el = [...document.querySelectorAll('.turn-user .bubble')].find((b) => b.textContent === text);
+        const r = el.getBoundingClientRect(); return r.bottom > 0 && r.top < window.innerHeight; }''', first)
+    print(json.dumps(out))
+    b.close()
+"""
+
+    def test_f9_a_long_chat_opens_at_once(self):
+        """A chat with hundreds of answers drew every one of them before showing anything (and each answer drawn
+        looked through all the ones before it): 1,500 answers took six seconds to appear."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            cid = s.api("POST", "/api/chats", {})["id"]
+            for i in range(200):
+                s.app.chats.db.add_message(cid, "user", f"Question {i}", {})
+                s.app.chats.db.add_message(cid, "assistant", f"Answer {i} with **some** words.", {"engine": "claude"})
+            out = subprocess.run([sys.executable, "-c", self.LONG_CHAT, f"http://127.0.0.1:{s.port}/#/chat/{cid}",
+                                  _chromium()], capture_output=True, text=True, timeout=180)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        seen = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertLessEqual(seen["drawn"], 60)  # the newest part first …
+        self.assertIn("Show 280 earlier messages", seen["button"])
+        self.assertEqual(seen["after"], 200)  # … and the rest when asked,
+        self.assertTrue(seen["first_still_in_view"])  # without losing one's place
+
 
 # ====================================================================== updates
 

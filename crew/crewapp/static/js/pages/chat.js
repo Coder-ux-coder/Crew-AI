@@ -489,6 +489,7 @@ function withCursor(html) {
   return m ? html.slice(0, m.index) + cur + html.slice(m.index) : html + cur;
 }
 
+const SHOWN_AT_FIRST = 120;  // messages of a chat drawn when it opens (the rest on request)
 const STEP_ICONS = { plan: 'map', web: 'globe', file: 'doc', search: 'search', run: 'terminal', agent: 'bot', skill: 'sparkles', setup: 'tool', todo: 'listcheck',
   schedule: 'clock', browser: 'globe', phone: 'phone', computer: 'monitor', connection: 'plug', tool: 'tool', account: 'key' };
 const FILE_ICONS = { web: 'globe', doc: 'doc', image: 'image', pdf: 'doc', table: 'table', file: 'doc' };
@@ -818,10 +819,14 @@ class ChatView {
     this.drawTop();
     clear(this.thread);
     this.turns = [];
+    this.lastTurn = null;
     const msgs = c.messages;
-    msgs.forEach((m, i) => {
+    // A long chat opens at once: its newest messages first, the earlier ones when asked for.
+    const first = Math.max(0, msgs.length - SHOWN_AT_FIRST);
+    if (first) this.thread.append(this.earlierButton(msgs.slice(0, first), c));
+    msgs.slice(first).forEach((m, j) => {
       if (m.role === 'user') this.thread.append(this.userEl(m.text, m.meta || {}));
-      else this.addTurn(new AiTurn(this, { engine: (m.meta && m.meta.engine) || c.engine || 'claude', meta: m.meta || {}, text: m.text, last: i === msgs.length - 1 }));
+      else this.addTurn(new AiTurn(this, { engine: (m.meta && m.meta.engine) || c.engine || 'claude', meta: m.meta || {}, text: m.text, last: first + j === msgs.length - 1 }));
     });
     this.refreshPlans();
     this.panelFiles();
@@ -852,8 +857,32 @@ class ChatView {
   addTurn(turn) {
     this.turns.push(turn);
     this.thread.append(turn.el);
-    this.thread.querySelectorAll('.turn-ai.last').forEach((el) => { if (el !== turn.el) el.classList.remove('last'); });
+    if (this.lastTurn && this.lastTurn !== turn) this.lastTurn.el.classList.remove('last');
     turn.el.classList.add('last');
+    this.lastTurn = turn;
+  }
+
+  // The earlier part of a long chat, drawn above the newest when the owner asks, keeping their place.
+  earlierButton(older, c) {
+    const b = h('button', { class: 'btn ghost sm earlier', type: 'button' }, icon('history'), `Show ${older.length} earlier messages`);
+    b.onclick = () => {
+      const fromBottom = this.view.scrollHeight - this.view.scrollTop;
+      const frag = document.createDocumentFragment();
+      const turns = [];
+      for (const m of older) {
+        if (m.role === 'user') frag.append(this.userEl(m.text, m.meta || {}));
+        else {
+          const t = new AiTurn(this, { engine: (m.meta && m.meta.engine) || c.engine || 'claude', meta: m.meta || {}, text: m.text });
+          turns.push(t);
+          frag.append(t.el);
+        }
+      }
+      b.replaceWith(frag);
+      this.turns = [...turns, ...this.turns];
+      turns.forEach((t) => t.drawPlan());
+      this.view.scrollTop = this.view.scrollHeight - fromBottom;
+    };
+    return b;
   }
 
   isLatestPlan(turn) {
