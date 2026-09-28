@@ -26,11 +26,12 @@ never copy it onto the owner's computer.)
 - Round 2 (server, data files, security) done (section 11): A49–A54, each with a test that fails on the old
   code; full suite 196 tests OK on edf262d, pushed; the cloud runs on 2826d11 (the rollover) and earlier
   were green on Python 3.12.
-- Still running: the clicking browser sweep (`sweep2`, every control of every screen), its laptop half is
-  clean apart from expected notices (empty phone form, deliberately missing pages, the blocked test
-  microphone).
-- Next: round 3 (models and effort everywhere; routing: tiers, subscriptions, limits, failover), then
-  rounds 4–11 (section 3); keep this section, the ledger and section 11 current after every step.
+- The clicking sweep finished: 120 screens, 786 clicks, nothing new (every flag explained, section 12).
+- Rounds 3, 4, 5, 7, 9 partly done (section 11): A55–A58, F8, F9, each with a test that fails on the old
+  code; the clicking sweep finished clean.
+- Next: round 6 (team engine line by line), round 8 (front end line by line), round 10 (Windows by
+  reading), the rest of the checklists in sections 7–9, then a clean round. Keep this section, the ledger
+  and section 11 current after every step.
 - Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
   taskkill, a file held open during a conversation copy or a database set-aside, the message boxes.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
@@ -402,6 +403,14 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   it; the logs. Found and fixed: A49 (DNS rebinding), A50 (pages that escaped the sandbox), A51 (connections
   that never finish), A52 (damaged databases), A53 (a damaged project record), A54 (app.log unbounded). Also
   the owner's rollover request (A42–A48, C18, C19). Left: nothing from this round.
+- Rounds 3, 4, 5, 7 and 9 (partly) — 2026-09-28. Round 3: every catalogue model with every effort ran as
+  asked; the team parks a subscription until its real reset (weekly too) and never hands a seat to a parked
+  one; A55 (plain refusals). Round 4: A56 (plain update errors, notes always a list), A57 ("Update now" waits
+  for work in progress); the existing updater tests cover the rest of 7.3. Round 5: the rollover work (A42–
+  A48), F8, F9, attachment names (Urdu kept, Windows device names avoided). Round 7: A58 (the Library), 3,000
+  captures in 26 ms. Round 9: A52–A54, lessons at 20,000 (47 ms), a 3,000-message chat (33 ms from the
+  server; F9 for the page). Left: round 6 (the team engine line by line), round 8 (the front end line by
+  line), round 10 (Windows paths by reading), and the rest of rounds 3–9's checklists; then a clean round.
 
 ---------------------------------------------------------------------------------------------------------------
 
@@ -671,6 +680,13 @@ Round 9 (memory and continuity), begun:
   Python's caches), and the Library walked every one of them each time it opened · its own walk of the
   folder, which skipped only hidden files, not tool folders (the chat's file panel already skipped them) ·
   the Library uses the chat's walk (hidden and tool folders skipped) · test_a58_the_library_lists_what_…
+
+The clicking sweep (browser_sweep.py, every visible control of every screen clicked once, each on a fresh copy
+of its screen; 1280x650 and 390x844, light, plus the dark layout): 120 screens, 786 clicks, 87 minutes. All
+116 flags are the app behaving correctly: 84 "Crew is not allowed to use the microphone …" (the test browser
+has no microphone permission; that notice is the right one), 16 red notices and 4 console lines from Pair
+and Connect pressed with empty fields (a 400 with "Enter the IP address and port …"), and 16 from the pages
+it opens on purpose that do not exist (404, "That chat is gone"). Nothing new to fix.
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
