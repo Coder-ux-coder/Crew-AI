@@ -24,10 +24,10 @@ from pathlib import Path
 from unittest import mock
 
 try:  # `python -m unittest discover -s tests` imports the modules by their own names
-    from test_app import ENV, HOME, ROOT, AppServer, _chromium, until
+    from test_app import ENV, HOME, ROOT, WINDOWLESS, AppServer, _chromium, until
     from test_e2e import dump_chat, make_run, run_orch
 except ImportError:
-    from tests.test_app import ENV, HOME, ROOT, AppServer, _chromium, until
+    from tests.test_app import ENV, HOME, ROOT, WINDOWLESS, AppServer, _chromium, until
     from tests.test_e2e import dump_chat, make_run, run_orch
 
 from crewapp import chat as chat_mod  # noqa: E402
@@ -522,6 +522,23 @@ class SettingsTests(unittest.TestCase):
             self.assertNotIn("EXTRA_SETTING", (home / "secrets.env").read_text(encoding="utf-8"))
             with self.assertRaises(ValueError):
                 settings_mod.save_secret("OTHER_API_KEY", 12345)
+
+
+class LogTests(unittest.TestCase):
+    def test_a54_the_log_does_not_grow_for_ever(self):
+        """Started from the desktop icon (the owner's usual way), every message went to app.log for as long as
+        Crew was used: it was never trimmed."""
+        home = Path(tempfile.mkdtemp(prefix="crew-windowless-"))
+        old = "an old line\n" * 600_000  # about 7 MB
+        (home / "app.log").write_text(old, encoding="utf-8")
+        env = {**os.environ, **ENV, "CREW_HOME": str(home), "PYTHONPATH": str(ROOT)}
+        proc = subprocess.run([sys.executable, "-X", "utf8", "-c", WINDOWLESS, "no-such-command"], cwd=str(ROOT),
+                              env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertLess((home / "app.log").stat().st_size, 100_000)  # a fresh log …
+        self.assertIn("Crew starting: no-such-command", (home / "app.log").read_text(encoding="utf-8"))
+        self.assertEqual((home / "app.log.1").read_text(encoding="utf-8"), old)  # … and the last one is kept
+        shutil.rmtree(home, ignore_errors=True)
 
 
 class DamagedDatabaseTests(unittest.TestCase):

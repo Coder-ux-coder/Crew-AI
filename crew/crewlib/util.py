@@ -64,6 +64,20 @@ def atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+LOG_LIMIT = 5_000_000  # bytes: a larger log starts again, and the last one is kept as app.log.1
+
+
+def open_log(path: Path):
+    """Crew's log, for appending; one that has grown large starts afresh (the last one is kept as app.log.1).
+    (crewlib/__main__.py has its own copy: it runs before anything else is imported.)"""
+    try:
+        if path.stat().st_size > LOG_LIMIT:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:  # not there yet, or held by another Crew window (Windows): carry on appending
+        pass
+    return open(path, "a", encoding="utf-8", buffering=1)
+
+
 _problems_lock = threading.Lock()
 
 

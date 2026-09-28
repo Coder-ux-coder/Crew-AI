@@ -12,13 +12,26 @@ from pathlib import Path
 
 WINDOWLESS = sys.stdout is None or sys.stderr is None
 LOG = None
+LOG_LIMIT = 5_000_000  # bytes: a larger log starts again, and the last one is kept as app.log.1
+
+
+def open_log(path: Path):
+    """Crew's log, for appending; one that has grown large starts afresh (the last one is kept as app.log.1).
+    The same as util.open_log, kept here because this runs before anything else is imported."""
+    try:
+        if path.stat().st_size > LOG_LIMIT:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:  # not there yet, or held by another Crew window (Windows): carry on appending
+        pass
+    return open(path, "a", encoding="utf-8", buffering=1)
+
 
 if WINDOWLESS:
     for folder in (Path(os.environ.get("CREW_HOME") or Path.home() / ".crew"), Path(os.environ.get("TEMP") or "/tmp")):
         try:
             folder.mkdir(parents=True, exist_ok=True)
             LOG = folder / "app.log"
-            stream = open(LOG, "a", encoding="utf-8", buffering=1)
+            stream = open_log(LOG)
             break
         except OSError:
             continue

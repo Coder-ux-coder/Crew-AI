@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from crewlib import claude_cli, connections as conn_mod, lessons, usage as usage_mod
-from crewlib.util import atomic_write, crew_home, data_problems
+from crewlib.util import atomic_write, crew_home, data_problems, open_log
 
 from . import browser as browser_mod
 from . import captures, chat, computer as computer_mod, launcher, phone as phone_mod, settings, skills, updater, writer
@@ -1286,7 +1286,7 @@ class CrewServer(ThreadingHTTPServer):
 def _log_when_windowless() -> None:
     """Started from the desktop icon there is no console: keep messages in ~/.crew/app.log."""
     if sys.stdout is None or sys.stderr is None:
-        log = open(crew_home() / "app.log", "a", encoding="utf-8", buffering=1)
+        log = open_log(crew_home() / "app.log")
         sys.stdout = sys.stdout or log
         sys.stderr = sys.stderr or log
 
