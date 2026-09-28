@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -60,6 +62,65 @@ def atomic_write(path: Path, text: str) -> None:
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(text)
     os.replace(tmp, path)
+
+
+_problems_lock = threading.Lock()
+
+
+def db_damaged(exc: BaseException) -> bool:
+    """SQLite's answer for a file that is not (or no longer) a database it can read; not for one that is busy,
+    locked or missing."""
+    if not isinstance(exc, sqlite3.DatabaseError) or isinstance(exc, sqlite3.OperationalError):
+        return False
+    words = str(exc).lower()
+    return type(exc) is sqlite3.DatabaseError or "malformed" in words or "not a database" in words
+
+
+def open_db(path: Path, prepare, what: str, **connect) -> sqlite3.Connection:
+    """Open one of Crew's SQLite files; `prepare` sets it up (tables, settings). A file that cannot be read as a
+    database at all is kept under a dated name (never deleted, with its -wal and -shm companions), a new one
+    takes its place, and the owner is told (data_problems). `what` names it in the owner's words."""
+    for attempt in (1, 2):
+        db = sqlite3.connect(str(path), **connect)
+        try:
+            prepare(db)
+            return db
+        except sqlite3.DatabaseError as exc:
+            db.close()
+            if attempt == 2 or not db_damaged(exc):
+                raise
+            kept = path.with_name(f"{path.name}.damaged-{time.strftime('%Y%m%d-%H%M%S')}")
+            try:
+                os.replace(path, kept)
+            except FileNotFoundError:
+                continue  # another Crew process set it aside a moment ago
+            except OSError:
+                raise exc from None  # held open elsewhere (Windows): not moved, so nothing new is written over it
+            for extra in ("-wal", "-shm"):
+                try:
+                    os.replace(path.with_name(path.name + extra), kept.with_name(kept.name + extra))
+                except OSError:
+                    pass
+            _note_problem(what, kept.name)
+    raise AssertionError("unreachable")
+
+
+def data_problems() -> list[dict]:
+    """The files Crew found damaged and set aside, newest first (for the app to tell the owner)."""
+    try:
+        items = json.loads((crew_home() / "data-problems.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [x for x in items if isinstance(x, dict) and x.get("kept")] if isinstance(items, list) else []
+
+
+def _note_problem(what: str, kept: str) -> None:
+    with _problems_lock:
+        items = [{"what": what, "kept": kept, "at": time.time()}, *data_problems()][:20]
+        try:
+            atomic_write(crew_home() / "data-problems.json", json.dumps(items))
+        except OSError:
+            pass
 
 
 def clip(text: str, limit: int) -> str:

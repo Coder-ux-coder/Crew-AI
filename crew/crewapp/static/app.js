@@ -447,6 +447,19 @@ function tellSettingsProblem(p) {
     { bad: true, ms: 20000, action: 'Details', onAction: () => { location.hash = '#/settings'; } });
 }
 
+// A database Crew could not read was kept under another name and a new one started: say so, once for each.
+function tellDataProblems(list) {
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem('crew.dataProblemsSeen') || '[]'); } catch (e) { /* private window */ }
+  const fresh = (list || []).filter((p) => p && p.kept && !seen.includes(p.kept));
+  if (!fresh.length) return;
+  try { localStorage.setItem('crew.dataProblemsSeen', JSON.stringify([...seen, ...fresh.map((p) => p.kept)].slice(-40))); } catch (e) { /* private window */ }
+  for (const p of fresh) {
+    toast(`Crew could not read ${p.what} (the file was damaged), so it started a new one. The old file is kept, untouched, as ${p.kept} in Crew’s folder.`,
+      { bad: true, ms: 20000 });
+  }
+}
+
 // ------------------------------------------------------------------ start
 
 async function boot() {
@@ -460,6 +473,7 @@ async function boot() {
   store.isLocal = !!store.overview.local;
   applyLook(store.overview.app || {});
   tellSettingsProblem(store.overview.settings_problem);
+  tellDataProblems(store.overview.data_problems);
   window.addEventListener('hashchange', route);
   route();
   refreshRecent();

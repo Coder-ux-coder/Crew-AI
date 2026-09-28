@@ -30,7 +30,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from crewlib import claude_cli, connections as conn_mod, lessons, usage as usage_mod
-from crewlib.util import atomic_write, crew_home
+from crewlib.util import atomic_write, crew_home, data_problems
 
 from . import browser as browser_mod
 from . import captures, chat, computer as computer_mod, launcher, phone as phone_mod, settings, skills, updater, writer
@@ -660,7 +660,7 @@ class Handler(BaseHTTPRequestHandler):
             "accounts": st["accounts"],
             "runs": self.app.runs.list()[:12], "chats": self.app.chats.list()[:30],
             "browser": self.app.browser.status(), "phone_access": self.app.phone_access,
-            "local": self._loopback(), "settings_problem": settings.problem(),
+            "local": self._loopback(), "settings_problem": settings.problem(), "data_problems": data_problems(),
         })
 
     # ----------------------------------------------------------------- runs

@@ -9,11 +9,10 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from .util import crew_home
+from .util import crew_home, open_db
 
 
-def _db() -> sqlite3.Connection:
-    db = sqlite3.connect(crew_home() / "usage.db", timeout=30, isolation_level=None)
+def _prepare(db: sqlite3.Connection) -> None:
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=30000")
@@ -24,7 +23,11 @@ def _db() -> sqlite3.Connection:
             cache_read INTEGER DEFAULT 0, cache_write INTEGER DEFAULT 0, turns INTEGER DEFAULT 0,
             PRIMARY KEY (account, day));
     """)
-    return db
+
+
+def _db() -> sqlite3.Connection:
+    return open_db(crew_home() / "usage.db", _prepare, "the record of your subscriptions' usage", timeout=30,
+                   isolation_level=None)
 
 
 def record_rate(account: str, info: dict) -> None:
@@ -94,14 +97,18 @@ def limited_until(lim: dict | None, at: float | None = None) -> float:
 
 
 def snapshot(days: int = 7) -> dict:
-    """Everything the Usage screen shows: limits per account and tokens for the last `days` days."""
-    db = _db()
+    """Everything the Usage screen shows: limits per account and tokens for the last `days` days. Figures that
+    cannot be read (the file is held by another program, the disk fails) count as none: they only advise."""
     try:
-        limits = {r["account"]: dict(r) for r in db.execute("SELECT * FROM limits")}
-        since = time.strftime("%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400))
-        rows = [dict(r) for r in db.execute("SELECT * FROM tokens WHERE day >= ? ORDER BY day", (since,))]
-    finally:
-        db.close()
+        db = _db()
+        try:
+            limits = {r["account"]: dict(r) for r in db.execute("SELECT * FROM limits")}
+            since = time.strftime("%Y-%m-%d", time.localtime(time.time() - (days - 1) * 86400))
+            rows = [dict(r) for r in db.execute("SELECT * FROM tokens WHERE day >= ? ORDER BY day", (since,))]
+        finally:
+            db.close()
+    except sqlite3.Error:
+        limits, rows = {}, []
     now = time.time()
     for lim in limits.values():  # a window that has reset since we last heard counts as empty
         if lim.get("five_reset") and lim["five_reset"] < now:

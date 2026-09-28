@@ -25,7 +25,7 @@ from crewlib.usage import limited_until
 from crewlib.tiers import vendor_of
 from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, _kill_tree, _popen, _toml_str, child_env, codex_effort,
                             copy_claude_session, default_claude_home, default_codex_home, drain, which)
-from crewlib.util import atomic_write, clip, crew_home, load_env_file, now
+from crewlib.util import atomic_write, clip, crew_home, load_env_file, now, open_db
 
 from . import settings as settings_mod
 from .sse import hub
@@ -253,21 +253,24 @@ class ChatDB:
                "kind": "TEXT DEFAULT 'chat'"}
 
     def __init__(self, path: Path):
-        self.db = sqlite3.connect(str(path), timeout=30, isolation_level=None, check_same_thread=False)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
         self._lock = threading.RLock()
-        self.db.executescript("""
+        self.db = open_db(path, self._prepare, "your chats and workflows", timeout=30, isolation_level=None,
+                          check_same_thread=False)
+
+    def _prepare(self, db: sqlite3.Connection) -> None:
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA journal_mode=WAL")
+        db.executescript("""
             CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, title TEXT, created REAL, updated REAL,
                 session_id TEXT, model TEXT, effort TEXT);
             CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT, role TEXT,
                 text TEXT, ts REAL, meta TEXT);
             CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id);
         """)
-        have = {r[1] for r in self.db.execute("PRAGMA table_info(chats)")}
+        have = {r[1] for r in db.execute("PRAGMA table_info(chats)")}
         for col, decl in self.COLUMNS.items():
             if col not in have:
-                self.db.execute(f"ALTER TABLE chats ADD COLUMN {col} {decl}")
+                db.execute(f"ALTER TABLE chats ADD COLUMN {col} {decl}")
 
     def q(self, sql: str, args=()) -> list[dict]:
         with self._lock:

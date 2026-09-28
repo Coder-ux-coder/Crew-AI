@@ -17,7 +17,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from .util import atomic_write, crew_home, now
+from .util import atomic_write, crew_home, now, open_db
 
 CATEGORIES = ("usage", "speed", "quality", "models", "subagents", "tooling", "process", "errors", "project", "ceo")
 EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
@@ -28,7 +28,11 @@ _SEEDS = Path(__file__).with_name("seed_lessons.json")
 
 
 def _db() -> sqlite3.Connection:
-    db = sqlite3.connect(crew_home() / "memory.db", timeout=30, isolation_level=None)
+    return open_db(crew_home() / "memory.db", _prepare, "the team's lessons and record", timeout=30,
+                   isolation_level=None)
+
+
+def _prepare(db: sqlite3.Connection) -> None:
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=30000")
@@ -59,7 +63,6 @@ def _db() -> sqlite3.Connection:
         db.execute("UPDATE effort_outcomes SET first_pass = CASE WHEN rounds <= 1 THEN 1 ELSE 0 END")
         db.execute("DELETE FROM lessons WHERE source='crew-effort-record'")  # DERIVED
         db.execute("INSERT OR IGNORE INTO memo(key,value) VALUES('first_pass_fixed','1')")
-    return db
 
 
 def _tokens(text: str) -> set[str]:

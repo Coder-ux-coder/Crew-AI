@@ -43,6 +43,7 @@ from crewapp.sse import hub  # noqa: E402
 from crewlib import agents, claude_cli, cli, connections, gitops, lessons, orchestrator, web  # noqa: E402
 from crewlib.config import Account  # noqa: E402
 from crewlib.store import Store  # noqa: E402
+from crewlib import usage as usage_mod, util as util_mod  # noqa: E402
 from crewlib.util import Redactor, load_env_file  # noqa: E402
 
 
@@ -521,6 +522,37 @@ class SettingsTests(unittest.TestCase):
             self.assertNotIn("EXTRA_SETTING", (home / "secrets.env").read_text(encoding="utf-8"))
             with self.assertRaises(ValueError):
                 settings_mod.save_secret("OTHER_API_KEY", 12345)
+
+
+class DamagedDatabaseTests(unittest.TestCase):
+    def test_a52_a_damaged_database_is_kept_and_crew_still_opens(self):
+        """A damaged chat history (app.db) stopped Crew from opening at all; a damaged usage record (usage.db)
+        made every chat message fail; damaged lessons (memory.db) broke the lessons page."""
+        with TempHome() as home:
+            junk = b"the disk went wrong here " * 200
+            for name in ("app.db", "usage.db", "memory.db"):
+                (home / name).write_bytes(junk)
+            app = server.App(0, False)  # before: DatabaseError, and Crew did not open
+            try:
+                cid = app.chats.create()["id"]
+                self.assertEqual(app.chats.get(cid)["title"], "New chat")
+                self.assertEqual(usage_mod.snapshot(1)["limits"], {})
+                lessons.add("process", "Small tasks finish sooner.", source="agent:lead")
+                self.assertIn("Small tasks finish sooner.", [x["text"] for x in lessons.top(100)])
+            finally:
+                app.chats.shutdown()
+            for name in ("app.db", "usage.db", "memory.db"):
+                (kept,) = home.glob(f"{name}.damaged-*")  # each is kept, as it was
+                self.assertEqual(kept.read_bytes(), junk)
+            told = util_mod.data_problems()
+            self.assertEqual(sorted(p["kept"].split(".damaged-")[0] for p in told), ["app.db", "memory.db", "usage.db"])
+            self.assertTrue(all(p["what"] and p["at"] for p in told))
+
+    def test_a52_usage_that_cannot_be_read_does_not_stop_a_chat(self):
+        with TempHome():
+            with mock.patch.object(usage_mod, "_db", side_effect=sqlite3.OperationalError("disk I/O error")):
+                snap = usage_mod.snapshot(1)  # Windows holds the file, or the disk fails: no figures, no stop
+            self.assertEqual((snap["limits"], snap["tokens"]), ({}, {}))
 
 
 class AppPieceTests(unittest.TestCase):
