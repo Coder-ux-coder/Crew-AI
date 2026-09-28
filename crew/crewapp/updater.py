@@ -55,15 +55,22 @@ def check() -> dict:
     out = {"current": mine.get("version"), "date": mine.get("date"), "available": False, "latest": None, "notes": []}
     try:
         raw = _get(f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/crew/VERSION.json?t={int(time.time())}")
-        latest = json.loads(raw)
-    except Exception as exc:
-        out["error"] = f"Could not reach GitHub: {exc}"
+    except Exception as exc:  # no connection, a firewall, GitHub down: the details go to the log
+        print(f"update check: {exc!r}")
+        out["error"] = ("Could not reach GitHub to look for a new version (no internet connection, or a firewall "
+                        "or proxy in the way). Crew will look again later.")
         return out
+    try:
+        latest = json.loads(raw)
+    except ValueError:
+        latest = None
     if not isinstance(latest, dict) or not isinstance(latest.get("version"), str):
         out["error"] = "GitHub's answer was not a Crew version (a web proxy may have replaced it). Try again later."
         return out
+    notes = latest.get("notes") or []
     out["latest"] = latest.get("version")
-    out["notes"] = latest.get("notes") or []
+    out["notes"] = [notes] if isinstance(notes, str) else [str(n) for n in notes if isinstance(n, (str, int, float))] \
+        if isinstance(notes, list) else []
     out["available"] = _parse(latest.get("version", "0")) > _parse(mine.get("version", "0"))
     st = crew_home() / "update.json"
     atomic_write(st, json.dumps({**out, "checked": time.time()}))
@@ -199,8 +206,10 @@ def install() -> dict:
 def _install() -> dict:
     try:
         data = _get(f"https://github.com/{REPO}/archive/refs/heads/{BRANCH}.zip", timeout=180)
-    except Exception as exc:  # noqa: BLE001 — no network, a proxy, GitHub down …
-        raise UpdateError(f"The update could not be downloaded ({exc}). Nothing was changed; try again later.") from None
+    except Exception as exc:  # noqa: BLE001 — no network, a proxy, GitHub down … (the details go to the log)
+        print(f"update download: {exc!r}")
+        raise UpdateError("The update could not be downloaded (no internet connection, or a firewall or proxy in the "
+                          "way). Nothing was changed; try again later.") from None
     tmp = Path(tempfile.mkdtemp(prefix="crew-update-"))
     try:
         try:
@@ -211,7 +220,9 @@ def _install() -> dict:
                 top = names[0].split("/")[0]
                 zf.extractall(tmp)
         except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, ValueError) as exc:
-            raise UpdateError(f"The download was incomplete or damaged ({exc}). Nothing was changed; try again.") from None
+            print(f"update download: {exc!r}")
+            raise UpdateError("The download was incomplete or damaged (the connection may have dropped, or a proxy "
+                              "changed it). Nothing was changed; try again.") from None
         except OSError as exc:
             raise UpdateError(f"The update could not be unpacked ({exc.strerror or exc}). Nothing was changed; check "
                               "that the disk is not full, then try again.") from None

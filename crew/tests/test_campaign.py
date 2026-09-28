@@ -836,6 +836,7 @@ class UpdaterSafetyTests(unittest.TestCase):
         with self.assertRaises(updater.UpdateError) as cm:
             updater.install()
         self.assertIn("could not be downloaded", str(cm.exception))
+        self.assertNotIn("unreachable", str(cm.exception))  # A56: Python's words stay in the log
         self.assertEqual(self.program(), before)
 
     def test_a8_add_ons_that_do_not_install_never_stop_an_update(self):
@@ -853,6 +854,26 @@ class UpdaterSafetyTests(unittest.TestCase):
             with self.assertRaises(updater.UpdateError):
                 updater.install()
         self.assertEqual(updater.install()["version"], "2.3.1")
+
+    def test_a56_an_update_check_that_fails_says_so_plainly(self):
+        """The Settings page showed Python's words when the check failed ("Could not reach GitHub: <urlopen error
+        [Errno 11001] getaddrinfo failed>"), even when the network was fine and a proxy had answered with a page
+        of its own ("…: Expecting value: line 1 column 1 (char 0)"); release notes written as one line of text
+        (not a list) broke the Settings page."""
+        import urllib.error
+        with TempHome(), mock.patch.object(updater, "_get",
+                                           side_effect=urllib.error.URLError("[Errno 11001] getaddrinfo failed")):
+            err = updater.check()["error"]
+        self.assertIn("Could not reach GitHub", err)
+        self.assertNotIn("Errno", err)
+        with TempHome(), mock.patch.object(updater, "_get", return_value=b"<html>Sign in to the proxy</html>"):
+            err = updater.check()["error"]
+        self.assertIn("proxy", err)
+        self.assertNotIn("Expecting value", err)
+        with TempHome(), mock.patch.object(updater, "_get", return_value=json.dumps(
+                {"version": "99.0.0", "notes": "Chats move on at a usage limit"}).encode()):
+            info = updater.check()
+        self.assertEqual((info["available"], info["notes"]), (True, ["Chats move on at a usage limit"]))
 
     def test_a8_what_an_interrupted_update_left_is_tidied(self):
         (self.root / "crewlib" / "cli.py.new").write_text("HALF", encoding="utf-8")
