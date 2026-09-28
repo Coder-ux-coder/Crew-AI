@@ -1265,6 +1265,29 @@ class AppCampaignTests(unittest.TestCase):
             self.assertNotIn("['", text)
         s.api("DELETE", f"/api/chats/{cid}")
 
+    def test_a57_update_now_waits_for_work_in_progress(self):
+        """"Update now" installed and restarted Crew at once: an answer being written was cut off, and a running
+        project carried on with old and new program files mixed (the automatic update already waited)."""
+        s = self.s
+        installs = []
+        with mock.patch.object(updater, "install", side_effect=lambda: installs.append(1) or {"version": "9.9.9"}), \
+                mock.patch.object(updater, "restart_later", lambda port: None):
+            running = [{"id": "r1", "title": "Build a page about Lahore", "running": True}]
+            with mock.patch.object(s.app.runs, "list", return_value=running):
+                err = s.api("POST", "/api/update", {}, expect=409)["error"]
+            self.assertIn("Build a page about Lahore", err)
+            self.assertIn("stop it first", err)
+            cid, _ = self.new_chat()
+            session = s.app.chats.session(s.app.chats.get(cid))
+            session.busy = True
+            try:
+                err = s.api("POST", "/api/update", {}, expect=409)["error"]
+            finally:
+                session.busy = False
+            self.assertIn("answering in a chat", err)
+            s.api("DELETE", f"/api/chats/{cid}")
+        self.assertEqual(installs, [])  # nothing was installed
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"

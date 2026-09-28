@@ -101,16 +101,23 @@ class App:
 
     def idle(self, quiet_minutes: float = 30) -> bool:
         """A quiet moment for an automatic update: nothing running, and the owner has not used Crew for a while."""
-        if time.time() - self.last_action < quiet_minutes * 60:
-            return False
+        return time.time() - self.last_action >= quiet_minutes * 60 and not self.busy_with()
+
+    def busy_with(self) -> str:
+        """What is running now that an update would stop midway, in the owner's words ('' when nothing is)."""
         if any(getattr(s, "busy", False) for s in list(self.chats.sessions.values())):
-            return False
+            return "Crew is answering in a chat. Update when the answer has finished."
         if getattr(self.workflows, "_running", None):
-            return False
+            return "A workflow is running. Update when it has finished."
         try:
-            return not any(r.get("running") for r in self.runs.list())
+            running = [r for r in self.runs.list() if r.get("running")]
         except Exception:  # noqa: BLE001 — when in doubt, do not update
-            return False
+            return "Crew could not tell whether a project is running. Try again in a moment."
+        if running:
+            return (f"The team is working on “{running[0].get('title') or 'a project'}”. Updating now would stop it "
+                    "midway: update when it has finished, or stop it first (it keeps its work, and you can continue "
+                    "it after the update). Crew also updates by itself when nothing is running.")
+        return ""
 
     def auto_updates(self) -> None:
         """Every half hour: look for a newer Crew (every six hours) and, when the owner wants it, install it at a
@@ -1066,6 +1073,9 @@ class Handler(BaseHTTPRequestHandler):
     def api_update_install(self):
         if not self._loopback():
             return self._error(403, "Update Crew on the computer it runs on.")
+        busy = self.app.busy_with()
+        if busy:  # an answer being written, a workflow or a project would be stopped midway
+            return self._error(409, busy)
         old = updater.current().get("version")
         result = updater.install()
         updater.note_updated(old, result.get("version"), auto=False)
