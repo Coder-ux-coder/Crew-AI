@@ -150,6 +150,18 @@ class Store:
             db.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (key, dumps(value)))
 
+    def orchestrator_alive(self, max_age: float = 60.0) -> bool | None:
+        """Is this project's orchestrator running (its heartbeat is recent)? None for a project run by a Crew from
+        before the heartbeat existed, which never wrote one."""
+        beat = self.get("alive")
+        if not isinstance(beat, dict):
+            return None
+        try:
+            fresh = now() - float(beat.get("at") or 0) < max_age
+        except (TypeError, ValueError):
+            return False
+        return fresh and not beat.get("stopped")
+
     # ------------------------------------------------------------- messages
 
     def post(self, sender: str, kind: str, text: str, task_id: int | None = None, urgent: bool = False,

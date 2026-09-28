@@ -155,14 +155,14 @@ def _kill_tree(proc: subprocess.Popen, grace: float = 5.0) -> None:
         return
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=60)
         else:
             os.killpg(proc.pid, signal.SIGTERM)
             try:
                 proc.wait(grace)
             except subprocess.TimeoutExpired:
                 os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
+    except (OSError, subprocess.SubprocessError):  # already gone, or taskkill itself hung
         try:
             proc.kill()
         except OSError:
@@ -377,7 +377,10 @@ class ClaudeSeat:
                 msg = json.loads(line)
             except ValueError:
                 continue
-            self._handle(msg)
+            try:
+                self._handle(msg)
+            except Exception as exc:  # one odd message must not stop the reader: the seat would go silent
+                self._log(f"(Crew could not read that message: {exc!r})")
         code = proc.wait()
         self.busy = False
         time.sleep(0.05)
@@ -566,6 +569,24 @@ class CodexSeat:
         self.events.put(Event(kind, self.seat, {**data, "gen": self.gen}))
 
     def _turn(self, text: str) -> None:
+        try:
+            self._run_turn(text)
+        except Exception as exc:  # a turn that cannot run must still end: otherwise the seat waits for ever
+            self.proc = None
+            self.busy = False
+            self._log_note(f"Codex turn failed: {exc!r}")
+            self._emit("result", text=f"Codex could not run this turn: {exc}", is_error=True, subtype="error",
+                       limit_hit=False, auth_error=False, tokens=0, output_tokens=0, cost=0.0, duration_ms=0,
+                       session_id=self.session_id)
+
+    def _log_note(self, line: str) -> None:
+        try:
+            with self.log_path.open("a", encoding="utf-8") as fh:
+                fh.write(self.redact(line) + "\n")
+        except OSError:
+            pass
+
+    def _run_turn(self, text: str) -> None:
         exe = which("codex")
         if not exe:
             self.busy = False
@@ -701,12 +722,15 @@ def _drive_codex(cmd: list[str], prompt: str, cwd: Path, env: dict, log_path: Pa
 def read_codex_rate(account: Account, thread_id: str) -> dict | None:
     """Codex keeps rate-limit snapshots in its session files; return the latest as a Claude-style info dict."""
     home = account.profile_dir() or default_codex_home()
-    files = sorted((home / "sessions").glob(f"**/rollout-*{thread_id}*.jsonl"), key=lambda p: p.stat().st_mtime)
+    try:  # Codex may be writing or rotating its files at this very moment
+        files = sorted((home / "sessions").glob(f"**/rollout-*{thread_id}*.jsonl"), key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return None
     if not files:
         return None
     latest = None
     try:
-        with files[-1].open(encoding="utf-8") as fh:
+        with files[-1].open(encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 if '"rate_limits"' in line:
                     latest = line
@@ -714,21 +738,21 @@ def read_codex_rate(account: Account, thread_id: str) -> dict | None:
         return None
     if not latest:
         return None
-    try:
-        payload = json.loads(latest).get("payload") or {}
-    except ValueError:
-        return None
-    limits = payload.get("rate_limits") or {}
 
     def window(w: dict | None):
-        if not w:
+        if not isinstance(w, dict) or not w:
             return None
         resets = w.get("resets_at")
         if resets is None and w.get("resets_in_seconds") is not None:
             resets = int(now() + float(w["resets_in_seconds"]))
         return {"utilization": float(w.get("used_percent") or 0) / 100.0, "resetsAt": int(resets or 0)}
 
-    five, week = window(limits.get("primary")), window(limits.get("secondary"))
+    try:  # a line Codex was still writing, or a format Crew does not know: no reading this time
+        payload = json.loads(latest).get("payload") or {}
+        limits = payload.get("rate_limits") or {}
+        five, week = window(limits.get("primary")), window(limits.get("secondary"))
+    except (ValueError, TypeError, AttributeError):
+        return None
     worst = max([w for w in (five, week) if w], key=lambda w: w["utilization"], default=None)
     return {
         "status": "rejected" if worst and worst["utilization"] >= 1.0 else "allowed",

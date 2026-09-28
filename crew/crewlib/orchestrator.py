@@ -8,6 +8,7 @@ resumed.
 
 from __future__ import annotations
 
+import os
 import queue
 import random
 import shutil
@@ -28,6 +29,8 @@ from .tools import _fmt_msg, _mentions, owner_words
 from .util import Redactor, atomic_write, clip, crew_home, hhmm, human_duration, load_env_file, now
 
 TICK = 1.0
+HEARTBEAT = 15.0          # seconds between "this project's orchestrator is alive" notes (read by the app)
+ALIVE_SECONDS = 60.0      # a note older than this: the orchestrator is gone
 CONTEST_KINDS = ("build", "fix", "test", "docs")  # work whose two versions can be compared side by side
 CONTESTS_SOME = 2         # head-to-heads per project when the owner chose "some"
 CONTEST_WAIT = 15 * 60    # how long a finished version waits for its rival before it is checked alone
@@ -256,7 +259,34 @@ class Orchestrator:
 
     # =================================================================== run
 
+    def start_heartbeat(self) -> None:
+        """Note every few seconds, from a thread of its own, that this orchestrator is alive: a slow step in the main
+        loop must not make a live project look stopped. The app (and `crew resume`) read the note, so a project
+        that is running is never started a second time — two orchestrators on one project would work against
+        each other."""
+        self._beating = threading.Event()
+        self.store.set("alive", {"pid": os.getpid(), "at": now()})
+
+        def beat() -> None:
+            while not self._beating.wait(HEARTBEAT):
+                try:
+                    self.store.set("alive", {"pid": os.getpid(), "at": now()})
+                except Exception:  # noqa: BLE001 — a missed note only makes the project look quieter
+                    pass
+
+        threading.Thread(target=beat, daemon=True, name="crew-heartbeat").start()
+
+    def stop_heartbeat(self) -> None:
+        beating = getattr(self, "_beating", None)
+        if beating is not None:
+            beating.set()
+        try:
+            self.store.set("alive", {"pid": os.getpid(), "at": now(), "stopped": True})
+        except Exception:  # noqa: BLE001
+            pass
+
     def run(self) -> str:
+        self.start_heartbeat()
         try:
             self.prepare()
             if not self.resume:
@@ -276,7 +306,10 @@ class Orchestrator:
             self.say(f"The orchestrator hit an internal error and stopped: {exc}")
             self.set_phase("failed")
         finally:
-            self.shutdown()
+            try:
+                self.shutdown()
+            finally:
+                self.stop_heartbeat()
         return self.phase()
 
     # ---------------------------------------------------------------- refine
@@ -1818,7 +1851,10 @@ class Orchestrator:
         self.store.set("delivered", {"at": now(), "where": where})
         self.write_report(where)
         self.say(f"Delivered. The result is in {where}. The full report is ready.", urgent=True)
-        self.retrospective()
+        try:
+            self.retrospective()
+        except Exception:  # what the run taught is saved when it can be; it never turns a delivery into a failure
+            self.log("retrospective: " + traceback.format_exc())
         self.set_phase("done")
 
     # ================================================================== CEO
@@ -2035,7 +2071,10 @@ class Orchestrator:
 
     def retrospective(self) -> None:
         """Save what this run taught us: cost model, failovers, stalls, the CEO's effort lessons, and the lead's own."""
-        update_cost_model(self.store, self.cfg)
+        try:
+            update_cost_model(self.store, self.cfg)
+        except Exception as exc:  # the memory may be locked or damaged: the other lessons are still saved
+            self.log(f"cost model: {exc}")
         try:
             lessons.derive_ceo_lessons()
         except Exception as exc:  # lessons must never break delivery
@@ -2093,16 +2132,32 @@ class Orchestrator:
 
 
 def lessons_cost_model() -> dict:
+    """What past projects taught about cost: tokens per size unit (per model) and usage per token (per account).
+    Empty when there is nothing yet, or when the memory cannot be read right now (it is locked, or damaged):
+    the scheduler then plans without it rather than stopping the project."""
+    import json
+    import sqlite3
+
     from .lessons import _db
 
-    db = _db()
     try:
-        row = db.execute("SELECT value FROM memo WHERE key='cost_model'").fetchone()
-    finally:
-        db.close()
-    import json
+        db = _db()
+        try:
+            row = db.execute("SELECT value FROM memo WHERE key='cost_model'").fetchone()
+        finally:
+            db.close()
+        value = json.loads(row["value"]) if row else {}
+    except (sqlite3.Error, ValueError, TypeError):
+        return {}
 
-    return json.loads(row["value"]) if row else {}
+    def numbers(table) -> dict[str, float]:
+        if not isinstance(table, dict):
+            return {}
+        return {str(k): float(v) for k, v in table.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+    if not isinstance(value, dict):
+        return {}
+    return {"tokens_per_unit": numbers(value.get("tokens_per_unit")), "util_per_token": numbers(value.get("util_per_token"))}
 
 
 def update_cost_model(store: Store, cfg: Config) -> None:

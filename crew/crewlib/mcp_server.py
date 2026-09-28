@@ -48,8 +48,11 @@ def serve() -> None:
         except ValueError:
             _reply(None, error={"code": -32700, "message": "parse error"})
             continue
+        if not isinstance(msg, dict):  # e.g. a batch: not used by Claude Code or Codex; answered, never fatal
+            _reply(None, error={"code": -32600, "message": "invalid request"})
+            continue
         method, msg_id = msg.get("method"), msg.get("id")
-        params = msg.get("params") or {}
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
         try:
             if method == "initialize":
                 _reply(msg_id, {
@@ -65,7 +68,7 @@ def serve() -> None:
             elif method == "tools/call":
                 text, is_error = call(ctx, params.get("name", ""), params.get("arguments") or {})
                 _reply(msg_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
-            elif msg_id is not None and not method.startswith("notifications/"):
+            elif msg_id is not None and not str(method or "").startswith("notifications/"):
                 _reply(msg_id, error={"code": -32601, "message": f"method not found: {method}"})
         except Exception as exc:  # never let one bad call kill the agent's tool server
             sys.stderr.write(traceback.format_exc())

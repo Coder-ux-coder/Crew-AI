@@ -92,9 +92,10 @@ def _state_path() -> Path:
 
 def state() -> dict:
     try:
-        return json.loads(_state_path().read_text(encoding="utf-8"))
+        data = json.loads(_state_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def update(path: str | None = None) -> tuple[bool, str]:
@@ -124,6 +125,10 @@ def update(path: str | None = None) -> tuple[bool, str]:
 
 def update_if_stale(hours: float = 20) -> tuple[bool, str] | None:
     """Update at most once a day (called when the app starts)."""
-    if time.time() - float(state().get("last_update") or 0) < hours * 3600:
+    try:
+        last = float(state().get("last_update") or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if time.time() - last < hours * 3600:
         return None
     return update()

@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
+import time
 from pathlib import Path
 
 from .util import atomic_write, crew_home
@@ -23,16 +25,32 @@ def _path() -> Path:
     return crew_home() / "connections.json"
 
 
-def load() -> dict:
+def _read() -> tuple[dict, bool]:
+    """(the connections, whether the file on disk was readable). A missing file is fine; a damaged one is not."""
     try:
         data = json.loads(_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"mcp": {}}, True
     except (OSError, ValueError):
-        data = {}
-    data.setdefault("mcp", {})
-    return data
+        return {"mcp": {}}, False
+    if not isinstance(data, dict):
+        return {"mcp": {}}, False
+    servers = data.get("mcp")
+    data["mcp"] = {str(k): v for k, v in servers.items() if isinstance(v, dict)} if isinstance(servers, dict) else {}
+    return data, isinstance(servers, dict) or servers is None
+
+
+def load() -> dict:
+    return _read()[0]
 
 
 def _save(data: dict) -> None:
+    if _path().is_file() and not _read()[1]:
+        # The file cannot be read (damaged, or edited by hand): keep it, under a dated name, before writing anew.
+        try:
+            shutil.copyfile(_path(), _path().with_name(f"connections.json.damaged-{time.strftime('%Y%m%d-%H%M%S')}"))
+        except OSError:
+            pass
     atomic_write(_path(), json.dumps(data, indent=1, ensure_ascii=False))
     if os.name != "nt":
         os.chmod(_path(), 0o600)
@@ -47,15 +65,23 @@ def listing() -> list[dict]:
     """For the Connections screen: no secret values, only hints."""
     out = []
     for name, srv in sorted(load()["mcp"].items()):
+        args = srv.get("args") if isinstance(srv.get("args"), list) else []
+        headers = srv.get("headers") if isinstance(srv.get("headers"), dict) else {}
+        env = srv.get("env") if isinstance(srv.get("env"), dict) else {}
         out.append({"name": name, "type": srv.get("type", "stdio"), "enabled": srv.get("enabled", True),
-                    "url": srv.get("url", ""), "command": " ".join([srv.get("command", ""), *srv.get("args", [])]).strip(),
-                    "headers": {k: _mask(v) for k, v in (srv.get("headers") or {}).items()},
-                    "env": sorted((srv.get("env") or {}).keys()), "source": srv.get("source", "you")})
+                    "url": str(srv.get("url") or ""),
+                    "command": " ".join([str(srv.get("command") or ""), *map(str, args)]).strip(),
+                    "headers": {str(k): _mask(v) for k, v in headers.items()},
+                    "env": sorted(str(k) for k in env), "source": srv.get("source", "you")})
     return out
 
 
 def add_mcp(name: str, kind: str, url: str = "", headers: dict | None = None, command: str = "",
             args: list[str] | None = None, env: dict | None = None, source: str = "you") -> dict:
+    if not all(isinstance(x, str) for x in (name or "", kind or "", url or "", command or "")) \
+            or not isinstance(headers or {}, dict) or not isinstance(env or {}, dict) \
+            or not isinstance(args or [], list):
+        raise ValueError("Fill in the connection's name, and its web address or program, as text.")
     name = (name or "").strip()
     if not NAME_RE.match(name):
         raise ValueError("Give the connection a short name: letters, digits, - or _.")
@@ -105,13 +131,18 @@ def mcp_servers() -> dict:
         if not srv.get("enabled", True):
             continue
         if srv.get("type") in ("http", "sse"):
-            entry = {"type": srv["type"], "url": srv["url"]}
-            if srv.get("headers"):
-                entry["headers"] = dict(srv["headers"])
+            if not srv.get("url"):
+                continue  # an entry without its address (a hand edit) cannot be used
+            entry = {"type": srv["type"], "url": str(srv["url"])}
+            if isinstance(srv.get("headers"), dict) and srv["headers"]:
+                entry["headers"] = {str(k): str(v) for k, v in srv["headers"].items()}
         else:
-            entry = {"type": "stdio", "command": srv.get("command", ""), "args": list(srv.get("args") or [])}
-            if srv.get("env"):
-                entry["env"] = dict(srv["env"])
+            if not srv.get("command"):
+                continue
+            args = srv.get("args") if isinstance(srv.get("args"), list) else []
+            entry = {"type": "stdio", "command": str(srv["command"]), "args": [str(a) for a in args]}
+            if isinstance(srv.get("env"), dict) and srv["env"]:
+                entry["env"] = {str(k): str(v) for k, v in srv["env"].items()}
         out[name] = entry
     return out
 
@@ -136,7 +167,9 @@ def import_claude_desktop() -> list[str]:
         return []
     try:
         servers = (json.loads(path.read_text(encoding="utf-8")) or {}).get("mcpServers") or {}
-    except (OSError, ValueError):
+    except (OSError, ValueError, AttributeError):
+        return []
+    if not isinstance(servers, dict):
         return []
     data = load()
     added = []

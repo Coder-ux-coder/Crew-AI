@@ -96,7 +96,15 @@ def serve(run_dir: Path, port: int = 8765, host: str = "127.0.0.1") -> Threading
             self.end_headers()
             self.wfile.write(body)
 
+        def _this_computer(self) -> bool:
+            """Asked for by name as this computer. A web page on another site cannot pass for it (DNS rebinding),
+            so it cannot read the team's chat."""
+            host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+            return host in ("127.0.0.1", "localhost", "::1")
+
         def do_GET(self):
+            if not self._this_computer():
+                return self._json({"error": "forbidden"}, 403)
             url = urlparse(self.path)
             if url.path == "/":
                 body = PAGE.encode()
@@ -109,16 +117,27 @@ def serve(run_dir: Path, port: int = 8765, host: str = "127.0.0.1") -> Threading
                 self.send_response(204)
                 self.end_headers()
             elif url.path == "/api/state":
-                after = int((parse_qs(url.query).get("after") or ["0"])[0] or 0)
+                try:
+                    after = int((parse_qs(url.query).get("after") or ["0"])[0] or 0)
+                except ValueError:
+                    after = 0
                 self._json(state(store, run_dir, after))
             else:
                 self._json({"error": "not found"}, 404)
 
         def do_POST(self):
-            length = int(self.headers.get("Content-Length") or 0)
-            data = json.loads(self.rfile.read(length) or b"{}") if length else {}
+            # Only this page may talk to the team: another site's page cannot add this header (the browser would
+            # have to ask first, and this server never agrees), so it cannot pass words to the team as the owner's.
+            if not self._this_computer() or self.headers.get("X-Crew") != "1":
+                return self._json({"error": "forbidden"}, 403)
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                data = json.loads(self.rfile.read(length) or b"{}") if 0 < length <= 1_000_000 else {}
+            except ValueError:
+                data = {}
             if self.path == "/api/say":
-                text = (data.get("text") or "").strip()
+                text = data.get("text") if isinstance(data, dict) else None
+                text = text.strip() if isinstance(text, str) else ""
                 if text:
                     store.post("you", "human", text[:4000], urgent=True)
                 self._json({"ok": bool(text)})
@@ -190,7 +209,7 @@ async function tick(){
   }catch(e){}
   setTimeout(tick,1500);}
 $('f').onsubmit=async e=>{e.preventDefault();const v=$('say').value.trim();if(!v)return;$('say').value='';
-  await fetch('/api/say',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:v})});};
+  await fetch('/api/say',{method:'POST',headers:{'Content-Type':'application/json','X-Crew':'1'},body:JSON.stringify({text:v})});};
 tick();
 </script></body></html>
 """

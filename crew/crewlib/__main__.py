@@ -23,7 +23,7 @@ if WINDOWLESS:
         except OSError:
             continue
     else:
-        stream = open(os.devnull, "w")
+        stream = open(os.devnull, "w", encoding="utf-8")
     sys.stdout = sys.stdout or stream
     sys.stderr = sys.stderr or stream
     print(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} Crew starting: {' '.join(sys.argv[1:])} "

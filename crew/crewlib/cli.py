@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import config as config_mod
 from . import gitops, lessons
+from .agents import which as find_program
 from .store import Store
 from .util import crew_home, hhmm, human_duration, load_env_file, now
 
@@ -54,13 +55,27 @@ def resolve_run(name: str | None) -> Path:
     latest = runs_dir() / "LATEST"
     if not latest.is_file():
         sys.exit("No runs yet. Start one with: crew start \"what you want built\"")
-    return runs_dir() / latest.read_text().strip()
+    return runs_dir() / latest.read_text(encoding="utf-8").strip()
 
 
 def new_run_id(request: str) -> str:
     words = re.findall(r"[a-z0-9]+", request.lower())[:5]
     slug = "-".join(words)[:40] or "project"
     return time.strftime("%Y%m%d-%H%M%S") + "-" + slug
+
+
+def claim_run_dir(root: Path, request: str) -> tuple[str, Path]:
+    """A new, unused folder for a project. Two projects started in the same second with the same first words
+    would otherwise share one folder (and one team store)."""
+    base = new_run_id(request)
+    for n in range(1, 1000):
+        run_id = base if n == 1 else f"{base}-{n}"
+        try:
+            (root / run_id).mkdir(parents=True, exist_ok=False)  # creating it claims it, even against another start
+        except FileExistsError:
+            continue
+        return run_id, root / run_id
+    raise RuntimeError("Too many projects were started at the same moment; try again.")
 
 
 def print_message(m: dict) -> None:
@@ -99,15 +114,17 @@ def cmd_start(args) -> int:
     chosen = [a.strip() for a in (args.accounts or "").split(",") if a.strip()]
     if chosen:
         cfg.restrict(chosen)
-    run_id = args.run_id or new_run_id(request)
-    run_dir = runs_dir() / run_id
-    run_dir.mkdir(parents=True, exist_ok=bool(args.run_id))
+    if args.run_id:  # chosen (and already created) by the Crew app
+        run_id, run_dir = args.run_id, runs_dir() / args.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        run_id, run_dir = claim_run_dir(runs_dir(), request)
     if args.repo and re.match(r"^(https?://|git@|ssh://)", args.repo):
         repo = gitops.clone(args.repo, run_dir / "repo")
     else:
         target = Path(args.repo).expanduser() if args.repo else crew_home() / "projects" / run_id
         repo = gitops.ensure_repo(target.resolve())
-    (runs_dir() / "LATEST").write_text(run_id)
+    (runs_dir() / "LATEST").write_text(run_id, encoding="utf-8")
     return _run(cfg, run_dir, repo, request, run_id, resume=False, open_web=not args.no_web,
                 headless=args.headless, max_hours=args.max_hours, head_to_head=args.head_to_head,
                 accounts=chosen)
@@ -166,6 +183,9 @@ def cmd_resume(args) -> int:
     store = Store(run_dir / "team.db")
     if store.get("phase") == "done":
         sys.exit("That run already finished.")
+    if store.orchestrator_alive():
+        sys.exit("That project is still running (in the Crew app or another window), so there is nothing to "
+                 "continue. Follow it with: crew chat -f")
     store.set("stop_requested", None)
     cfg = config_mod.load(args.config)
     if store.get("accounts_chosen"):  # the project keeps the subscriptions the owner chose for it
@@ -262,7 +282,8 @@ def cmd_setup(args) -> int:
     for acc in cfg.accounts:
         prof = acc.profile_dir()
         tool = "claude" if acc.vendor == "claude" else "codex"
-        if not shutil.which(tool):
+        exe = find_program(tool)  # the full path: on Windows a bare "claude" or "codex" is not found by itself
+        if not exe:
             print(c(f"  ! {acc.name}: `{tool}` is not installed — see README", "33"))
             continue
         env = dict(os.environ)
@@ -270,14 +291,21 @@ def cmd_setup(args) -> int:
         if prof is not None:
             prof.mkdir(parents=True, exist_ok=True)
             env["CLAUDE_CONFIG_DIR" if acc.vendor == "claude" else "CODEX_HOME"] = str(prof)
-        status_cmd = [tool, "auth", "status"] if tool == "claude" else [tool, "login", "status"]
-        ok = subprocess.run(status_cmd, env=env, capture_output=True, text=True).returncode == 0
+        status_cmd = [exe, "auth", "status"] if tool == "claude" else [exe, "login", "status"]
+        try:
+            ok = subprocess.run(status_cmd, env=env, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", stdin=subprocess.DEVNULL, timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
         if ok and not args.relogin:
             print(c(f"  ✓ {acc.name} is signed in", "32"))
             continue
         print(c(f"  → Sign in to {acc.name} ({acc.vendor}) in the browser window that opens…", "36"))
-        login = [tool, "auth", "login"] if tool == "claude" else [tool, "login"]
-        subprocess.run(login, env=env)
+        login = [exe, "auth", "login"] if tool == "claude" else [exe, "login"]
+        try:
+            subprocess.run(login, env=env)  # no time limit: the owner signs in at their own pace
+        except OSError as exc:
+            print(c(f"  ! {acc.name}: the sign-in could not start ({exc})", "33"))
     print(c("\nReady. Try:  crew start \"a one-page website for my bakery\"", "1"))
     return 0
 
@@ -286,9 +314,13 @@ def cmd_doctor(args) -> int:
     ok = True
     print(f"Python {sys.version.split()[0]} ✓")
     for tool in ("git", "claude", "codex"):
-        path = shutil.which(tool)
+        path = find_program(tool)
         if path:
-            ver = subprocess.run([tool, "--version"], capture_output=True, text=True).stdout.strip().splitlines()
+            try:
+                ver = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8",
+                                     errors="replace", stdin=subprocess.DEVNULL, timeout=60).stdout.strip().splitlines()
+            except (OSError, subprocess.TimeoutExpired):
+                ver = []
             print(f"{tool}: {ver[0] if ver else path} ✓")
         else:
             print(c(f"{tool}: not found", "33") + (" (needed)" if tool != "codex" else " (optional)"))

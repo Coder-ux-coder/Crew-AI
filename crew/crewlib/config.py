@@ -81,8 +81,13 @@ class Account:
         """Config home passed as CLAUDE_CONFIG_DIR / CODEX_HOME (None = CLI default)."""
         if self.profile == "default":
             return None
-        path = Path(self.profile).expanduser() if self.profile else crew_home() / "accounts" / self.name
-        return path.resolve()
+        if self.profile:
+            return Path(self.profile).expanduser().resolve()
+        accounts = (crew_home() / "accounts").resolve()
+        path = (accounts / self.name).resolve()
+        if accounts not in path.parents:  # a name such as "../x" must not reach outside Crew's accounts folder
+            path = accounts / ("".join(c if c.isalnum() or c in "_@+-" else "_" for c in self.name) or "account")
+        return path
 
 
 @dataclass

@@ -9,6 +9,7 @@ humans.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -143,24 +144,62 @@ def search(query: str, limit: int = 10) -> list[dict]:
 
 
 def ensure_seeded() -> None:
-    """Load the built-in lessons (research + build experience) once per machine."""
+    """Load the built-in lessons (research + build experience) once per machine, and any new ones a later Crew
+    ships. A built-in lesson that is already in the memory is left exactly as it is: installing an update is
+    not new evidence, so it must not make the built-in lessons count for more than the team's own."""
+    try:
+        raw = _SEEDS.read_bytes()
+    except OSError:
+        return
+    version = "sha256:" + hashlib.sha256(raw).hexdigest()  # the content, not the file's date (updates rewrite it)
     db = _db()
     try:
         done = db.execute("SELECT value FROM memo WHERE key='seeded'").fetchone()
     finally:
         db.close()
-    version = str(_SEEDS.stat().st_mtime_ns) if _SEEDS.is_file() else "0"
     if done and done["value"] == version:
         return
-    if _SEEDS.is_file():
-        for item in json.loads(_SEEDS.read_text(encoding="utf-8")):
-            add(item["category"], item["text"], evidence=item.get("evidence", ""), source="crew-seed")
+    try:
+        items = json.loads(raw.decode("utf-8"))
+    except ValueError:
+        items = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and str(item.get("text") or "").strip():
+            _seed(str(item.get("category") or "process"), str(item["text"]), str(item.get("evidence") or ""))
     db = _db()
     try:
         db.execute("INSERT INTO memo(key,value) VALUES('seeded',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                    (version,))
     finally:
         db.close()
+
+
+def _seed(category: str, text: str, evidence: str = "") -> bool:
+    """Add one built-in lesson unless the memory already holds it (or one that says the same). True if added."""
+    category = category if category in CATEGORIES else "process"
+    text = " ".join(text.split())
+    toks = _tokens(text)
+    with _lock:
+        db = _db()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("SELECT norm FROM lessons WHERE category=? ORDER BY id DESC LIMIT 3000",
+                              (category,)).fetchall()
+            if any(_similar(toks, set((row["norm"] or "").split())) >= 0.6 for row in rows):
+                db.execute("COMMIT")
+                return False
+            db.execute(
+                "INSERT INTO lessons(ts,last_seen,category,text,evidence,source,project,weight,norm) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
+                (now(), now(), category, text, evidence[:1500], "crew-seed", "", 1, " ".join(sorted(toks))),
+            )
+            db.execute("COMMIT")
+            return True
+        except BaseException:
+            db.execute("ROLLBACK")
+            raise
+        finally:
+            db.close()
 
 
 def render_for_agents(limit: int = 25) -> str:
@@ -205,17 +244,23 @@ def record_contest(project: str, task: str, kind: str, size: str, winner_model: 
         db.close()
 
 
+def _effort_rank(effort) -> int:
+    """Position on the effort scale; a level Crew does not know (an older record, a hand edit) sorts last."""
+    return EFFORT_ORDER.index(effort) if effort in EFFORT_ORDER else len(EFFORT_ORDER)
+
+
 def effort_stats() -> list[dict]:
     """Per (tier, kind, size, effort): how many tasks, share approved first time, typical minutes and tokens."""
     db = _db()
     try:
         rows = [dict(r) for r in db.execute(
-            "SELECT COALESCE(tier, 'manager') AS tier, kind, size, effort, COUNT(*) AS n, AVG(first_pass) AS first_pass, "
+            "SELECT COALESCE(tier, 'manager') AS tier, COALESCE(kind, 'build') AS kind, COALESCE(size, 'M') AS size, "
+            "COALESCE(effort, '') AS effort, COUNT(*) AS n, AVG(first_pass) AS first_pass, "
             "AVG(minutes) AS minutes, AVG(tokens) AS tokens, AVG(rounds) AS rounds FROM effort_outcomes "
-            "GROUP BY COALESCE(tier, 'manager'), kind, size, effort")]
+            "GROUP BY COALESCE(tier, 'manager'), COALESCE(kind, 'build'), COALESCE(size, 'M'), COALESCE(effort, '')")]
     finally:
         db.close()
-    rows.sort(key=lambda r: (r["tier"] != "workhorse", r["kind"], r["size"], EFFORT_ORDER.index(r["effort"])))
+    rows.sort(key=lambda r: (r["tier"] != "workhorse", str(r["kind"]), str(r["size"]), _effort_rank(r["effort"])))
     return rows
 
 
@@ -251,13 +296,15 @@ def derive_ceo_lessons(min_tasks: int = 3) -> list[str]:
         solid = [r for r in rows if r["n"] >= min_tasks]
         who = TIER_WORDS.get(tier, tier)
         for r in solid:
+            if r["effort"] not in EFFORT_ORDER:
+                continue  # an effort level Crew does not know teaches nothing about the ones it uses
             rate = r["first_pass"] or 0
             if rate < 0.6:
                 text = (f"{kind} tasks of size {size} built by the {who} at {r['effort']} effort were approved first "
                         f"time only {round(100 * rate)}% of the time ({r['n']} tasks): give such work more effort"
                         + (", or the manager tier if it needs judgement." if tier == "workhorse" else "."))
             elif rate >= 0.9:
-                lower = [x for x in solid if EFFORT_ORDER.index(x["effort"]) < EFFORT_ORDER.index(r["effort"])
+                lower = [x for x in solid if _effort_rank(x["effort"]) < _effort_rank(r["effort"])
                          and (x["first_pass"] or 0) >= 0.9]
                 if lower:
                     continue  # a lower effort already does as well; that lesson is written for it

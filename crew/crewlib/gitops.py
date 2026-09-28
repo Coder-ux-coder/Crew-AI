@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -235,6 +237,9 @@ class CheckResult:
     ran: bool = True
 
 
+CHECK_OUTPUT_LIMIT = 8_000_000  # bytes of a check's output kept for the log (the end matters most)
+
+
 def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float, env: dict | None = None) -> CheckResult:
     """Run the project's verification commands; full output to a file, a short tail back."""
     if not commands:
@@ -244,15 +249,7 @@ def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float,
     ok = True
     bash = shutil.which("bash") if os.name != "nt" else None  # agents write bash; /bin/sh may be dash
     for cmd in commands:
-        try:
-            argv = [bash, "-c", cmd] if bash else cmd
-            proc = subprocess.run(argv, cwd=str(cwd), shell=not bash, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=timeout_s, env=env)
-            output, code = (proc.stdout or "") + (proc.stderr or ""), proc.returncode
-        except subprocess.TimeoutExpired as exc:
-            output = ((exc.stdout or b"").decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
-            output += f"\n[timed out after {int(timeout_s)}s]"
-            code = 124
+        output, code = _run_check(cmd, cwd, timeout_s, env, bash)
         chunks.append(f"$ {cmd}\n{output}\n[exit {code}]\n")
         if code != 0:
             ok = False
@@ -260,3 +257,53 @@ def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float,
     text = "\n".join(chunks)
     log_path.write_text(text, encoding="utf-8")
     return CheckResult(ok, tail(text, 40, 3000), log_path)
+
+
+def _run_check(cmd: str, cwd: Path, timeout_s: float, env: dict | None, bash: str | None) -> tuple[str, int]:
+    """One check command, in its own process group, its output going to a file rather than a pipe. A check that
+    leaves something running (a dev server, a file watcher) would otherwise keep the pipe open, and Crew would
+    wait for it for ever — even after the time limit, on Windows. Whatever the command started ends with it."""
+    kwargs: dict = {}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+    else:
+        kwargs["start_new_session"] = True
+    with tempfile.TemporaryFile() as out:
+        try:
+            proc = subprocess.Popen([bash, "-c", cmd] if bash else cmd, cwd=str(cwd), shell=not bash,
+                                    stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env, **kwargs)
+        except OSError as exc:
+            return f"The check could not start: {exc}", 127
+        timed_out = False
+        try:
+            code = proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            timed_out, code = True, 124
+        _end_group(proc)
+        size = out.seek(0, os.SEEK_END)
+        out.seek(max(0, size - CHECK_OUTPUT_LIMIT))
+        output = out.read().decode("utf-8", errors="replace")
+    if size > CHECK_OUTPUT_LIMIT:
+        output = f"[{size - CHECK_OUTPUT_LIMIT} bytes of earlier output left out]\n" + output
+    if timed_out:
+        output += f"\n[timed out after {int(timeout_s)}s]"
+    return output, code
+
+
+def _end_group(proc: subprocess.Popen) -> None:
+    """Stop a check and everything it started."""
+    try:
+        if os.name == "nt":
+            if proc.poll() is None:  # Windows finds a process's children only while it is alive
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=60)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)  # the group outlives its leader: leftovers go too
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.kill()
+        except OSError:
+            pass
