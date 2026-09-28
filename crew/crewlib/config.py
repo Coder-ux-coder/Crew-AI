@@ -52,18 +52,20 @@ class ModelPolicy:
         low = m.lower()
         for bad in self.banned:
             if bad and bad.lower() in low:
-                raise ConfigError(f"model '{m}' is banned by your policy ({bad})")
+                raise ConfigError(f"{m} is on your list of banned models (it matches “{bad}”), so Crew will not use "
+                                  "it. Choose another model, or lift the ban in Settings → Models")
         if low.startswith("claude") or low in ("opus", "fable"):
             if self.allowed and m not in self.allowed:
-                raise ConfigError(f"model '{m}' is not on the allowed list {self.allowed}")
+                raise ConfigError(f"{m} is not one of the Claude models allowed in Settings → Models "
+                                  f"({', '.join(self.allowed)}). Choose one of those, or add it to that list")
         return m
 
     def validate(self) -> None:
         for name in ("effort_work", "effort_light"):
             if getattr(self, name) not in EFFORT_CHOICES:
-                raise ConfigError(f"models.{name} must be one of {EFFORT_CHOICES}")
+                raise ConfigError(f"models.{name} must be one of: {', '.join(EFFORT_CHOICES)}")
         if self.effort_ceo not in CEO_EFFORT_CHOICES:
-            raise ConfigError(f"models.effort_ceo must be one of {CEO_EFFORT_CHOICES}")
+            raise ConfigError(f"models.effort_ceo must be one of: {', '.join(CEO_EFFORT_CHOICES)}")
         self.check(self.work)
         if vendor_of(self.work) != "claude":
             raise ConfigError("models.work (the manager, who leads the team) must be a Claude model")
@@ -218,7 +220,7 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
         raise ConfigError("account names must be unique")
     for acc in accounts:
         if acc.vendor not in VENDORS:
-            raise ConfigError(f"account {acc.name}: vendor must be one of {VENDORS}")
+            raise ConfigError(f"account {acc.name}: vendor must be claude or codex (ChatGPT)")
 
     seat_specs = [SeatSpec(**_known(SeatSpec, s)) for s in data.get("seat", [])]
     if not seat_specs:

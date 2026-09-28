@@ -1230,6 +1230,20 @@ class AppCampaignTests(unittest.TestCase):
         finally:
             shutil.rmtree(run_dir, ignore_errors=True)
 
+    def test_a55_a_refused_model_is_explained_in_plain_words(self):
+        """A model outside the allowed list, or on the banned list, was refused with programmer's words:
+        "model 'claude-opus-5' is not on the allowed list ['claude-opus-5-5', 'claude-fable-5-1']"."""
+        s = self.s
+        cid, _ = self.new_chat()
+        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "claude-opus-5"}, expect=400)["error"]
+        self.assertIn("claude-opus-5 is not one of the Claude models allowed in Settings → Models", err)
+        self.assertIn("claude-opus-5-5, claude-fable-5-1", err)
+        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "claude-haiku-4-5"}, expect=400)["error"]
+        self.assertIn("claude-haiku-4-5 is on your list of banned models", err)
+        for text in (err,):
+            self.assertNotIn("['", text)
+        s.api("DELETE", f"/api/chats/{cid}")
+
     def test_a1_a_damaged_settings_file_is_told_to_the_owner(self):
         s = self.s
         path, backup = HOME / "crew.toml", HOME / "crew.toml.bak"
