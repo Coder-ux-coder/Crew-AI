@@ -633,6 +633,17 @@ Round 3 (models and effort; routing):
   Settings → Models (claude-opus-5-5, claude-fable-5-1). Choose one of those, or add it to that list") ·
   test_a55_a_refused_model_is_explained_in_plain_words.
 
+Round 4 (updating), begun: the updater tests already cover a locked file on Windows, a download cut short,
+no network, add-ons that will not install, two installs at once, an interrupted update and the owner's data.
+
+- A56 · P3 · updater.check, updater._install · a failed check or download showed Python's words on the
+  Settings page ("Could not reach GitHub: <urlopen error [Errno 11001] getaddrinfo failed>"); a proxy that
+  answered with its own page (common on office networks) showed "…: Expecting value: line 1 column 1 (char
+  0)"; release notes written as one line of text (not a list) broke the Settings page (it lists them) · raw
+  error text in the message; the notes were used as they came · plain sentences (the details go to the
+  log); a proxy's page is named as such; notes are always a list · test_a56_an_update_check_that_fails_says_
+  so_plainly, and test_a8_a_download_cut_short… now also checks the wording.
+
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
 The whole of test_campaign.py (44 tests, the round-1 tests plus C14/C15) was run against the code before the
