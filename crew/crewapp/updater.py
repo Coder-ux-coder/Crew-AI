@@ -152,7 +152,7 @@ def _put_in_place(files: list[tuple[Path, str]]) -> None:
                           "changed; check that the disk is not full, then try again.") from None
     swapped: list[tuple[Path, Path | None]] = []
     try:
-        for target, new, rel in staged:
+        for target, new, _ in staged:
             old = target.with_name(target.name + ".old") if target.exists() else None
             if old is not None:
                 _replace(target, old)

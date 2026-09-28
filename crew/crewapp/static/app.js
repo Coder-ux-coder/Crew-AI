@@ -1,7 +1,7 @@
 // Crew app: start-up, navigation, the sidebar, the side panel (browser, phone, computer and file previews
 // beside whatever you are doing, resizable like Claude's artifacts), app-wide notices and one-click updates.
 
-import { $, $$, h, icon, btn, api, stream, store, bus, fail, toast, markdown, download, esc, tokens, pct, inTime, menu, isSmall, clear } from './js/ui.js';
+import { $, $$, h, icon, btn, api, stream, store, bus, fail, toast, markdown, download, esc, pct, isSmall, clear } from './js/ui.js';
 import { homePage, chatPage, chatsPage } from './js/pages/chat.js';
 import { projectsPage, projectPage } from './js/pages/projects.js';
 import { workflowsPage } from './js/pages/workflows.js';
@@ -275,7 +275,7 @@ function preview(item) {
   }
   const name = String(item.name || '').split('/').pop() || 'Preview';
   const bar = h('div', { class: 'screen-bar' }, h('b', { class: 'grow ellipsis', style: { padding: '0 6px' } }, name),
-    btn('', () => { const f = box.querySelector('iframe'); if (f) f.src = f.src; else panel.show('preview'); }, { cls: 'icon ghost', ic: 'reload', title: 'Reload' }),
+    btn('', () => { const f = box.querySelector('iframe'); if (f) f.setAttribute('src', f.src); else panel.show('preview'); }, { cls: 'icon ghost', ic: 'reload', title: 'Reload' }),
     btn('', () => window.open(item.url, '_blank', 'noopener'), { cls: 'icon ghost', ic: 'external', title: 'Open in a new window' }),
     btn('', () => download(item.url, name), { cls: 'icon ghost', ic: 'download', title: 'Download' }));
   const box = h('div', { class: 'livebox' }, bar);

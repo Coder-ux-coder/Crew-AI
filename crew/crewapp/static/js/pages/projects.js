@@ -3,9 +3,8 @@
 // The owner can also talk to one agent privately, or put a question to the CEO: only that agent sees the message,
 // and its answer comes back into the same conversation. Helpers are reached through the agent that runs them.
 
-import { h, icon, btn, api, toast, fail, confirmBox, store, bus, markdown, ago, clock, colorFor, tokens, pct, minutes, productBadge, menu, clear } from '../ui.js';
+import { h, icon, btn, api, toast, fail, confirmBox, store, bus, markdown, ago, clock, colorFor, tokens, minutes, productBadge, menu, clear } from '../ui.js';
 import { dictate, canDictate } from '../voice.js';
-import { TEAM_MODES } from './chat.js';
 
 const PHASES = [['refine', 'Brief'], ['plan', 'Plan'], ['build', 'Build'], ['deliver', 'Final checks'], ['done', 'Done']];
 const TASK_PILL = { done: 'ok', 'being built': 'live', 'being checked': 'live', 'being improved': 'warn', 'needs a decision': 'bad', approved: 'ok', dropped: '', waiting: '' };

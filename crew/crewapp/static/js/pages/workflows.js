@@ -1,8 +1,8 @@
 // Workflows: saved jobs you run with one click or on a schedule — every morning, every Monday, every two hours.
 // Each run is an ordinary chat (Claude or ChatGPT) or a team project, kept in the history.
 
-import { h, icon, btn, api, toast, fail, confirmBox, dialog, store, bus, ago, whenAt, productBadge, PRODUCTS, menu, clear } from '../ui.js';
-import { efforts, modelOptions } from './chat.js';
+import { h, icon, btn, api, toast, fail, confirmBox, dialog, store, bus, ago, whenAt, productBadge, PRODUCTS, clear } from '../ui.js';
+import { efforts } from './chat.js';
 
 const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 

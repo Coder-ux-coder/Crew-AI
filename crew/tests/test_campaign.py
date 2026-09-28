@@ -193,7 +193,7 @@ class StartTests(unittest.TestCase):
                 self.assertLess(sum(len(a) for a in args), 2000)  # Windows allows about 32,000 on a command line
                 seen = {}
 
-                def fake_run(cfg, run_dir, repo, req, run_id, **kw):
+                def fake_run(cfg, run_dir, repo, req, run_id, seen=seen, **kw):
                     seen.update(request=req, run_id=run_id)
                     return 0
 
@@ -452,6 +452,16 @@ class AppPieceTests(unittest.TestCase):
             with self.assertRaises(phone_mod.PhoneError) as cm:
                 service.devices()
         self.assertIn("did not answer in time", str(cm.exception))
+
+    def test_a27_addresses_typed_in_the_browser_bar(self):
+        from crewapp.browser import normalize_address as address
+        self.assertEqual(address("localhost:5173"), "http://localhost:5173")  # a team project's preview
+        self.assertEqual(address("127.0.0.1:8080/app"), "http://127.0.0.1:8080/app")
+        self.assertEqual(address("http://localhost:3000"), "http://localhost:3000")
+        self.assertEqual(address("pbit.punjab.gov.pk"), "https://pbit.punjab.gov.pk")
+        self.assertEqual(address("https://example.com"), "https://example.com")
+        for words in ("investment news Punjab", "weather", "localhost is slow today"):
+            self.assertTrue(address(words).startswith("https://www.google.com/search?q="), words)
 
     def test_a24_attachments_named_like_windows_devices(self):
         with TempHome():

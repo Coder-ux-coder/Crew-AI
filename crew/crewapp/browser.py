@@ -12,6 +12,7 @@ import base64
 import glob
 import os
 import queue
+import re
 import threading
 import time
 from concurrent.futures import Future
@@ -28,6 +29,21 @@ PHONE = {"width": 412, "height": 915, "scale": 2.6,
 KEYS = {"enter": "Enter", "tab": "Tab", "escape": "Escape", "backspace": "Backspace", "delete": "Delete",
         "up": "ArrowUp", "down": "ArrowDown", "left": "ArrowLeft", "right": "ArrowRight", "pageup": "PageUp",
         "pagedown": "PageDown", "home": "Home", "end": "End", "space": " "}
+
+
+LOCAL_ADDRESS = re.compile(r"^(localhost|127(\.\d{1,3}){3}|\[::1\])(:\d+)?([/?#]|$)", re.I)
+
+
+def normalize_address(text: str) -> str:
+    """What was typed in the address bar, as an address: a search for words; this computer's own servers (a team
+    project's preview, localhost:5173) over plain http, as they are served; everything else over https."""
+    local = bool(LOCAL_ADDRESS.match(text))
+    if not local and (" " in text or ("." not in text and not text.startswith(("http", "about:", "file:")))):
+        from urllib.parse import quote_plus
+        return "https://www.google.com/search?q=" + quote_plus(text)
+    if not text.startswith(("http://", "https://", "about:", "file:")):
+        return ("http://" if local else "https://") + text
+    return text
 
 
 class BrowserUnavailable(RuntimeError):
@@ -215,11 +231,7 @@ class BrowserService:
         url = (url or "").strip()
         if not url:
             raise ValueError("Type a web address or a search.")
-        if " " in url or "." not in url and not url.startswith(("http", "about:", "file:")):
-            from urllib.parse import quote_plus
-            url = "https://www.google.com/search?q=" + quote_plus(url)
-        elif not url.startswith(("http://", "https://", "about:", "file:")):
-            url = "https://" + url
+        url = normalize_address(url)
         self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
         return {"url": self.page.url, "title": self.page.title()}
 

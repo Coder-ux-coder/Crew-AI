@@ -101,8 +101,6 @@ def follow_chat(store: Store, stop: threading.Event, after: int = 0) -> None:
 
 
 def cmd_start(args) -> int:
-    from .orchestrator import Orchestrator
-
     request = args.request
     if args.request_file:
         request = Path(args.request_file).read_text(encoding="utf-8")
