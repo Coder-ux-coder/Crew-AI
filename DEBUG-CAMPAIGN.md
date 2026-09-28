@@ -654,6 +654,18 @@ no network, add-ons that will not install, two installs at once, an interrupted 
   read · a fixed time · about a fifth of a second a word, never less than before · test_f8_a_long_notice_…
   (in Chromium, in a process of its own).
 
+Round 9 (memory and continuity), begun:
+
+- Checked, not a bug: the team's lessons are never pruned, but similar ones merge and older ones rank lower
+  (a 60-day half-life); with 20,000 lessons (years beyond any real use) the ranked list takes 47 ms, the CEO's
+  lessons 34 ms, adding one 5 ms, and the file is 2.5 MB.
+- Checked, not a bug: a chat of 3,000 messages comes from the server in 33 ms (1.3 MB); the chat list in 1 ms.
+- F9 · P2 · pages/chat.js (load, addTurn) · a long chat drew every answer before showing anything, and each
+  answer drawn looked through all the ones before it: 1,500 answers took 5.9 seconds to appear · everything
+  drawn at once, and a search of the whole page per answer · the newest 120 messages first (148 ms for the
+  same chat), a "Show N earlier messages" button above them that draws the rest and keeps the reader's place;
+  the last answer is remembered instead of searched for · test_f9_a_long_chat_opens_at_once (in Chromium).
+
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
 The whole of test_campaign.py (44 tests, the round-1 tests plus C14/C15) was run against the code before the
