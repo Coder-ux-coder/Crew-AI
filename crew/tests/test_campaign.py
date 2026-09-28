@@ -765,6 +765,45 @@ class BrowserCampaignTests(unittest.TestCase):
             b.stop()
 
 
+class NoticeTimingTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page()
+    page.goto(sys.argv[1])
+    print(json.dumps(page.evaluate('''async () => {
+        const seen = []; const real = window.setTimeout;
+        window.setTimeout = (f, ms, ...a) => { seen.push(ms); return real(f, ms, ...a); };
+        const ui = await import('/js/ui.js');
+        ui.toast('short', {bad: true}); const short = seen.pop();
+        ui.toast('This is a long explanation. '.repeat(9), {bad: true}); const long = seen.pop();
+        window.setTimeout = real;
+        return {short, long};
+    }''')))
+    b.close()
+"""
+
+    def test_f8_a_long_notice_stays_long_enough_to_read(self):
+        """Every red notice went after 6.5 seconds, however long: a notice that explains what to do (a refused
+        update, a subscription at its limit) was gone before it could be read."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        delays = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(delays["short"], 6500)
+        self.assertGreaterEqual(delays["long"], 250 * 55)  # about a fifth of a second a word
+
+
 # ====================================================================== updates
 
 

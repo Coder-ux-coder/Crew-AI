@@ -123,7 +123,9 @@ export function toast(msg, { bad = false, ms = 4200, action = null, onAction = n
     t.append(' ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); t.remove(); onAction && onAction(); } }, action));
   }
   box.append(t);
-  setTimeout(() => t.remove(), bad ? Math.max(ms, 6500) : ms);
+  // Long enough to read: about a fifth of a second a word (a notice that explains what to do is long).
+  const reading = typeof msg === 'string' ? msg.length * 60 : 0;
+  setTimeout(() => t.remove(), Math.max(bad ? 6500 : 0, ms, reading));
   return t;
 }
 
