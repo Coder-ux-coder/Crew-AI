@@ -967,14 +967,15 @@ fix (checked by running each against the code without the fix) and passes with i
   new Crew process at the same address counts as back; the offline page does the same (the cached copy is renewed:
   crew-shell-v3) · test_f21_after_an_update_only_crew_is_taken_for_crew (Chromium, another program on one of
   Crew's ports, and a second Crew on another).
-- F22 · P2 · ui.markdown, chat.js (messages, the message box), projects.js, workflows.js, app.css · Urdu in a message
+- F22 · P2 · ui.markdown, chat.js (messages, the message box), projects.js (the team conversation, the owner's own
+  words, the message box), workflows.js, app.css · Urdu in a message
   or an answer was laid out as English is, left to right: a sentence with an English word or a number in it came
   out in the wrong order ("دوسرا نکتہ: Crew 2.3 میں نیا کیا ہے؟" read back to front), its "!" and "?" stood at
   the start, list bullets sat on the wrong side (checklist 7.4, "Urdu (RTL)"; seen in Chromium) · no element said
   its direction · every paragraph, heading, list item, table cell and message takes it from its own text
   (dir="auto"); lists and tables use start and end instead of left; the message boxes follow what is typed ·
-  test_f22_urdu_reads_right_to_left_with_english_words_in_place (Chromium); the Markdown tests that compare exact
-  HTML expect the new attribute.
+  test_f22_urdu_reads_right_to_left_with_english_words_in_place (Chromium: a chat and a project's conversation); the
+  Markdown tests that compare exact HTML expect the new attribute.
 - A67 · P3 · runs._run_dir · "/api/runs/.." answered as if a project were starting there (the id stood for Crew's
   own folder, "." for the projects folder); nothing was read or changed · the id check allowed names made only of
   dots · refused, as captures.resolve already did · test_a67_a_name_made_of_dots_is_not_a_project.

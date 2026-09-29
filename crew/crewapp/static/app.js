@@ -102,7 +102,7 @@ async function refreshRecent() {
 function drawRecent() {
   const box = $('#recents');
   clear(box, ...(recentItems.length ? recentItems.map((it) => h('a', { href: it.href, title: it.title },
-    it.live ? h('span', { class: 'live', title: 'Working now' }) : icon(it.pinned ? 'pin' : it.ic), h('span', { class: 't' }, it.title)))
+    it.live ? h('span', { class: 'live', title: 'Working now' }) : icon(it.pinned ? 'pin' : it.ic), h('span', { class: 't', dir: 'auto' }, it.title)))
     : [h('div', { class: 'empty-note' }, 'Your chats and projects will appear here.')]));
   markRecent();
 }

@@ -755,7 +755,7 @@ class ChatView {
   drawStrip() {
     const ov = store.overview || {};
     const running = (ov.runs || []).filter((r) => r.running).slice(0, 3);
-    clear(this.strip, ...running.map((r) => h('a', { href: '#/projects/' + r.id }, h('span', { class: 'dot live' }), h('span', { class: 'grow ellipsis' }, r.title),
+    clear(this.strip, ...running.map((r) => h('a', { href: '#/projects/' + r.id }, h('span', { class: 'dot live' }), h('span', { class: 'grow ellipsis', dir: 'auto' }, r.title),
       h('span', { class: 'muted small' }, r.phase), icon('chev'))));
   }
 
@@ -765,7 +765,7 @@ class ChatView {
       h('div', { class: 'composer-note' }, 'Claude and ChatGPT can make mistakes. Check important facts.'));
     this.root = h('div', { class: 'chat' }, this.thread, this.dock);
     this.view.append(this.root);
-    this.titleBtn = h('button', { class: 'title-btn', type: 'button', title: 'Rename', onclick: () => this.rename() }, h('span', { class: 'ellipsis' }, '…'), icon('down'));
+    this.titleBtn = h('button', { class: 'title-btn', type: 'button', title: 'Rename', onclick: () => this.rename() }, h('span', { class: 'ellipsis', dir: 'auto' }, '…'), icon('down'));
     this.drawTop();
   }
 
@@ -1187,7 +1187,7 @@ export function chatsPage(view) {
       .filter((c) => !words || (c.title || '').toLowerCase().includes(words));
     clear(list, ...(shown.length ? shown.map((c) => h('a', { class: 'li', href: '#/chat/' + c.id },
       h('span', { class: 'li-ico ' + (c.engine || 'claude') }, icon(c.engine === 'codex' ? 'gpt' : 'spark')),
-      h('span', { class: 'li-main' }, h('b', null, c.title || 'Untitled chat'), h('small', null, `${c.engine === 'codex' ? 'ChatGPT' : modelLabel('claude', c.model)} · ${ago(c.updated)}`)),
+      h('span', { class: 'li-main' }, h('b', { dir: 'auto' }, c.title || 'Untitled chat'), h('small', null, `${c.engine === 'codex' ? 'ChatGPT' : modelLabel('claude', c.model)} · ${ago(c.updated)}`)),
       c.pinned ? icon('pin') : null)) : [h('div', { class: 'li muted' }, words ? 'No chat matches.' : 'No chats yet.')]));
     note.textContent = `Showing your ${limit} most recent chats. Search to find an older one.`;
     note.classList.toggle('hidden', !!words || all.length < limit);

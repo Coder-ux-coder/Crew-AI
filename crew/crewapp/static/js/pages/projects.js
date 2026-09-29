@@ -39,7 +39,7 @@ export function projectTile(r) {
   return h('a', { class: 'tile', href: '#/projects/' + r.id },
     h('div', { class: 'row between' }, h('span', { class: 'kicker' }, icon('layers'), MODE_LABEL[r.mode] || 'Project'),
       h('span', { class: 'pill' + (r.running ? ' live' : r.done ? ' ok' : '') }, r.running ? r.phase : r.done ? 'Finished' : r.phase)),
-    h('div', { class: 't' }, r.title),
+    h('div', { class: 't', dir: 'auto' }, r.title),
     t ? h('div', { class: 'bar' }, h('i', { class: 'accent', style: { width: Math.round((100 * d) / t) + '%' } })) : null,
     h('div', { class: 'muted small' }, (t ? `${d} of ${t} parts done · ` : '') + ago(r.started)));
 }
