@@ -652,6 +652,14 @@ def claude_main(argv: list[str]) -> int:
         print(f"Successfully updated from {before} to version 2.1.290" if before != "2.1.290"
               else "Claude Code is up to date (2.1.290)")
         return 0
+    if argv[:2] == ["auth", "status"]:  # as the real CLI: it reports, and starts no conversation
+        home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or os.environ.get("CREW_FAKE_CLAUDE_HOME")
+                    or Path.home() / ".claude-fake")
+        print(json.dumps({"loggedIn": True, "authMethod": "claude.ai", "email": f"{home.name}@example.com"}))
+        return 0
+    if argv[:2] == ["auth", "login"]:
+        print("Opening your browser to sign in…")
+        return 0
     if argv[:2] == ["plugin", "marketplace"] or argv[:2] == ["plugin", "install"]:
         (STATE / ("plugin-" + "-".join(a.replace("/", "_") for a in argv[1:4]))).write_text("ok")
         print("done")
