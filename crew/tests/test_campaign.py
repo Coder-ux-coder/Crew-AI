@@ -2610,5 +2610,99 @@ with sync_playwright() as p:
                           "restart_still_waiting": False, "restart_told": True})
 
 
+class UpdateReconnectTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+base, chrome, mode, other = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+out = {}
+gone = lambda route: route.abort()  # Crew is away at its own address, installing
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=chrome)
+    page = b.new_page(viewport={"width": 1280, "height": 800})
+    if mode == "app":
+        page.route("**/api/update", lambda route: route.fulfill(status=200, content_type="application/json", body="{}")
+                   if route.request.method == "POST" else route.continue_())
+        page.goto(base + "#/new")
+        page.wait_for_selector(".composer textarea")
+        page.evaluate("import('/app.js').then((m) => m.installUpdate({latest: '9.9.9'}))")
+        page.route(base + "api/ping", gone)
+        page.wait_for_timeout(9000)
+        out["went_to_another_program"] = page.url.startswith("http://127.0.0.1:%d" % other)
+        # Crew is back at its address on its earlier version (the update could not be installed): a new process
+        page.evaluate("window.__before_restart = true")
+        page.unroute(base + "api/ping", gone)
+        page.route(base + "api/ping", lambda route: route.fulfill(status=200, content_type="application/json",
+                   body=json.dumps({"crew": True, "version": "2.3.0", "pid": 1, "port": 0})))
+        page.wait_for_timeout(6000)
+        out["reopened"] = page.url.startswith(base) and page.evaluate("window.__before_restart === undefined")
+    else:  # the page shown while Crew is not running: it looks for Crew on its other ports
+        page.route(base + "api/ping", gone)
+        page.goto(base + "offline.html")
+        page.wait_for_timeout(4500)
+        out["went_to"] = page.url.split("/")[2]
+    print(json.dumps(out))
+    b.close()
+"""
+
+    @staticmethod
+    def free_ports() -> list[int]:
+        found = []
+        for port in range(8765, 8775):
+            with socket.socket() as sock:
+                try:
+                    sock.bind(("127.0.0.1", port))
+                except OSError:
+                    continue
+            found.append(port)
+        return found
+
+    def test_f21_after_an_update_only_crew_is_taken_for_crew(self):
+        """After an update the page looks for Crew on its other ports, where it cannot read the answer: whatever
+        answered there was taken for Crew (another program, or a web page an agent was testing), and the owner was
+        sent to it. A Crew back on its earlier version (the update could not be installed) was not recognised: the
+        owner watched "Updating Crew…" for six minutes."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        ports = self.free_ports()
+        if len(ports) < 2:
+            self.skipTest("Crew's own ports are taken on this machine")
+        other_program, crew_again = ports[0], ports[1]
+        site = Path(tempfile.mkdtemp(prefix="crew-other-"))
+        (site / "index.html").write_text("<h1>Another program</h1>", encoding="utf-8")
+        web = subprocess.Popen([sys.executable, "-m", "http.server", str(other_program), "--bind", "127.0.0.1"],
+                               cwd=site, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(web.wait)
+        self.addCleanup(web.kill)
+        os.environ.update(ENV)
+        s = AppServer()
+        self.addCleanup(s.stop)
+
+        def answering() -> bool:
+            try:
+                socket.create_connection(("127.0.0.1", other_program), timeout=1).close()
+                return True
+            except OSError:
+                return False
+
+        until(answering, timeout=10)
+
+        def probe(mode: str) -> dict:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium(), mode,
+                                  str(other_program)], capture_output=True, text=True, timeout=180)
+            self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+            return json.loads(out.stdout.strip().splitlines()[-1])
+
+        self.assertEqual(probe("app"), {"went_to_another_program": False, "reopened": True})
+        self.assertEqual(probe("offline"), {"went_to": f"127.0.0.1:{s.port}"})  # still looking
+        again = server.CrewServer(("127.0.0.1", crew_again), server.Handler)  # Crew, back on another of its ports
+        threading.Thread(target=again.serve_forever, daemon=True).start()
+        self.addCleanup(again.server_close)
+        self.addCleanup(again.shutdown)
+        self.assertEqual(probe("offline"), {"went_to": f"127.0.0.1:{crew_again}"})
+
+
 if __name__ == "__main__":
     unittest.main()

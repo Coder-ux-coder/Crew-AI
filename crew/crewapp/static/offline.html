@@ -24,9 +24,17 @@
   (function () {
     var here = Number(location.port || 80);
     function probe(port) {
-      var url = port === here ? '/api/ping' : location.protocol + '//' + location.hostname + ':' + port + '/api/ping';
-      return fetch(url, port === here ? { cache: 'no-store' } : { mode: 'no-cors', cache: 'no-store' })
-        .then(function (r) { if (port === here && !r.ok) throw new Error('no'); return port; });
+      if (port === here) {
+        return fetch('/api/ping', { cache: 'no-store' }).then(function (r) { if (!r.ok) throw new Error('no'); return port; });
+      }
+      // Another port's answers cannot be read from here, but whether Crew's icon loads from it as a picture can be
+      // seen: another program that happens to answer there is not taken for Crew.
+      return new Promise(function (resolve, reject) {
+        var img = new Image(), t = setTimeout(function () { reject(new Error('no')); }, 3000);
+        img.onload = function () { clearTimeout(t); resolve(port); };
+        img.onerror = function () { clearTimeout(t); reject(new Error('no')); };
+        img.src = location.protocol + '//' + location.hostname + ':' + port + '/icons/icon.svg?probe=' + Date.now();
+      });
     }
     function scan() {
       var ports = [here];

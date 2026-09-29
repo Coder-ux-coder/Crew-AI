@@ -361,23 +361,40 @@ function updatingCover(info) {
     h('span', { class: 'spinner', style: { width: '26px', height: '26px' } })));
 }
 
+// Which Crew is answering here (its process), before it restarts; null when none is.
+async function crewPid() {
+  try {
+    const r = await fetch('/api/ping', { cache: 'no-store' });
+    return r.ok ? (await r.json()).pid : null;
+  } catch (e) { return null; }
+}
+
+// Is Crew at this other port? That port's answers cannot be read from this page, but whether Crew's icon loads from
+// it as a picture can be seen: another program that happens to answer there is not taken for Crew.
+function crewAt(port) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const t = setTimeout(() => resolve(false), 3000);
+    img.onload = () => { clearTimeout(t); resolve(true); };
+    img.onerror = () => { clearTimeout(t); resolve(false); };
+    img.src = `${location.protocol}//${location.hostname}:${port}/icons/icon.svg?probe=${Date.now()}`;
+  });
+}
+
 // Where is Crew now? Here, or — after a restart — on one of its other ports (Windows can keep a port for a few
-// minutes after a program closes). Another port cannot be read from this page, but it can be reached.
-async function findCrew(expected) {
+// minutes after a program closes). Here, it is back once another Crew answers than the one that was updating, or
+// the new version does: a Crew back on its earlier version (the update could not be installed) is back all the same.
+async function findCrew(expected, pid) {
   const here = Number(location.port || (location.protocol === 'https:' ? 443 : 80));
   try {
     const r = await fetch('/api/ping', { cache: 'no-store' });
     if (r.ok) {
       const d = await r.json();
-      if (!expected || d.version === expected) return here;
+      if ((pid && d.pid !== pid) || (expected && d.version === expected) || (!pid && !expected)) return here;
     }
   } catch (e) { /* not here (yet) */ }
   for (let p = 8765; p < 8775; p++) {
-    if (p === here) continue;
-    try {
-      await fetch(`${location.protocol}//${location.hostname}:${p}/api/ping`, { mode: 'no-cors', cache: 'no-store' });
-      return p;
-    } catch (e) { /* nothing there */ }
+    if (p !== here && await crewAt(p)) return p;
   }
   return null;
 }
@@ -390,13 +407,13 @@ function goTo(port) {
 
 // Crew restarts after an update (by the owner's click, or automatically at a quiet moment): wait for it and
 // reconnect, wherever it comes back.
-function waitForRestart(cover, expected) {
+function waitForRestart(cover, expected, pid) {
   const started = Date.now();
   const tick = async () => {
     await new Promise((r) => setTimeout(r, 2000));
     if (!cover.isConnected) return;  // the update did not go ahead (see update_failed): nothing to wait for
     if (Date.now() - started > 5000) {
-      const port = await findCrew(expected);
+      const port = await findCrew(expected, pid);
       if (port) { goTo(port); return; }
     }
     if (Date.now() - started < 6 * 60000) tick();
@@ -411,6 +428,7 @@ function waitForRestart(cover, expected) {
 export async function installUpdate(info) {
   const cover = updatingCover(info);
   document.body.append(cover);
+  const pid = await crewPid();
   try {
     await api('/api/update', { method: 'POST', body: {} });
   } catch (e) {
@@ -418,14 +436,14 @@ export async function installUpdate(info) {
     fail(e);
     return;
   }
-  waitForRestart(cover, info && info.latest);
+  waitForRestart(cover, info && info.latest, pid);
 }
 
 function showUpdating(info) {
   if (document.querySelector('.overlay-full')) return;
   const cover = updatingCover(info);
   document.body.append(cover);
-  waitForRestart(cover, info && info.latest);
+  crewPid().then((pid) => waitForRestart(cover, info && info.latest, pid));
 }
 
 // After an update: say so once.
