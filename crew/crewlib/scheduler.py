@@ -108,19 +108,25 @@ def tier_allows(seat: dict, task: dict, workhorse_usable: bool, manager_may_help
     return tier == "manager" or task.get("kind") == "foundation" or not workhorse_usable or manager_may_help
 
 
+def can_take(seat: dict, task: dict, acc: dict, mode: str, cost_model: dict, model: str, workhorse_usable: bool,
+             manager_may_help: bool) -> bool:
+    """Whether a seat may take a task now: its tier, and room on its subscription."""
+    return tier_allows(seat, task, workhorse_usable, manager_may_help) and fits(task, acc, mode, cost_model, model)
+
+
 def choose_task(seat: dict, ready: list[dict], acc: dict, mode: str, cost_model: dict, model: str,
                 idle_names: set[str], grace_until: dict[int, float], workhorse_usable: bool = False,
-                may_help: set[int] | None = None) -> dict | None:
-    """Best ready task for an idle seat: the right tier first, then the lead's suggested owners."""
+                may_help: set[int] | None = None, owner_cannot: set[int] | None = None) -> dict | None:
+    """Best ready task for an idle seat: the right tier first, then the lead's suggested owners. owner_cannot: tasks
+    whose suggested owner is free but cannot take them now (its subscription is nearly used up), so nobody waits
+    for it."""
     t = now()
     options = []
     for task in ready:
-        if not tier_allows(seat, task, workhorse_usable, task["id"] in (may_help or set())):
-            continue
-        if not fits(task, acc, mode, cost_model, model):
+        if not can_take(seat, task, acc, mode, cost_model, model, workhorse_usable, task["id"] in (may_help or set())):
             continue
         owner = task.get("suggested_owner")
-        if owner and owner != seat["name"]:
+        if owner and owner != seat["name"] and task["id"] not in (owner_cannot or set()):
             # The lead chose someone else: wait for them while they are busy, up to a grace period.
             if owner not in idle_names and grace_until.get(task["id"], 0) > t:
                 continue

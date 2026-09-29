@@ -258,6 +258,37 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(pick["name"], "claude-2")
             st.close()
 
+    def test_c25_a_task_its_suggested_seat_cannot_take_goes_to_another(self):
+        """The lead suggested boole for a medium task, but boole's subscription is nearly used up, so boole only
+        takes small or light work for now. Every other seat left the task to boole because boole was free: it
+        waited until that subscription recovered (days, for a weekly limit), while curie sat idle."""
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            st.set("phase", "build")
+            st.upsert_account("claude-1", vendor="claude")
+            st.upsert_account("claude-2", vendor="claude", util_5h=0.95, reset_5h=int(time.time()) + 4 * 3600)
+            places = {"ada": "claude-1", "boole": "claude-2", "curie": "claude-1"}
+            for name, account in places.items():
+                st.upsert_seat(name, vendor="claude", tier="manager", role="lead" if name == "ada" else "member",
+                               account=account, model="claude-opus-5-5", status="idle")
+            tid = st.create_task("Checkout page", "Build the checkout page.", "it works", ["checkout.py"], [],
+                                 size="M", kind="build", suggested_owner="boole", created_by="ada", tier="manager")
+            seats = {name: types.SimpleNamespace(name=name, down=False, busy=name == "ada", runner=object(),
+                                                 pending=[], account=types.SimpleNamespace(name=account))
+                     for name, account in places.items()}
+            given: list[tuple[str, int]] = []
+            fake = types.SimpleNamespace(store=st, seats=seats, lead_name="ada", grace_until={},
+                                         cfg=types.SimpleNamespace(accounts=[Account("claude-1", "claude"),
+                                                                             Account("claude-2", "claude")]),
+                                         workhorse_seats=lambda modes=None: [], manager_may_help=lambda ready: set(),
+                                         give_task=lambda rt, task, mode: given.append((rt.name, task["id"])) or True)
+            fake.accounts = lambda: orchestrator.Orchestrator.accounts(fake)
+            modes = orchestrator.Orchestrator.modes(fake)
+            self.assertEqual(modes["claude-2"], "conserve")
+            orchestrator.Orchestrator.assign_work(fake, modes)
+            self.assertEqual(given, [("curie", tid)])
+            st.close()
+
     def test_a4_the_heartbeat_says_whether_a_project_runs(self):
         with TempHome() as home:
             st = Store(home / "team.db")

@@ -1255,12 +1255,25 @@ class Orchestrator:
         cost_model = lessons_cost_model()
         workhorse_usable = bool(self.workhorse_seats(modes))
         may_help = self.manager_may_help(ready) if workhorse_usable else set()
+        # A free seat the lead suggested, that cannot take its task now (its subscription only has room for small or
+        # light work): the others must not keep waiting for it.
+        rows = {row["name"]: row for row in idle_rows}
+        owner_cannot = set()
+        for task in ready:
+            row = rows.get(task.get("suggested_owner") or "")
+            if row is None:
+                continue
+            place = self.seats[row["name"]].account.name
+            if not scheduler.can_take(row, task, accounts.get(place, {}), modes.get(place, "normal"), cost_model,
+                                      row.get("model") or "", workhorse_usable, task["id"] in may_help):
+                owner_cannot.add(task["id"])
         for row in scheduler.order_idle_seats(idle_rows, accounts):
             rt = self.seats[row["name"]]
             acc = accounts.get(rt.account.name, {})
             task = scheduler.choose_task(row, ready, acc, modes.get(rt.account.name, "normal"), cost_model,
                                          row.get("model") or "", idle_names, self.grace_until,
-                                         workhorse_usable=workhorse_usable, may_help=may_help)
+                                         workhorse_usable=workhorse_usable, may_help=may_help,
+                                         owner_cannot=owner_cannot)
             if task is None:
                 continue
             if self.give_task(rt, task, modes.get(rt.account.name, "normal")):
