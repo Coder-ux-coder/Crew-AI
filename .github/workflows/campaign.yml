@@ -5,6 +5,7 @@ on:
     branches:
       - claude/exciting-heisenberg-6w6gge
       - claude/jolly-wright-lz430a
+      - claude/friendly-sagan-bj2ykb
 
 permissions:
   contents: read

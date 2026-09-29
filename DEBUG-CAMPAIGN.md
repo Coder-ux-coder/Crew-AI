@@ -13,9 +13,15 @@ never copy it onto the owner's computer.)
 
 ## 0. Campaign state (updated after every step — read this first after any break or context summary)
 
-- Status: RUNNING — fourth continuation (Claude, cloud container, 2026-09-29), on branch
-  `claude/jolly-wright-lz430a` (it carries everything from `claude/exciting-heisenberg-6w6gge`, where the third
-  continuation stopped at the owner's usage limit). All work and execution in the cloud.
+- Status: RUNNING — fifth continuation (Claude, cloud container, 2026-09-29), on branch
+  `claude/friendly-sagan-bj2ykb` (it carries everything from `claude/jolly-wright-lz430a`, where the fourth
+  continuation stopped; that one carried `claude/exciting-heisenberg-6w6gge`). All work and execution in the cloud.
+- Fifth continuation: every branch read. The parallel branch `claude/funny-turing-8ra205` had real bugs this line
+  lacked; they are brought over (C31, A59, F21). Found and fixed besides: C32 (on Windows the checks ran in cmd.exe
+  and could never pass: P1), A60, A61, A63, A65, A66, A67, C33, F20, F22 — each with a test that fails without
+  its fix
+  (section 12, "Fifth continuation"). Questions for the owner: the parallel session recorded "no Urdu", later
+  briefs include Urdu (not applied; ask); the earlier request to run the campaign three times.
 - The owner's request (2026-09-29): Sonnet 5.5 replaces GPT-6 Sol as the team's workhorse; GPT-6 Sol leaves
   Crew. Done (section 12, "Fourth continuation"); full suite 211 tests OK with Playwright present (0 skipped);
   ruff (the cloud config), eslint and `node --check` clean; Settings and a finished project checked in Chromium.
@@ -39,11 +45,12 @@ never copy it onto the owner's computer.)
 - Round 8 (front end, line by line) done: every script in crewapp/static read; F10–F19 fixed, each with a Chromium
   test that fails on the code before it; the scorecard labels a replaced model as the earlier one. Round 10
   (Windows, by reading) done: launcher.py, the installer and uninstaller, server.main, __main__.py, crew.cmd (C30).
-- Last full suite: 216 tests OK (after C25–C29). After F10–F19 each fix's own test and the related browser tests
+- Last full suite (fifth continuation): 240 tests OK in 7 min 9 s on eea3625 (Python 3.11, Playwright + Chromium,
+  0 skipped); after it, F22 and A67 with their own tests and the Markdown tests. Earlier: 216 tests OK (after C25–C29). After F10–F19 each fix's own test and the related browser tests
   passed; a full run was started and interrupted before it finished — run it first (section 8 of CODEX-HANDOFF).
   The cloud checks run on every push to this branch (run 16, the model change and round 6: success).
-- Next: a full clean round (rounds 11+); the open question on per-model weekly limits (section 12); release 2.3.1
-  only with the owner's go-ahead. Keep this section, the ledger and section 11 current after every step.
+- Next: carry on the clean round (rounds 11+); the open question on per-model weekly limits (section 12); release
+  2.3.1 only with the owner's go-ahead. Keep this section, the ledger and section 11 current after every step.
 - Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
   taskkill, a file held open during a conversation copy or a database set-aside, the message boxes.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
@@ -440,6 +447,13 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
 - Round 10 (Windows, by reading) — done 2026-09-29. Read: launcher.py, install-windows.ps1, uninstall-windows.ps1,
   server.main and its Windows helpers, __main__.py, crew.cmd. Found and fixed: C30. Everything in it is verified
   by reading only (no Windows here).
+- Fifth continuation (every branch read; the clean round begun) — 2026-09-29. Checked: every branch and document;
+  the parallel branch claude/funny-turing-8ra205 against this line (its real bugs brought over); the tool servers
+  on a Windows code page and behind a proxy; how the checks run on Windows; the server's answers to odd codes and
+  to viewers that hang up; connections, the phone's screen list, the keys file, file names in other alphabets;
+  the chat page and the update screen when the connection drops and comes back (Chromium). Found and fixed: C31,
+  A59, C32 (P1 on Windows), A60, A61, A63, A65, A66, A67, C33, F20, F21, F22. Left: the rest of the clean
+  round.
 
 ---------------------------------------------------------------------------------------------------------------
 
@@ -879,6 +893,95 @@ Round 8, the front end (each test drives the real app in Chromium and fails on t
   Sol's tile now says "Earlier workhorse" (its record is kept) · test_a_model_no_longer_in_its_tier_is_labelled_as_earlier.
 - Read, no change needed: devices.js, misc.js, usage.js; index.html's look script (guarded). The nested-dialog
   Escape question: no dialog opens another (the capture viewer checks for one).
+
+### Fifth continuation (2026-09-29) — the parallel branch's fixes brought over; a clean round begun
+
+Every branch was read first. `claude/funny-turing-8ra205`, a parallel session, had found real bugs that never
+reached this line of work (its B-01, B-02, B-05): they are brought over here (C31, A59, F21), each with its own
+test. Its other changes are design choices of that session, not bugs (a 503 where this line answers 400, an extra
+"ask first"), and are not copied. Its record of an owner decision "no Urdu" is not applied: later briefs from the
+owner include Urdu, so it is a question for the owner (section 0). Every test below fails on the code before its
+fix (checked by running each against the code without the fix) and passes with it.
+
+- C31 · P2 · mcp_server.serve, devices_mcp.main, hook.main, agents._codex_config_args, chat.CodexSession · Codex
+  starts Crew's tool servers with only the variables named in their settings (no PYTHONUTF8), so on Windows they
+  spoke the console's code page (cp1252): the "✔" and "→" Crew writes into the team chat broke the CEO's team
+  tools on ChatGPT, and a letter outside cp1252 (Urdu, Łódź) stopped the tool server or reached the owner's
+  computer garbled · the servers used whatever encoding the environment gave them · they switch their own stdin,
+  stdout and stderr to UTF-8 (util.utf8_stdio), and Codex is told to start them in UTF-8 (agents.UTF8_ENV) ·
+  test_c31_the_team_tools_read_and_write_utf8_whatever_the_code_page, test_c31_the_device_tools_pass_any_language_
+  through_exactly, test_c31_codex_is_told_to_start_the_tool_servers_in_utf8 (the Windows code page simulated).
+- A59 · P2 · devices_mcp.call_app · with an office web proxy set (HTTP_PROXY), every browser, computer and phone
+  tool of a chat or an agent failed with "The Crew app is not running": the tool server asked Crew, on this very
+  computer, through the proxy · urllib's default opener follows the proxy settings · it asks directly (no proxy),
+  as the launcher does · test_a59_the_device_tools_reach_crew_directly_behind_an_office_proxy.
+- C32 · P1 (Windows) · gitops.run_checks · the agents are told the checks run with bash and write them that way
+  (`test -s report.md`, `&&`, `$VAR`); on Windows they ran in cmd.exe, where such a check can never pass, so every
+  piece of work was sent back until the project stopped · Windows was given no bash · the checks run in Git for
+  Windows' bash: the one Claude Code is told to use (CLAUDE_CODE_GIT_BASH_PATH), the one next to git.exe, or where
+  Git installs itself (for everyone or per user); never System32's bash.exe, which starts WSL rather than a shell
+  in the project's folder · test_c32_on_windows_the_checks_run_with_gits_bash (the Windows folders laid out in a
+  temporary folder; Windows itself by reading).
+- A60 · P3 · server._authorized, server.pair_landing · a pairing link mangled on its way to the phone (a letter with
+  an accent) or a cookie holding one stopped the answer with an error ("Something went wrong: comparing strings
+  with non-ASCII characters is not supported") instead of the pairing page · secrets.compare_digest refuses such
+  text · the codes are compared as bytes · test_a60_a_pairing_link_or_cookie_with_an_odd_character_is_just_not_paired.
+- A61 · P3 · server._dispatch, CrewServer.handle_error · a tab or phone that hung up while Crew answered (closing a
+  tab mid-answer, a phone leaving the Wi-Fi) left two error reports in app.log each time, and Crew tried to send an
+  error page down the closed connection · a hang-up was handled as a fault · it is let go quietly; real faults are
+  still written · test_a61_a_viewer_that_hangs_up_mid_answer_leaves_no_error_behind.
+- A63 · P2 · server.api_connection_add, connections.split_args · a connected program's arguments typed on one line
+  were cut at every space: a folder in quotes such as "C:\Users\Mohid Zeeshan\Documents" (the owner's own folder
+  has a space) came apart and the connection could not start · str.split() · quoted parts stay whole, and
+  backslashes stay as they are (Windows folders) · test_a63_a_quoted_argument_with_a_space_stays_whole.
+- A65 · P2 · phone.PhoneService.elements, phone.parse_ui · while something moves on the phone (a video, an
+  animation) Android cannot list the screen ("could not get idle state") and writes no new list; Crew then read the
+  list left from an earlier screen, so the assistant was told that screen was showing and "tap Send" tapped where
+  Send had been. A list cut off half-way stopped with "syntax error: line 1, column 0" · the earlier list was never
+  removed; a parse error was not the phone's own error · the old list is removed first; a screen that cannot be
+  listed says so plainly and suggests a screenshot · test_a65_a_screen_that_cannot_be_listed_is_never_answered_
+  with_an_earlier_one.
+- A66 · P2 · settings.save_secret, util.atomic_write · secrets.env last saved by Notepad in Windows' older encoding
+  (a note with "é" or "£"): every key added or removed in Settings was refused with a "codec" message (C28 made
+  reading it tolerant, not saving) · read strictly as UTF-8 · the owner's other lines go back byte for byte
+  (surrogateescape) · test_a66_a_key_saves_when_the_keys_file_was_last_saved_by_notepad.
+- C33 · P2 · gitops.git (quality.scan, changed_files, diffstat, repo_overview), gitops.merge_into · git writes a file
+  name in another alphabet as escapes in quotes ("b/\330\261…py"): Crew's scan took that for the name, its type
+  ended in a quote, so the checks for Python never read an Urdu-named Python file (the note under round 6), and the
+  reviewer, the report and the refiner saw escapes; a clash in a file whose name has a space was reported as two
+  files · core.quotepath, and .split() · git is asked to write names as they are; clashes are read line by line ·
+  test_c33_files_named_in_urdu_or_with_spaces_are_named_plainly.
+- F20 · P2 · chat.js ensureStream, resync · the chat page asked Crew where the answer stood only after its live
+  connection had failed twice in a row. Crew restarting (an update) or a phone's Wi-Fi dropping for a moment
+  reconnects at the first try: an answer that finished meanwhile never appeared, and one that was lost left the
+  page waiting for ever · the check was tied to a second failure, not to the connection coming back · it runs each
+  time the connection comes back: a finished answer is shown, text written in the gap is filled in, a lost one
+  says so; a newer answer is told from an older one by counting them (the last message could be an older answer)
+  · test_f20_after_the_connection_comes_back_the_chat_shows_where_things_are (Chromium, the connection dropped by
+  the test).
+- F21 · P2 · app.js findCrew, waitForRestart, installUpdate; offline.html; sw.js · after an update the page looks
+  for Crew on its other ports, where it cannot read the answer: whatever answered there was taken for Crew
+  (another program, a web page an agent was testing) and the owner was sent to it. A Crew back at its own address
+  on its earlier version (the update could not be installed) was not recognised: "Updating Crew…" for six minutes
+  · any answer counted; only the new version counted · another port counts only if Crew's icon loads from it; a
+  new Crew process at the same address counts as back; the offline page does the same (the cached copy is renewed:
+  crew-shell-v3) · test_f21_after_an_update_only_crew_is_taken_for_crew (Chromium, another program on one of
+  Crew's ports, and a second Crew on another).
+- F22 · P2 · ui.markdown, chat.js (messages, the message box), projects.js, workflows.js, app.css · Urdu in a message
+  or an answer was laid out as English is, left to right: a sentence with an English word or a number in it came
+  out in the wrong order ("دوسرا نکتہ: Crew 2.3 میں نیا کیا ہے؟" read back to front), its "!" and "?" stood at
+  the start, list bullets sat on the wrong side (checklist 7.4, "Urdu (RTL)"; seen in Chromium) · no element said
+  its direction · every paragraph, heading, list item, table cell and message takes it from its own text
+  (dir="auto"); lists and tables use start and end instead of left; the message boxes follow what is typed ·
+  test_f22_urdu_reads_right_to_left_with_english_words_in_place (Chromium); the Markdown tests that compare exact
+  HTML expect the new attribute.
+- A67 · P3 · runs._run_dir · "/api/runs/.." answered as if a project were starting there (the id stood for Crew's
+  own folder, "." for the projects folder); nothing was read or changed · the id check allowed names made only of
+  dots · refused, as captures.resolve already did · test_a67_a_name_made_of_dots_is_not_a_project.
+- Looked at, no change (A62 and A64 were the first two's ids; left unused): the chat's saved details read back
+  (written by Crew only, as JSON); the captures list racing a deletion (a moment, answered again at once); the sign-in window's command line on Windows (a path with
+  a space works; one with brackets or & would not, which no install of Claude Code or Codex makes; by reading);
+  `crew doctor` into a file (the installer does not run it; the app's own runs are in UTF-8).
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
