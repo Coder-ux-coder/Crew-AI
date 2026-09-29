@@ -330,7 +330,8 @@ def cmd_doctor(args) -> int:
     try:
         cfg = config_mod.load(args.config)
         print(f"Settings: {cfg.source or 'defaults'} ✓  seats: {', '.join(f'{s.name}({s.tier})' for s in cfg.seats)}")
-        print(f"Models: work={cfg.models.work} ceo={cfg.models.ceo} banned={cfg.models.banned}")
+        print(f"Models: workhorse={cfg.models.workhorse} manager={cfg.models.work} ceo={cfg.models.ceo} "
+              f"banned={cfg.models.banned}")
     except config_mod.ConfigError as exc:
         print(c(f"Settings problem: {exc}", "31"))
         ok = False
