@@ -1090,6 +1090,60 @@ with sync_playwright() as p:
         self.assertTrue(res["settings"])
 
 
+class DoubleSendTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    held = {"runs": [], "chats": []}
+    def hold(kind):
+        def handler(route, request):
+            if request.method == "POST":
+                held[kind].append(route)  # the answer comes later, as from a busy computer
+            else:
+                route.continue_()
+        return handler
+    page.route("**/api/runs", hold("runs"))
+    page.route("**/api/chats", hold("chats"))
+    out = {}
+    for tab, kind in (("team", "runs"), ("claude", "chats")):
+        page.goto(sys.argv[1] + "#/new")
+        page.wait_for_selector(".product-tabs button[data-p=" + tab + "]")
+        page.click(".product-tabs button[data-p=" + tab + "]")
+        page.fill(".composer textarea", "Build a one-page website for the investment conference")
+        page.keyboard.press("Enter")
+        page.keyboard.press("Enter")  # pressed again before Crew has answered
+        page.click(".send-btn")       # and the send button too
+        page.wait_for_timeout(700)
+        out[kind] = len(held[kind])
+        for route in held[kind]:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"id": "t1", "title": "New chat", "messages": [], "engine": "claude"}))
+        held[kind].clear()
+        page.wait_for_timeout(300)
+    print(json.dumps(out))
+    b.close()
+"""
+
+    def test_f12_a_message_or_a_project_is_sent_once(self):
+        """Enter pressed twice (or the send button clicked as well) before Crew answered: the team started twice on
+        the same request, using the subscriptions twice over; a first message made two chats, one left empty."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]), {"runs": 1, "chats": 1})
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

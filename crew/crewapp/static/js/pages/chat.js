@@ -427,7 +427,10 @@ class Composer {
   }
 
   submit() {
-    if (this.busy) return;
+    // One send at a time: Enter pressed again, or the button clicked as well, before Crew has answered must not
+    // start a second team or make a second chat.
+    if (this.busy || this.sending) return;
+    if (this.improving) { toast('One moment — the prompt writer is still writing your message up.'); return; }
     if (this.uploads) { toast('One moment — still attaching your file.'); return; }
     const text = this.ta.value.trim();
     if (!text && !this.attachments.length) { this.ta.focus(); return; }
@@ -440,8 +443,10 @@ class Composer {
     stopDictation();
     speech.stop();
     const atts = this.attachments;
-    this.o.onSend(text, atts, { product: this.product, model: this.model, effort: this.effort, mode: this.mode, teamMode: this.teamMode, hours: this.hours,
-      account: this.account, accounts: this.teamAccounts, headToHead: this.headToHead });
+    this.sending = true;
+    Promise.resolve(this.o.onSend(text, atts, { product: this.product, model: this.model, effort: this.effort, mode: this.mode, teamMode: this.teamMode, hours: this.hours,
+      account: this.account, accounts: this.teamAccounts, headToHead: this.headToHead }))
+      .catch(fail).finally(() => { this.sending = false; });
   }
 
   clear() {
@@ -1111,7 +1116,7 @@ class ChatView {
   talk() {
     conversation({
       send: (text, handlers) => {
-        if (this.composer.busy) { handlers.onError('Still answering — one moment.'); return; }
+        if (this.composer.busy || this.composer.sending) { handlers.onError('Still answering — one moment.'); return; }
         this.voice = handlers;
         this.composer.ta.value = text;
         this.composer.submit();
