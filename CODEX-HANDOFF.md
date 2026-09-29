@@ -19,8 +19,15 @@ This file was written at the end of the third continuation. Since then (fourth c
   refusing Crew's merges; a file held open on Windows; Notepad's byte-order mark; the CEO's effort record mixing
   models; crew.cmd's encoding) and F10–F19 (front end: **F10 was a P1 script-injection hole in the Markdown
   renderer**; F12 a double submission that started one team per key press; forms that lost what was typed; …).
-- **Rounds:** 6 (team engine), 8 (front end) and 10 (Windows, by reading) are done. Next: a full clean round,
-  then the release — **only with the owner's go-ahead** (2.3.1, merge into `Crew-AI`, rehearse the updater).
+- **Rounds:** 6 (team engine), 8 (front end) and 10 (Windows, by reading) are done.
+- **What is left, in order:** (1) a full test run (see below); (2) the release — **only with the owner's
+  go-ahead** (2.3.1 in `crew/VERSION.json` with plain notes, merge into `Crew-AI`, rehearse the installed updater);
+  (3) on the owner's Windows PC: the desktop icon, one small team project with Sonnet 5.5 workhorse seats, the
+  Computer page's double-click; (4) the open question below; (5) a full clean round: the remaining checklists of
+  rounds 3, 4, 5, 7 and 9 (DEBUG-CAMPAIGN.md sections 7–9), then every check again until nothing new is found.
+- **Minor notes, not fixed:** quality.scan checks files whose names git quotes (Urdu names) for secrets but not for
+  risky lines; the agents' tier guide names the models as set now and does not follow a later change in
+  Settings; ChatGPT's usage is not read during team projects (the CEO's runs are `--ephemeral`).
 - **Tests:** the last complete run was 216 OK (after C29); every later fix's own test and the related browser tests
   pass. A full run after F10–F19 was started and interrupted: run it first. The browser tests need the Python
   `playwright` package (`pip install playwright`; Chromium is at /opt/pw-browsers).
