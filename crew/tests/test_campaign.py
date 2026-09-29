@@ -585,6 +585,19 @@ class DataFileTests(unittest.TestCase):
             self.assertEqual(target.read_text(encoding="utf-8"), "new")  # … the file is as it was …
             self.assertEqual([f.name for f in home.iterdir() if f.name.startswith(".crew.toml")], [])  # … no leftovers
 
+    def test_c28_a_settings_or_keys_file_saved_by_windows_notepad_is_read(self):
+        """Notepad (Windows 10 before 1903) saves UTF-8 with a byte-order mark: a hand-edited crew.toml was set aside
+        as damaged and the defaults used; the first key in secrets.env was silently ignored."""
+        with TempHome() as home:
+            (home / "crew.toml").write_bytes("\ufeff[team]\nmode = \"team\"\n".encode("utf-8"))
+            self.assertEqual(settings_mod.load()["team"]["mode"], "team")
+            self.assertIsNone(settings_mod.problem())
+            (home / "secrets.env").write_bytes("\ufeffHUNTER_API_KEY=abc123456789\nOTHER=zzz\n".encode("utf-8"))
+            self.assertEqual(load_env_file(home / "secrets.env"),
+                             {"HUNTER_API_KEY": "abc123456789", "OTHER": "zzz"})
+            settings_mod.save_secret("NEW_KEY", "value-123456")  # a key added from the app keeps the others
+            self.assertEqual(sorted(load_env_file(home / "secrets.env")), ["HUNTER_API_KEY", "NEW_KEY", "OTHER"])
+
     def test_c8_a_connections_file_of_the_wrong_shape(self):
         with TempHome() as home:
             path = home / "connections.json"

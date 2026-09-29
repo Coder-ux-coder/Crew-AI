@@ -190,7 +190,7 @@ def _find_config(explicit: str | None) -> Path | None:
 
 def load(explicit: str | None = None, seats: int | None = None) -> Config:
     path = _find_config(explicit)
-    data = tomllib.loads(path.read_text(encoding="utf-8")) if path else {}
+    data = tomllib.loads(path.read_text(encoding="utf-8-sig")) if path else {}  # -sig: Notepad's byte-order mark
 
     team = TeamSettings(**_known(TeamSettings, data.get("team", {})))
     models = ModelPolicy(**_known(ModelPolicy, _current_models(data.get("models", {}))))

@@ -68,7 +68,7 @@ def _raw() -> dict:
     p = path()
     if not p.is_file():
         return {}
-    return tomllib.loads(p.read_text(encoding="utf-8"))
+    return tomllib.loads(p.read_text(encoding="utf-8-sig"))  # -sig: a hand edit in Notepad starts with a byte-order mark
 
 
 SETTINGS_VERSION = 4
@@ -388,7 +388,7 @@ def save_secret(name: str, value: str | None) -> None:
     if "\n" in value or "\r" in value:
         raise ValueError("Paste the key on its own: it should be one line, without line breaks.")
     p = secrets_path()
-    lines = p.read_text(encoding="utf-8").splitlines() if p.is_file() else [
+    lines = p.read_text(encoding="utf-8-sig").splitlines() if p.is_file() else [
         "# Your API keys. Written by the Crew app; values are hidden from every chat, log and report."]
     lines = [ln for ln in lines if not re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*=", ln)]
     if value:

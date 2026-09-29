@@ -172,11 +172,12 @@ def tail(text: str, lines: int = 40, chars: int = 4000) -> str:
 
 
 def load_env_file(path: Path) -> dict[str, str]:
-    """Parse a KEY=VALUE file (comments and blank lines ignored, optional quotes)."""
+    """Parse a KEY=VALUE file (comments and blank lines ignored, optional quotes). A byte-order mark (Notepad's
+    UTF-8) is not part of the first key; a character that is not UTF-8 cannot stop Crew reading the rest."""
     values: dict[str, str] = {}
     if not path.is_file():
         return values
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
