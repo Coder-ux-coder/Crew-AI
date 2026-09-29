@@ -2436,6 +2436,18 @@ class ServerRobustnessTests(unittest.TestCase):
                                  headers={"X-Crew": "1", "Content-Type": "application/json"})
         self.assertEqual(status, 400)
 
+    def test_a68_a_broken_character_does_not_cut_a_live_view(self):
+        """Half of a character pair (an emoji cut in two, as a web page's shortened title or a damaged file may hold)
+        in one live event stopped that live view for everyone watching: the event could not be written, Crew wrote an
+        error into the middle of the stream, and nothing more reached the screen until it reconnected."""
+        s = self.s
+        cid = s.api("POST", "/api/chats", {})["id"]
+        ev = s.events(f"/api/chats/{cid}/events")
+        hub.publish(f"chat:{cid}", "delta", {"text": "Great deals \ud83c"})
+        hub.publish(f"chat:{cid}", "delta", {"text": "and the next words"})
+        got = [ev.get(timeout=10) for _ in range(2)]
+        self.assertEqual(got, [("delta", {"text": "Great deals ?"}), ("delta", {"text": "and the next words"})])
+
     def test_a63_a_quoted_argument_with_a_space_stays_whole(self):
         """The owner's own folder has a space in it (C:\\Users\\Mohid Zeeshan). A connection given that folder,
         typed on one line in quotes as the guides show, was cut in two at the space and could not start."""

@@ -456,7 +456,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
             for event, data in initial or []:
-                self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode())
+                self.wfile.write(f"event: {event}\ndata: {json.dumps(data)}\n\n".encode("utf-8", "replace"))
             self.wfile.flush()
             if on_ready:  # runs once this viewer is listening, so nothing it sends is missed
                 threading.Thread(target=on_ready, daemon=True).start()
@@ -465,7 +465,9 @@ class Handler(BaseHTTPRequestHandler):
                     payload = q.get(timeout=15)
                 except Exception:
                     payload = ": ping\n\n"
-                self.wfile.write(payload.encode())
+                # "replace", as for every answer: half of a character pair (an emoji cut in two in a web page's title,
+                # a damaged file) must not cut the live view for everyone watching
+                self.wfile.write(payload.encode("utf-8", "replace"))
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             pass
