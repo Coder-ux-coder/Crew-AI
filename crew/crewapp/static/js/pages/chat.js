@@ -939,8 +939,11 @@ class ChatView {
       notice: (d) => this.notice(d.text, d.kind === 'error' ? 'bad' : d.kind === 'updated' || d.kind === 'failover' ? 'good' : ''),
       done: (d) => this.finishLive(d),
     });
-    let drops = 0;
-    this.es.onerror = () => { if (++drops > 1 && this.composer.busy) setTimeout(() => this.resync(), 1500); };
+    // A connection that comes back (Crew restarted, a phone's Wi-Fi dropped for a moment) missed what happened in
+    // between: ask Crew where the answer stands.
+    let dropped = false;
+    this.es.onerror = () => { dropped = true; };
+    this.es.addEventListener('open', () => { if (dropped) { dropped = false; this.resync(); } });
     await opened(this.es);
   }
 
@@ -989,10 +992,20 @@ class ChatView {
     if (!this.alive || !this.id) return;
     try {
       const c = await api('/api/chats/' + this.id);
-      if (!c.busy && this.composer.busy) {
-        const last = c.messages[c.messages.length - 1];
-        if (last && last.role === 'assistant') this.finishLive({ text: last.text, meta: last.meta });
-        // Crew restarted in the middle of the answer: nothing more is coming, so do not wait for it for ever.
+      if (!this.alive || this.composer.sending) return;  // a message on its way: its answer comes on the stream
+      if (c.busy) {
+        // Still being written: what was written while the page could not hear it is shown too.
+        if (!this.composer.busy) this.composer.setBusy(true);
+        const t = this.live || this.startLive(c.live || {});
+        const partial = c.partial || '';
+        if (partial.length > t.text.length && partial.startsWith(t.text)) t.delta(partial.slice(t.text.length));
+      } else if (this.composer.busy) {
+        // A newer answer than the page has shown: it finished meanwhile. None: Crew restarted in the middle of it,
+        // so nothing more is coming, and the page must not wait for it for ever.
+        const shown = ((this.chat && this.chat.messages) || []).filter((m) => m.role === 'assistant').length;
+        const answers = c.messages.filter((m) => m.role === 'assistant');
+        const last = answers[answers.length - 1];
+        if (answers.length > shown) this.finishLive({ text: last.text, meta: last.meta });
         else this.finishLive({ text: 'This answer was interrupted: Crew restarted before it was finished. Please send your message again.', meta: { error: true } });
       }
     } catch (e) { /* still offline */ }

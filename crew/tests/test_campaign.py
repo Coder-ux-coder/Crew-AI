@@ -2532,5 +2532,83 @@ class FileNameTests(unittest.TestCase):
         self.assertEqual(result.conflicts, ["My Report.md"])
 
 
+class StreamResyncTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+# The page's live connection, under the test's control: it can drop and come back, as over a phone's Wi-Fi.
+FAKE = '''(() => {
+  const all = [];
+  class Stream extends EventTarget {
+    constructor(url) { super(); this.url = String(url); this.readyState = 0; all.push(this); setTimeout(() => this.up(), 20); }
+    up() { this.readyState = 1; const e = new Event('open'); if (this.onopen) this.onopen(e); this.dispatchEvent(e); }
+    down() { this.readyState = 0; const e = new Event('error'); if (this.onerror) this.onerror(e); this.dispatchEvent(e); }
+    send(name, data) { this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(data) })); }
+    close() { this.readyState = 2; }
+  }
+  window.EventSource = Stream;
+  window.__streams = all;
+})();'''
+base, chrome, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+out = {}
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=chrome)
+    page = b.new_page(viewport={"width": 1280, "height": 800})
+    page.add_init_script(FAKE)
+    page.goto(base + "#/chat/" + cid)
+    page.wait_for_selector(".composer textarea")
+    ch = "window.__streams.filter((s) => s.url.includes('/api/chats/%s/events')).pop()" % cid
+    page.wait_for_function(ch + ".readyState === 1")
+    # 1. The answer is written while the page hears nothing (the Wi-Fi dropped for a moment), then it reconnects
+    page.fill(".composer textarea", "hello")
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".send-btn.stop")
+    for _ in range(150):  # Crew has finished and kept the answer
+        if page.evaluate("fetch('/api/chats/%s').then((r) => r.json()).then((c) => !c.busy && c.messages.length === 2)"
+                         % cid):
+            break
+        page.wait_for_timeout(200)
+    page.evaluate(ch + ".down()")
+    page.wait_for_timeout(300)
+    page.evaluate(ch + ".up()")
+    page.wait_for_timeout(2500)
+    out["blip_still_waiting"] = page.locator(".send-btn.stop").count() > 0
+    out["blip_answer_shown"] = "That is all." in page.inner_text(".thread")
+    # 2. Crew restarts in the middle of an answer and is back at once: that answer is gone, nothing more will come
+    page.evaluate(ch + ".send('start', {engine: 'claude'})")
+    page.evaluate(ch + ".send('delta', {text: 'Working on the second answer'})")
+    page.wait_for_selector(".send-btn.stop")
+    page.evaluate(ch + ".down()")
+    page.wait_for_timeout(300)
+    page.evaluate(ch + ".up()")
+    page.wait_for_timeout(2500)
+    out["restart_still_waiting"] = page.locator(".send-btn.stop").count() > 0
+    out["restart_told"] = "interrupted" in page.inner_text(".thread")
+    print(json.dumps(out))
+    b.close()
+"""
+
+    def test_f20_after_the_connection_comes_back_the_chat_shows_where_things_are(self):
+        """The chat page asked Crew where the answer stood only after its connection had failed twice in a row. Crew
+        restarting (an update) or a phone's Wi-Fi dropping for a moment reconnects at the first try: an answer that
+        finished meanwhile never appeared, and one that was lost left the page waiting for ever."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        os.environ.update(ENV)
+        s = AppServer()
+        try:
+            cid = s.api("POST", "/api/chats", {})["id"]
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium(), cid],
+                                 capture_output=True, text=True, timeout=180)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
+                         {"blip_still_waiting": False, "blip_answer_shown": True,
+                          "restart_still_waiting": False, "restart_told": True})
+
+
 if __name__ == "__main__":
     unittest.main()
