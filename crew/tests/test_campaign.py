@@ -1341,6 +1341,51 @@ with sync_playwright() as p:
         self.assertEqual(res["after"], "")
 
 
+class ComputerClickTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+PIXEL = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    clicks = []
+    page.route("**/api/computer/status", lambda route, request: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps({"available": True, "width": 1920, "height": 1080})))
+    page.route("**/api/computer/events", lambda route, request: route.fulfill(
+        status=200, content_type="text/event-stream",
+        body="event: frame\ndata: " + json.dumps({"data": PIXEL, "mime": "image/png"}) + "\n\n"))
+    def click(route, request):
+        clicks.append(json.loads(request.post_data or "{}"))
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True}))
+    page.route("**/api/computer/click", click)
+    page.goto(sys.argv[1] + "#/computer")
+    page.wait_for_selector("canvas.screen:not(.hidden)", timeout=15000)
+    page.dblclick("canvas.screen")
+    page.wait_for_timeout(1000)
+    print(json.dumps({"clicks": clicks}))
+    b.close()
+"""
+
+    def test_f17_a_double_click_on_the_computer_is_one_double_click(self):
+        """Each click on the live screen goes to the computer, where two quick ones make a double-click; the page
+        then sent a double-click as well: four clicks, so a file opened twice."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        clicks = json.loads(out.stdout.strip().splitlines()[-1])["clicks"]
+        self.assertEqual(len(clicks), 2, clicks)  # two clicks at the same place: the computer makes them a double-click
+        self.assertFalse(any(c.get("double") for c in clicks))
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

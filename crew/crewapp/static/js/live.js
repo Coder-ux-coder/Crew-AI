@@ -548,7 +548,8 @@ export class LiveComputer {
       if (this.rightNext) this.setRightNext(false);
       down = null;
     });
-    c.addEventListener('dblclick', (e) => { const p = this.screen.rel(e); this.send('click', { xr: p.x, yr: p.y, double: true }); });
+    // No extra double-click: each click above reaches the computer at once, and two quick ones at one place are a
+    // double-click there, as on the computer itself (sending one more made four clicks: a file opened twice).
     let wt = null, wheel = 0;
     c.addEventListener('wheel', (e) => {
       e.preventDefault();
