@@ -207,6 +207,7 @@ class OrchestratorTests(unittest.TestCase):
             fake = types.SimpleNamespace(store=st, say=lambda text, **k: said.append(text),
                                          failover=lambda rt, reason: moved.append(reason),
                                          answer_owner=lambda *a, **k: None, log=lambda *a: None)
+            fake.park = lambda *a: orchestrator.Orchestrator.park(fake, *a)
             rt = types.SimpleNamespace(name="sol-1", busy=True, owner_interrupt=0.0, pending=[],
                                        account=Account("chatgpt-1", "codex"))
             orchestrator.Orchestrator.on_result(fake, rt, {"limit_hit": True, "is_error": True, "text":
@@ -219,6 +220,9 @@ class OrchestratorTests(unittest.TestCase):
             orchestrator.Orchestrator.on_result(fake, rt, {"limit_hit": True, "is_error": True,
                                                            "text": "Usage limit reached."})  # no time given
             self.assertGreater(st.account("chatgpt-1")["parked_until"], time.time() + 3000)  # an hour, not a minute
+            st.upsert_account("chatgpt-1", parked_until=int(time.time() - 60))  # a reviewer on ChatGPT, the same way
+            orchestrator.Orchestrator.park(fake, "chatgpt-1", "You've hit your usage limit. Try again in 3 hours.")
+            self.assertAlmostEqual(st.account("chatgpt-1")["parked_until"], time.time() + 10800, delta=60)
             st.close()
 
     def test_c22_final_checks_that_keep_failing_end_with_an_honest_stop(self):

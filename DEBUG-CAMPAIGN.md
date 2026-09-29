@@ -694,7 +694,8 @@ Round 6 (the team engine, line by line: orchestrator.py read in full):
   from an earlier limit: already past, so it was parked for one minute, tried again, failed again, and the
   team was told it "resets" at a time gone by (ChatGPT seats report their limit only in words) · a stale
   parked_until was trusted · a reset still ahead is used; otherwise the time in the message ("try again in 2
-  hours 5 minutes"), else an hour (usage.limit_resets_at, now shared with the chats) ·
+  hours 5 minutes"), else an hour (usage.limit_resets_at, now shared with the chats); a reviewer or judge
+  on ChatGPT at its limit is parked the same way (Orchestrator.park, one place for both) ·
   test_c20_a_limit_parks_the_subscription_until_it_really_lifts.
 - C21 · P2 · orchestrator.prepare and every choice of a subscription · a seat that had moved to another
   subscription at a limit, which the owner later removed in Settings: continuing the project failed at once

@@ -673,12 +673,7 @@ class Orchestrator:
                 self.promote_lead(rt, "not signed in")
             return
         if data.get("limit_hit"):
-            acc = self.store.account(rt.account.name) or {}
-            until = int(acc.get("parked_until") or 0)  # reported with the limit (Claude Code) …
-            if until <= now():  # … or left over from an earlier one: read it from the message (Codex), else an hour
-                until = int(limit_resets_at(data.get("text") or "") or now() + 3600)
-            until = max(until, int(now() + 60))
-            self.store.upsert_account(rt.account.name, status="rejected", parked_until=until)
+            until = self.park(rt.account.name, data.get("text") or "")
             self.store.event("limit_hit", seat=rt.name, account=rt.account.name)
             self.say(f"{rt.account.name} reached its usage limit (resets {hhmm(until)}). Moving {rt.name} to another account.")
             self.failover(rt, reason="usage limit")
@@ -802,6 +797,17 @@ class Orchestrator:
             self.store.update_seat(rt.name, current_task=None)
 
     # =============================================================== failover
+
+    def park(self, account: str, text: str, reported: int | None = None) -> int:
+        """A subscription reached its usage limit: park it until the limit really lifts. That is the time reported
+        with it (Claude Code's rate report), or, when none is still ahead (ChatGPT reports its limit only in
+        words), the time in its message ("try again in 2 hours 5 minutes"), else an hour. Returns that time."""
+        until = int(reported or 0) or int((self.store.account(account) or {}).get("parked_until") or 0)
+        if until <= now():
+            until = int(limit_resets_at(text or "") or now() + 3600)
+        until = max(until, int(now() + 60))
+        self.store.upsert_account(account, status="rejected", parked_until=until)
+        return until
 
     def handle_parked(self, modes: dict[str, str]) -> None:
         """Seats whose account is parked move to a same-vendor account with headroom, or wait."""
@@ -1416,9 +1422,8 @@ class Orchestrator:
                                   setup=self._claude_setup(effort=effort), redact=self.redact,
                                   task_id=task["id"], read_only=True)
         self._account_usage(account.name, res)
-        row = self.store.account(account.name) or {}
-        if res.limit_hit and int(row.get("parked_until") or 0) <= now():  # the limit came without a rate report
-            self.store.upsert_account(account.name, status="rejected", parked_until=int(res.resets_at or now() + 3600))
+        if res.limit_hit:
+            self.park(account.name, res.text, res.resets_at)
         self.store.event("oneoff", seat=name, task_id=task["id"], state="error" if res.is_error else "done",
                          tokens=res.tokens, seconds=round(res.duration_s or 0))
         return res
