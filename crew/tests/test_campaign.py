@@ -221,6 +221,23 @@ class OrchestratorTests(unittest.TestCase):
             self.assertGreater(st.account("chatgpt-1")["parked_until"], time.time() + 3000)  # an hour, not a minute
             st.close()
 
+    def test_c22_final_checks_that_keep_failing_end_with_an_honest_stop(self):
+        """Every task merged, but the final checks failed: the lead was sent back to fix them, again and again,
+        with nothing to end it (no task was open, so the stall guard did not look)."""
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            said, phases = [], []
+            lead = types.SimpleNamespace(pending=[])
+            fake = types.SimpleNamespace(store=st, say=lambda text, **k: said.append(text), lead_name="ada",
+                                         seats={"ada": lead}, set_phase=phases.append, log=lambda *a: None)
+            for _ in range(2):
+                orchestrator.Orchestrator.on_final_done(fake, "red:test_app.py failed")
+            self.assertEqual(phases, ["build", "build"])  # two rounds of fixes …
+            orchestrator.Orchestrator.on_final_done(fake, "red:test_app.py failed")
+            self.assertEqual(phases[-1], "stopped")  # … then an honest stop, with the report
+            self.assertIn("final checks still fail", said[-1])
+            st.close()
+
     def test_a4_the_heartbeat_says_whether_a_project_runs(self):
         with TempHome() as home:
             st = Store(home / "team.db")
@@ -302,6 +319,7 @@ class StuckProjectTests(unittest.TestCase):
             self.assertIn("could not make progress", chat)
             self.assertTrue(st.events("escalation"), chat)  # the CEO was asked to rule before the stop
             self.assertTrue((run_dir / "REPORT.md").is_file())
+
 
     def test_c21_a_project_resumes_after_a_subscription_it_used_was_removed(self):
         """A seat moved to another subscription at a limit; the owner later removed that subscription in Settings.

@@ -310,6 +310,7 @@ class Orchestrator:
                 self.kickoff()
             else:
                 self.store.set("stop_requested", None)
+                self.store.set("final_red", 0)  # the owner may have fixed what failed: fresh attempts
                 self.set_phase(self.store.get("phase_before_stop") or ("build" if self.store.tasks() else "plan"))
                 self.started = now() - 60  # the time limit counts from the resume
                 self.resume_seats()
@@ -1849,6 +1850,15 @@ class Orchestrator:
         if outcome.startswith("red:") or outcome.startswith("changes:"):
             kind, _, detail = outcome.partition(":")
             what = "The final checks fail" if kind == "red" else "The CEO's final review requires changes"
+            if kind == "red":  # checks that can never pass would send the lead back for ever
+                rounds = int(self.store.get("final_red", 0) or 0) + 1
+                self.store.set("final_red", rounds)
+                if rounds >= 3:
+                    self.say(f"The final checks still fail after {rounds - 1} rounds of fixes:\n{clip(detail, 1500)}\n"
+                             "Stopping with an honest report. Everything done so far is saved; `crew resume` "
+                             "continues from here.", urgent=True)
+                    self.set_phase("stopped")
+                    return
             self.store.set("done_requested_at", None)
             self.store.set("completion_asked", None)
             self.set_phase("build")
