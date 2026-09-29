@@ -1093,10 +1093,12 @@ class Handler(BaseHTTPRequestHandler):
 
     @route("GET", "/api/lessons")
     def api_lessons(self):
+        models = settings.load()["models"]  # the record shown is each tier's model's own, as the CEO sees it
         items = [{"category": x["category"], "text": x["text"], "weight": x["weight"]} for x in lessons.top(80)]
         return self._json({"lessons": [x for x in items if x["category"] != "ceo"],
                            "ceo": [x for x in items if x["category"] == "ceo"],
-                           "effort_record": lessons.effort_stats()})
+                           "effort_record": lessons.effort_stats({"workhorse": models.get("workhorse") or "",
+                                                                   "manager": models.get("work") or ""})})
 
     # ------------------------------------------------------ internal (agents)
 

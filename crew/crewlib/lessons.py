@@ -252,15 +252,24 @@ def _effort_rank(effort) -> int:
     return EFFORT_ORDER.index(effort) if effort in EFFORT_ORDER else len(EFFORT_ORDER)
 
 
-def effort_stats() -> list[dict]:
-    """Per (tier, kind, size, effort): how many tasks, share approved first time, typical minutes and tokens."""
+def effort_stats(models: dict[str, str] | None = None) -> list[dict]:
+    """Per (tier, kind, size, effort): how many tasks, share approved first time, typical minutes and tokens.
+    models: each tier's model now ({"workhorse": …, "manager": …}); only that model's work counts for its tier, so
+    a tier given another model starts a record of its own (the earlier one is kept, and counts again if that model
+    comes back). A record from before models were written down (2.0) counts as the manager's."""
+    where, args = "", ()
+    if models:
+        where = ("WHERE (COALESCE(tier, 'manager') = 'workhorse' AND COALESCE(model, '') = ?) "
+                 "OR (COALESCE(tier, 'manager') = 'manager' AND COALESCE(model, '') IN (?, '')) ")
+        args = (models.get("workhorse") or "", models.get("manager") or "")
     db = _db()
     try:
         rows = [dict(r) for r in db.execute(
             "SELECT COALESCE(tier, 'manager') AS tier, COALESCE(kind, 'build') AS kind, COALESCE(size, 'M') AS size, "
             "COALESCE(effort, '') AS effort, COUNT(*) AS n, AVG(first_pass) AS first_pass, "
-            "AVG(minutes) AS minutes, AVG(tokens) AS tokens, AVG(rounds) AS rounds FROM effort_outcomes "
-            "GROUP BY COALESCE(tier, 'manager'), COALESCE(kind, 'build'), COALESCE(size, 'M'), COALESCE(effort, '')")]
+            "AVG(minutes) AS minutes, AVG(tokens) AS tokens, AVG(rounds) AS rounds FROM effort_outcomes " + where +
+            "GROUP BY COALESCE(tier, 'manager'), COALESCE(kind, 'build'), COALESCE(size, 'M'), COALESCE(effort, '')",
+            args)]
     finally:
         db.close()
     rows.sort(key=lambda r: (r["tier"] != "workhorse", str(r["kind"]), str(r["size"]), _effort_rank(r["effort"])))
@@ -270,10 +279,10 @@ def effort_stats() -> list[dict]:
 TIER_WORDS = {"workhorse": "workhorse (Sonnet 5.5)", "manager": "manager (Opus 5.5)"}
 
 
-def render_for_ceo(limit: int = 12) -> str:
-    """What the CEO has learned about effort: its own record plus its written lessons."""
+def render_for_ceo(models: dict[str, str] | None = None, limit: int = 12) -> str:
+    """What the CEO has learned about effort: its own record (of each tier's model now) plus its written lessons."""
     lines = []
-    stats = effort_stats()
+    stats = effort_stats(models)
     if stats:
         lines.append("Your record so far (who built it, task kind, size, effort → tasks, approved first time, "
                      "typical minutes, typical tokens):")
@@ -291,12 +300,12 @@ def render_for_ceo(limit: int = 12) -> str:
 DERIVED = "crew-effort-record"  # the source of the CEO's lessons that are worked out from its effort record
 
 
-def derive_ceo_lessons(min_tasks: int = 3) -> list[str]:
+def derive_ceo_lessons(models: dict[str, str] | None = None, min_tasks: int = 3) -> list[str]:
     """Turn the effort record into plain lessons for the CEO, kept in step with the record: each is refreshed with
     the latest numbers and counts for more each time the record confirms it; one the record no longer supports
     goes. ("high is enough" must not stay once high has stopped being enough: a changed verdict is a new lesson,
     and the old one is gone.) Only these worked-out lessons change; the record itself is kept."""
-    stats = effort_stats()
+    stats = effort_stats(models)
     by_group: dict[tuple[str, str, str], list[dict]] = {}
     for r in stats:
         by_group.setdefault((r["tier"], r["kind"], r["size"]), []).append(r)

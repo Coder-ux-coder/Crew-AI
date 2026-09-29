@@ -109,6 +109,30 @@ class LessonTests(unittest.TestCase):
             self.assertIn("Your record so far", lessons.render_for_ceo())
             self.assertEqual(lessons.derive_ceo_lessons(), [])  # nothing is learned about unknown levels
 
+    def test_c29_the_effort_record_is_each_models_own(self):
+        """The workhorse became Sonnet 5.5, but the CEO's effort record is kept per tier: GPT-6 Sol's results were
+        shown to the CEO as the workhorse's (Sonnet's), and lessons worked out from them named Sonnet 5.5."""
+        now_models = {"workhorse": "claude-sonnet-5-5", "manager": "claude-opus-5-5"}
+        with TempHome():
+            for _ in range(4):  # Sol struggled with routine fixes at medium effort
+                lessons.record_effort_outcome("fix", "S", "medium", 2, 5, 1000, tier="workhorse", model="gpt-6-sol")
+            for _ in range(3):  # Sonnet gets docs right first time at low effort
+                lessons.record_effort_outcome("docs", "S", "low", 1, 3, 800, tier="workhorse", model="claude-sonnet-5-5")
+            lessons.record_effort_outcome("build", "M", "high", 1, 9, 5000, tier="manager", model="claude-opus-5-5")
+            db = lessons._db()  # a record from before models were written down (2.0): the manager's
+            db.execute("INSERT INTO effort_outcomes(ts,project,kind,size,effort,rounds,first_pass,minutes,tokens) "
+                       "VALUES(?,?,?,?,?,?,?,?,?)", (time.time(), "old", "build", "M", "high", 1, 1, 7.0, 4000))
+            db.close()
+            stats = lessons.effort_stats(now_models)
+            self.assertEqual([(r["tier"], r["kind"], r["effort"], r["n"]) for r in stats],
+                             [("workhorse", "docs", "low", 3), ("manager", "build", "high", 2)])
+            shown = lessons.render_for_ceo(now_models)
+            self.assertNotIn("fix S", shown)  # Sol's results are not Sonnet's
+            learned = lessons.derive_ceo_lessons(now_models)
+            self.assertEqual(len(learned), 1)
+            self.assertIn("docs tasks of size S built by the workhorse (Sonnet 5.5) at low effort", learned[0])
+            self.assertEqual(len(lessons.effort_stats()), 3)  # nothing was deleted: Sol's record is still there
+
     def test_c12_the_ceos_effort_lessons_follow_its_record(self):
         """A lesson worked out from the record kept its first numbers for ever; worse, when the record turned, the
         new lesson (same words, other verdict) only reinforced the old "high is enough"."""

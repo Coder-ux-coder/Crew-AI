@@ -192,6 +192,10 @@ class Orchestrator:
 
     # ============================================================ agent setup
 
+    def tier_models(self) -> dict[str, str]:
+        """Each tier's model now (the CEO's effort record is each model's own)."""
+        return {"workhorse": self.cfg.models.workhorse, "manager": self.cfg.models.work}
+
     def seat_model(self, spec) -> str:
         """The model a seat runs: its tier's model (Sonnet 5.5 for the workhorse, Opus 5.5 for a manager)."""
         return self.cfg.models.workhorse if spec.tier == "workhorse" else self.cfg.models.work
@@ -359,7 +363,8 @@ class Orchestrator:
         self.store.event("oneoff", seat="refiner", state="start", role="refiner", vendor="claude",
                          account=lead.account.name, model=self.cfg.models.work, effort=self.cfg.models.effort_light)
         res = run_once_claude(
-            prompts.refiner_prompt(self.request, self.repo_overview(), lessons.render_for_ceo()), seat="refiner",
+            prompts.refiner_prompt(self.request, self.repo_overview(), lessons.render_for_ceo(self.tier_models())),
+            seat="refiner",
             role="member", account=lead.account, workdir=self.main_wt,
             setup=self._claude_setup(effort=self.cfg.models.effort_light), redact=self.redact,
             json_schema=prompts.REFINER_SCHEMA, read_only=True, timeout=600, with_team_tools=False)
@@ -1181,7 +1186,7 @@ class Orchestrator:
 
     def _ceo_plan_job(self) -> None:
         prompt = prompts.ceo_plan_prompt(self.brief_text(), self.store.get("plan_summary", ""), self._board_text(),
-                                         lessons.render_for_ceo(), self.scorecard_text())
+                                         lessons.render_for_ceo(self.tier_models()), self.scorecard_text())
         self.store.set("verdict:plan", None)
         res = self.run_ceo("ceo-plan", prompt, json_schema=prompts.CEO_PLAN_SCHEMA,
                            accept=lambda r: bool(self.store.get("verdict:plan")) or self._valid_verdict(r))
@@ -2151,7 +2156,7 @@ class Orchestrator:
         except Exception as exc:  # the memory may be locked or damaged: the other lessons are still saved
             self.log(f"cost model: {exc}")
         try:
-            lessons.derive_ceo_lessons()
+            lessons.derive_ceo_lessons(self.tier_models())
         except Exception as exc:  # lessons must never break delivery
             self.log(f"CEO lessons: {exc}")
         for ev in self.store.events("failover"):
