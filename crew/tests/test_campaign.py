@@ -1386,6 +1386,48 @@ with sync_playwright() as p:
         self.assertFalse(any(c.get("double") for c in clicks))
 
 
+class LibraryTabTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    held = []
+    page.route("**/api/library", lambda route, request: held.append(route))  # the files list is slow today
+    page.goto(sys.argv[1] + "#/library")
+    page.wait_for_timeout(500)
+    page.click(".seg button:has-text('Captures')")
+    page.wait_for_timeout(800)
+    for route in held:
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"items": [
+            {"name": "report.docx", "kind": "doc", "where": "A chat", "modified": 0, "size": 10, "origin": "#/chats",
+             "url": "/files/x"}]}))
+    page.wait_for_timeout(800)
+    print(json.dumps({"tab": page.evaluate("document.querySelector('.seg button.on').textContent"),
+                      "gallery": page.evaluate("!!document.querySelector('.gallery')"),
+                      "files": page.evaluate("!!document.querySelector('.list .li')")}))
+    b.close()
+"""
+
+    def test_f18_the_library_shows_the_tab_that_is_chosen(self):
+        """Switching tabs while the other one was loading: whichever list arrived last was drawn, so the files list
+        could appear under the Captures tab."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
+                         {"tab": "Captures", "gallery": True, "files": False})
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

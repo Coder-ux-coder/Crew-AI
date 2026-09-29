@@ -27,6 +27,7 @@ export function libraryPage(view) {
     clear(body, h('div', { class: 'muted' }, 'Loading…'));
     try {
       const r = await api('/api/library');
+      if (tab !== 'files') return;  // the owner moved to the other tab meanwhile: it is not drawn over
       clear(body, ...(r.items.length ? [h('div', { class: 'list' }, r.items.map((f) => h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => bus.emit('panel:preview', f) },
         h('span', { class: 'li-ico' }, icon(FILE_ICONS[f.kind] || 'doc')),
         h('span', { class: 'li-main' }, h('b', null, f.name.split('/').pop()), h('small', null, `${f.where} · ${ago(f.modified)} · ${bytes(f.size)}`)),
@@ -53,6 +54,7 @@ export function libraryPage(view) {
       btn('Phone picture', async () => { try { const info = await api('/api/phone/screenshot', { method: 'POST', body: {} }); bus.emit('captures'); openViewer(info); } catch (e) { fail(e); } }, { cls: 'sm', ic: 'phone' }),
       btn('Add from this device', () => upload.click(), { cls: 'sm', ic: 'plus' }), upload), gallery);
     try { caps = (await api('/api/captures')).captures; } catch (e) { fail(e); }
+    if (tab !== 'captures') return;
     clear(gallery, ...(caps.length ? caps.map((c) => h('div', { class: 'shot', role: 'button', tabindex: 0, onclick: () => openViewer(c, { onChange: draw }) },
       c.kind === 'video' ? h('video', { src: c.url + '#t=0.5', preload: 'metadata', muted: true }) : h('img', { src: c.url, loading: 'lazy', alt: c.name }),
       c.kind === 'video' ? h('span', { class: 'kind' }, 'Recording') : null,
