@@ -2504,5 +2504,33 @@ class KeysFileTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), b"# Cl\xe9s de Mohid \xa3\nOPENAI_API_KEY=sk-abc123456789\n")
 
 
+class FileNameTests(unittest.TestCase):
+    def test_c33_files_named_in_urdu_or_with_spaces_are_named_plainly(self):
+        """Git writes a name in another alphabet as escapes in quotes ("b/\\330\\261…py"). Crew's scan took that for
+        the name: its type ended in a quote, so the checks for Python never read an Urdu-named Python file, and the
+        reviewer, the report and the refiner saw escapes where the name should be. A clash in a file whose name has a
+        space in it was reported as two files."""
+        from crewlib import quality
+
+        repo = gitops.ensure_repo(Path(tempfile.mkdtemp(prefix="crew-repo-")))
+        (repo / "My Report.md").write_text("base\n", encoding="utf-8")
+        gitops.commit_all(repo, "base")
+        base = gitops.head(repo)
+        gitops.git(repo, "checkout", "-q", "-b", "task")
+        (repo / "رپورٹ.py").write_text("import subprocess\nsubprocess.run(cmd, shell=True)\n", encoding="utf-8")
+        (repo / "My Report.md").write_text("from the task\n", encoding="utf-8")
+        gitops.commit_all(repo, "task")
+        scan = quality.scan(repo, base)
+        self.assertEqual([(f.file, f.line, f.what) for f in scan.findings],
+                         [("رپورٹ.py", 2, "runs a shell command with shell=True")])
+        self.assertEqual(sorted(gitops.changed_files(repo, base, "task")), ["My Report.md", "رپورٹ.py"])
+        self.assertIn("رپورٹ.py", gitops.diffstat(repo, base, "task"))
+        gitops.git(repo, "checkout", "-q", "--detach", base)
+        (repo / "My Report.md").write_text("from newer work\n", encoding="utf-8")
+        gitops.commit_all(repo, "newer")
+        result = gitops.merge_into(repo, "task", "merge the task")
+        self.assertEqual(result.conflicts, ["My Report.md"])
+
+
 if __name__ == "__main__":
     unittest.main()

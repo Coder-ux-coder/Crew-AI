@@ -27,8 +27,9 @@ class GitError(RuntimeError):
 def git(cwd: Path, *args: str, check: bool = True, timeout: float = 300) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
-    proc = subprocess.run(["git", *args], cwd=str(cwd), env=env, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout)
+    # core.quotepath=false: a file named in another alphabet (Urdu) is written as its name, not as escapes in quotes
+    proc = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=str(cwd), env=env, capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {clip(proc.stderr or proc.stdout, 1500)}")
     return proc
@@ -214,7 +215,7 @@ def merge_into(main_wt: Path, branch: str, message: str) -> MergeResult:
         proc = git(main_wt, "merge", "--no-ff", "--no-edit", "--no-verify", "-m", message, branch, check=False)
         if proc.returncode == 0:
             return MergeResult(True, [])
-        conflicts = git(main_wt, "diff", "--name-only", "--diff-filter=U", check=False).stdout.split()
+        conflicts = git(main_wt, "diff", "--name-only", "--diff-filter=U", check=False).stdout.splitlines()
         git(main_wt, "merge", "--abort", check=False)
         if conflicts:
             return MergeResult(False, conflicts, clip(proc.stdout + proc.stderr, 2000))
