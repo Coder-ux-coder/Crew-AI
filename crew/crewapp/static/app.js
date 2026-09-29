@@ -219,7 +219,8 @@ $('#panelMax').addEventListener('click', () => {
 
 // Drag the divider to resize the panel; the width is remembered.
 (function resizable() {
-  const saved = Number(localStorage.getItem('crew.panelW') || 0);
+  let saved = 0;
+  try { saved = Number(localStorage.getItem('crew.panelW') || 0); } catch (e) { /* the browser keeps no site data */ }
   if (saved > 280) document.documentElement.style.setProperty('--panel-w', saved + 'px');
   const bar = $('#resizer');
   bar.addEventListener('pointerdown', (e) => {
@@ -240,7 +241,10 @@ $('#panelMax').addEventListener('click', () => {
     bar.addEventListener('pointermove', move);
     bar.addEventListener('pointerup', up);
   });
-  bar.addEventListener('dblclick', () => { document.documentElement.style.removeProperty('--panel-w'); localStorage.removeItem('crew.panelW'); });
+  bar.addEventListener('dblclick', () => {
+    document.documentElement.style.removeProperty('--panel-w');
+    try { localStorage.removeItem('crew.panelW'); } catch (e) { /* the browser keeps no site data */ }
+  });
 })();
 
 // ------------------------------------------------------------------ previews and the files list

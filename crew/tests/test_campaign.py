@@ -1052,6 +1052,44 @@ with sync_playwright() as p:
             self.assertEqual(res["html"], f"<p>{want}</p>", md)
 
 
+class BlockedStorageTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    # What a browser does when it is set not to let sites keep data: every use of the storage throws.
+    page.add_init_script('''Object.defineProperty(window, "localStorage", {get() {
+        throw new DOMException("The operation is insecure.", "SecurityError"); }});''')
+    page.goto(sys.argv[1] + "#/settings")
+    page.wait_for_timeout(2500)
+    print(json.dumps({"errors": errors, "settings": page.evaluate(
+        "!!document.querySelector('.view') && document.querySelector('.view').textContent.includes('Settings')")}))
+    b.close()
+"""
+
+    def test_f11_crew_opens_in_a_browser_that_keeps_no_site_data(self):
+        """A browser set not to let sites keep data (Chrome and Edge have the setting; some phone privacy modes
+        too): one unguarded read of the panel width stopped the whole app, and the page stayed blank."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        res = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(res["errors"], [])
+        self.assertTrue(res["settings"])
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys
