@@ -2423,6 +2423,19 @@ class ServerRobustnessTests(unittest.TestCase):
                 self.s.httpd.handle_error(None, ("127.0.0.1", 50000))
         self.assertIn("a real fault", err.getvalue())
 
+    def test_a67_a_name_made_of_dots_is_not_a_project(self):
+        """"/api/runs/.." answered as if a project were starting there: the id stood for Crew's own folder (and "." for
+        the projects folder). Nothing was read or changed, but a name made only of dots is no project's (the
+        captures already refused such names)."""
+        s = self.s
+        for rid in ("..", "."):
+            status, _, payload = s.request("GET", f"/api/runs/{rid}")
+            self.assertEqual(status, 404, (rid, payload))
+            self.assertFalse(runs_mod._run_dir(rid))
+        status, _, _ = s.request("POST", "/api/runs/../resume", raw=b"{}",
+                                 headers={"X-Crew": "1", "Content-Type": "application/json"})
+        self.assertEqual(status, 400)
+
     def test_a63_a_quoted_argument_with_a_space_stays_whole(self):
         """The owner's own folder has a space in it (C:\\Users\\Mohid Zeeshan). A connection given that folder,
         typed on one line in quotes as the guides show, was cut in two at the space and could not start."""
