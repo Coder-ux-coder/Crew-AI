@@ -958,9 +958,10 @@ fix (checked by running each against the code without the fix) and passes with i
   reconnects at the first try: an answer that finished meanwhile never appeared, and one that was lost left the
   page waiting for ever · the check was tied to a second failure, not to the connection coming back · it runs each
   time the connection comes back: a finished answer is shown, text written in the gap is filled in, a lost one
-  says so; a newer answer is told from an older one by counting them (the last message could be an older answer)
-  · test_f20_after_the_connection_comes_back_the_chat_shows_where_things_are (Chromium, the connection dropped by
-  the test).
+  says so; a newer answer is told from an older one by counting them (the last message could be an older answer);
+  an answer is drawn once, by its id (Crew marks a chat free a moment before it sends "done", so a page catching up
+  in that moment drew the answer twice) · test_f20_after_the_connection_comes_back_the_chat_shows_where_things_are
+  (Chromium, the connection dropped by the test, and a late "done").
 - F21 · P2 · app.js findCrew, waitForRestart, installUpdate; offline.html; sw.js · after an update the page looks
   for Crew on its other ports, where it cannot read the answer: whatever answered there was taken for Crew
   (another program, a web page an agent was testing) and the owner was sent to it. A Crew back at its own address
