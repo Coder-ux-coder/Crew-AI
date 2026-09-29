@@ -896,10 +896,12 @@ Round 8, the front end (each test drives the real app in Chromium and fails on t
 
 ### Fifth continuation (2026-09-29) — the parallel branch's fixes brought over; a clean round begun
 
-Every branch was read first. `claude/funny-turing-8ra205`, a parallel session, had found real bugs that never
-reached this line of work (its B-01, B-02, B-05): they are brought over here (C31, A59, F21), each with its own
-test. Its other changes are design choices of that session, not bugs (a 503 where this line answers 400, an extra
-"ask first"), and are not copied. Its record of an owner decision "no Urdu" is not applied: later briefs from the
+Every branch was read first. `claude/funny-turing-8ra205`, a parallel session, was never merged into this line (it
+is not an ancestor of `claude/jolly-wright-lz430a`, whatever the Codex handoff said). Its B-01, B-02 and B-05 never
+reached this line: they are brought over here (C31, A59, F21), each with its own test. Its B-03 and B-04 were
+already fixed here in other ways (A15, A16, C5; A8). Its other differences are design choices of that session (a
+503 where this line answers 400, an extra "ask first" before updating during a project, where this line waits for
+the work: A57), and are not copied. Its record of an owner decision "no Urdu" is not applied: later briefs from the
 owner include Urdu, so it is a question for the owner (section 0). Every test below fails on the code before its
 fix (checked by running each against the code without the fix) and passes with it.
 

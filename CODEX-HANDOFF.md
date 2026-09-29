@@ -1,11 +1,37 @@
 # Handoff to Codex: the Crew debugging campaign
 
-## Update, 2026-09-29 (read this first)
+## Update, 2026-09-29, fifth continuation (read this first)
+
+- **Branch:** everything is on `claude/friendly-sagan-bj2ykb`, which carries all of `claude/jolly-wright-lz430a`
+  plus the work below; the cloud checks also run on pushes to it.
+- **A correction to the update below:** `claude/funny-turing-8ra205` was **never merged** into jolly-wright (it is
+  not an ancestor; `git log origin/claude/jolly-wright-lz430a..origin/claude/funny-turing-8ra205` lists its six
+  commits). Its bugs are all covered now: B-01 and B-02 brought over as C31 and A59, B-05's reconnect as F21 (each
+  with its own test); B-03 and B-04 were already fixed differently on this line (A15, A16, C5; A8). Its "no Urdu"
+  change (voice and dictation in Urdu removed, recorded as the owner's decision on 2026-09-28) was **not**
+  applied: the brief written after it lists Urdu dictation. Ask the owner.
+- **Fixed in this continuation (each with a test that fails without its fix; DEBUG-CAMPAIGN.md section 12, "Fifth
+  continuation"):** C31 (tool servers in UTF-8 on a Windows code page), A59 (device tools behind an office proxy),
+  **C32 (P1 on Windows: the team's checks ran in cmd.exe although the agents write them for bash, so they could
+  never pass; they now run in Git for Windows' bash)**, A60 (odd pairing codes), A61 (viewers that hang up), A63
+  (quoted connection arguments with spaces), A65 (the phone's screen list from an earlier screen: taps in the wrong
+  place), A66 (saving a key beside Notepad's older encoding), A67 (dot-only project ids), C33 (Urdu file names
+  escaped the scan; clashes in names with spaces), F20 (the chat catches up when its connection comes back), F21
+  (after an update only Crew is taken for Crew; a rolled-back Crew is recognised), F22 (Urdu reads right to left:
+  answers, messages, the team conversation, titles, the message boxes).
+- **Tests:** full suite 240 OK in 7 min 9 s (Python 3.11, Playwright + Chromium, 0 skipped) before F22 and A67;
+  their own tests and the Markdown tests after. ruff (cloud config), eslint and `node --check` clean.
+- **What is left:** (1) the release, only with the owner's go-ahead; (2) on the owner's Windows PC: a small team
+  project (its checks now run in Git's bash), the desktop icon, the Computer page's double-click, a message in
+  Urdu; (3) the owner's answers on Urdu and on the per-model weekly limit; (4) carry on the clean round.
+
+## Update, 2026-09-29, fourth continuation
 
 This file was written at the end of the third continuation. Since then (fourth continuation, Claude):
 
 - **Branch:** everything is on `claude/jolly-wright-lz430a`, which carries all of `claude/exciting-heisenberg-6w6gge`
-  and `claude/funny-turing-8ra205` (fast-forward) plus the work below. The cloud checks
+  (fast-forward) plus the work below. (It does not carry `claude/funny-turing-8ra205`: see the fifth continuation
+  above.) The cloud checks
   (`.github/workflows/campaign.yml`) now also run on pushes to this branch.
 - **The owner's model change:** Sonnet 5.5 (`claude-sonnet-5-5`) replaces GPT-6 Sol as the team's **workhorse**.
   Opus 5.5 stays the manager, GPT-6 Astra the CEO (Fable 5.1 its backup). Seats now carry their tier

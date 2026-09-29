@@ -11,7 +11,8 @@ screen does, and its honest limits.
 
 ## Latest work (not released yet)
 
-On branch `claude/jolly-wright-lz430a`, waiting for the owner's go-ahead to release as 2.3.1.
+On branch `claude/friendly-sagan-bj2ykb` (it carries everything from `claude/jolly-wright-lz430a`), waiting for the
+owner's go-ahead to release as 2.3.1.
 
 ### What was done
 
@@ -25,21 +26,29 @@ On branch `claude/jolly-wright-lz430a`, waiting for the owner's go-ahead to rele
    in an answer run code inside Crew, a double press of Enter starting the team twice, forms that lost what was
    typed (including a pasted API key), a double-click on the computer screen arriving as four clicks.
 4. **Round 10 (Windows paths, by reading):** launcher, installer, start-up; one fix (C30).
-5. Every fix has a test that fails without it; GitHub runs the checks on every push to this branch.
+5. **Fifth continuation (every branch read; a clean round begun):** 14 bugs fixed, e.g. on Windows the team's
+   checks ran in the wrong shell and could never pass (C32); Urdu answers, messages and titles read left to right
+   with English words out of order (F22); the phone tool could tap where a button *used* to be (A65); after an
+   update the app could send the owner to another program on a neighbouring port (F21); a chat could keep
+   "working…" for ever after a restart or a Wi-Fi drop (F20); file names in Urdu escaped the safety scan (C33);
+   behind an office proxy the browser, computer and phone tools failed (A59). Fixes from a parallel session that
+   never reached this line are brought over.
+6. Every fix has a test that fails without it; the full suite passes (240 tests); GitHub runs the checks on every
+   push to this branch.
 
 ### What is left
 
-1. **Run the full test suite once more** (the last complete run passed 216 tests; the run after the screen fixes
-   was interrupted). Each of those fixes passed its own tests.
-2. **Release 2.3.1 — only with the owner's go-ahead:** version number and plain release notes, publish to the
+1. **Release 2.3.1 — only with the owner's go-ahead:** version number and plain release notes, publish to the
    `Crew-AI` branch, rehearse the one-click update (download, install, restart, reconnect).
-3. **On the owner's Windows PC after the update** (could not be run here): open Crew from the desktop icon; start
-   one small team project and check that the Sonnet 5.5 agents start; try the Computer page's double-click.
-4. **One open question:** if a subscription reaches a limit that applies only to Opus, Crew pauses the whole
-   subscription, and with it the Sonnet agents on it. Deciding this needs one real limit message from the owner's
-   subscription.
-5. **The campaign's last step:** a full clean round (the remaining checklists of rounds 3, 4, 5, 7 and 9, then
-   every check once more until nothing new is found).
+2. **On the owner's Windows PC after the update** (could not be run here): open Crew from the desktop icon; start
+   one small team project and check that its checks run (Git's bash) and the Sonnet 5.5 agents start; try the
+   Computer page's double-click; write a message in Urdu.
+3. **Questions for the owner:** a parallel session recorded "no Urdu" (voice and dictation in Urdu removed), while
+   later instructions list Urdu dictation, so nothing was removed here — which is right? And if a subscription
+   reaches a limit that applies only to Opus, Crew pauses the whole subscription (and the Sonnet agents on it);
+   deciding this needs one real limit message.
+4. **The campaign's last step:** carry on the clean round until nothing new is found (the owner asked earlier for
+   the campaign to be run three times).
 
 The full record is in [`DEBUG-CAMPAIGN.md`](DEBUG-CAMPAIGN.md); the handover notes in
 [`CODEX-HANDOFF.md`](CODEX-HANDOFF.md).
