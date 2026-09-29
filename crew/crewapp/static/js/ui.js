@@ -289,16 +289,25 @@ export const isSmall = () => window.matchMedia('(max-width: 860px)').matches;
 // ------------------------------------------------------------------ Markdown (safe: escapes everything first)
 
 function inline(src) {
-  const codes = [];
-  let s = esc(src).replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
-  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g, '<img alt="$1" src="$2" loading="lazy" style="max-width:100%;border-radius:10px">');
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*|mailto:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+[^\s<).,;:!?])/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+  // Every tag made here is set aside (\u0000n\u0000) until the end, and code keeps its text aside (\u0001n\u0001):
+  // the later steps (an address written out, bold, italics) only ever see text. Before, a link written inside a
+  // link, or inside an image's description, reached into the attribute and made an event handler of the rest.
+  const tags = [], codes = [];
+  const tag = (html) => `\u0000${tags.push(html) - 1}\u0000`;
+  const plain = (t) => t.replace(/\u0001(\d+)\u0001/g, (_, n) => codes[n]);  // code inside an attribute: its text
+  let s = esc(src).replace(/[\u0000\u0001]/g, '').replace(/`([^`]+)`/g, (_, c) => `\u0001${codes.push(c) - 1}\u0001`);
+  s = s.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+|\/[^\s)]*)\)/g, (_, alt, url) =>
+    tag(`<img alt="${plain(alt)}" src="${plain(url)}" loading="lazy" style="max-width:100%;border-radius:10px">`));
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*|mailto:[^\s)]+)\)/g, (_, text, url) =>
+    tag(`<a href="${plain(url)}" target="_blank" rel="noopener">`) + text + tag('</a>'));
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)\u0000\u0001]+[^\s<).,;:!?\u0000\u0001])/g, (_, pre, url) =>
+    pre + tag(`<a href="${url}" target="_blank" rel="noopener">${url}</a>`));
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*\w])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\w)/g, '$1<em>$2</em>');
   s = s.replace(/(^|[^_\w])_([^_\s](?:[^_]*[^_\s])?)_(?!\w)/g, '$1<em>$2</em>');
   s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, n) => `<code>${codes[n]}</code>`);
+  s = s.replace(/\u0001(\d+)\u0001/g, (_, n) => `<code>${codes[n]}</code>`);
+  return s.replace(/\u0000(\d+)\u0000/g, (_, n) => tags[n]);
 }
 
 const LI = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/;

@@ -988,6 +988,70 @@ class BrowserCampaignTests(unittest.TestCase):
             b.stop()
 
 
+class MarkdownSafetyTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page()
+    page.goto(sys.argv[1])
+    print(json.dumps(page.evaluate('''async (cases) => {
+        const ui = await import('/js/ui.js');
+        const out = [];
+        for (const md of cases) {
+            window.pwned = 0;
+            const box = document.createElement('div');
+            box.innerHTML = ui.markdown(md);
+            document.body.append(box);
+            const handlers = [...box.querySelectorAll('*')].flatMap((el) => [...el.attributes]
+                .filter((a) => a.name.startsWith('on')).map((a) => el.tagName + ' ' + a.name));
+            for (const el of box.querySelectorAll('*')) {
+                el.dispatchEvent(new MouseEvent('mouseover', {bubbles: true}));
+                if (el.focus) el.focus();
+            }
+            await new Promise((r) => setTimeout(r, 100));
+            out.push({html: box.innerHTML, handlers, pwned: window.pwned});
+            box.remove();
+        }
+        return out;
+    }''', json.loads(sys.argv[3]))))
+    b.close()
+"""
+    ATTACKS = ["[x](https://a.com/?(https://b.com/onmouseover=window.pwned=1//)",
+               "![alt (https://b.com/onmouseover=window.pwned=2//](https://img.example/x.png)",
+               "[x](https://a.com/(https://b.com/onfocus=window.pwned=3//autofocus/)"]
+    NORMAL = {"see [the **plan**](https://example.com/a_b_c) now": 'see <a href="https://example.com/a_b_c" target="_blank" '
+                                                                   'rel="noopener">the <strong>plan</strong></a> now',
+              "visit https://example.com/x_y_z.": 'visit <a href="https://example.com/x_y_z" target="_blank" '
+                                                  'rel="noopener">https://example.com/x_y_z</a>.',
+              "**bold** and *it* and `a < b`": "<strong>bold</strong> and <em>it</em> and <code>a &lt; b</code>",
+              "(https://example.com/p)": '(<a href="https://example.com/p" target="_blank" rel="noopener">'
+                                         'https://example.com/p</a>)'}
+
+    def test_f10_formatted_text_cannot_run_script_in_crew(self):
+        """An answer, a report, a skill or a Markdown file shown in Crew: a link written inside a link or inside an
+        image\'s description broke out of its attribute, and the rest became an event handler that ran when the
+        owner pointed at it (or when it took focus) — script in Crew\'s own page, with all of Crew\'s powers."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        cases = [*self.ATTACKS, *self.NORMAL]
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium(),
+                                  json.dumps(cases)], capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        results = json.loads(out.stdout.strip().splitlines()[-1])
+        for md, res in zip(cases[:len(self.ATTACKS)], results, strict=False):
+            self.assertEqual((res["handlers"], res["pwned"]), ([], 0), (md, res["html"]))
+        for (md, want), res in zip(self.NORMAL.items(), results[len(self.ATTACKS):], strict=True):
+            self.assertEqual(res["html"], f"<p>{want}</p>", md)
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys
