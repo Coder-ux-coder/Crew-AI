@@ -14,9 +14,14 @@ import sys
 
 
 def main() -> None:
+    from .util import utf8_stdio
+
+    utf8_stdio()
     try:
         payload = json.load(sys.stdin)
     except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
         payload = {}
     db, seat = os.environ.get("CREW_DB"), os.environ.get("CREW_SEAT")
     if not db or not seat:

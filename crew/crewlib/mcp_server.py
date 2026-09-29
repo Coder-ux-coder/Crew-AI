@@ -15,6 +15,7 @@ import traceback
 from . import __version__
 from .store import Store
 from .tools import Ctx, call, tools_for
+from .util import utf8_stdio
 
 INSTRUCTIONS = (
     "Crew team tools. The team shares ONE group chat (no private messages), a task board with file leases, "
@@ -33,6 +34,7 @@ def _reply(msg_id, result=None, error=None) -> None:
 
 
 def serve() -> None:
+    utf8_stdio()  # Codex starts this without PYTHONUTF8: on Windows it would speak the console's code page
     db = os.environ.get("CREW_DB")
     if not db:
         sys.stderr.write("crew mcp: CREW_DB is not set\n")

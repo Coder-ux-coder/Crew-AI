@@ -27,6 +27,18 @@ def now() -> float:
     return time.time()
 
 
+def utf8_stdio() -> None:
+    """Speak UTF-8 on stdin, stdout and stderr whatever the environment says. Crew's tool servers speak JSON-RPC, which
+    is UTF-8, but Codex starts them with only the variables named in their settings: on Windows Python then used the
+    console's code page (cp1252), and the "✔" and "→" Crew writes into the team chat, or a letter outside cp1252,
+    broke the tool server."""
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):  # not a text stream (pythonw, a test's stand-in): as it is
+            pass
+
+
 def hhmm(ts: float | None) -> str:
     if not ts:
         return "--:--"

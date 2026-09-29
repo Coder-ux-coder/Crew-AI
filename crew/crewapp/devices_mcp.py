@@ -72,12 +72,16 @@ TOOLS = [
 ]
 
 
+# Crew is on this computer: asked directly, never through the office's web proxy (which cannot reach it).
+DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def call_app(name: str, args: dict) -> dict:
     group, _, action = name.partition("_")
     req = urllib.request.Request(f"{APP}/internal/{group}/{action}", data=json.dumps(args).encode(),
                                  headers={"Content-Type": "application/json", "X-Crew-Token": TOKEN}, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with DIRECT.open(req, timeout=120) as resp:
             return json.loads(resp.read() or b"{}")
     except urllib.error.HTTPError as exc:
         try:
@@ -107,6 +111,9 @@ def handle(name: str, args: dict) -> tuple[list[dict], bool]:
 
 
 def main() -> None:
+    from crewlib.util import utf8_stdio
+
+    utf8_stdio()  # Codex starts this without PYTHONUTF8: on Windows, text for computer_type arrived garbled or broke it
     for line in sys.stdin:
         line = line.strip()
         if not line:

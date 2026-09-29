@@ -2199,5 +2199,128 @@ class AppCampaignTests(unittest.TestCase):
                     p.unlink(missing_ok=True)
 
 
+# ====================================================================== fifth continuation: tool servers
+
+def _rpc_session(module: str, env: dict, messages: list[dict]) -> dict:
+    """Run one of Crew's tool servers over stdio with these messages, as Claude Code or Codex would; its replies by
+    id (a server that died answers nothing more)."""
+    proc = subprocess.run([sys.executable, "-m", module], input="\n".join(json.dumps(m, ensure_ascii=False)
+                                                                            for m in messages).encode("utf-8"),
+                          capture_output=True, env=env, timeout=60, cwd=str(ROOT))
+    replies = {}
+    for line in proc.stdout.decode("utf-8", "replace").splitlines():
+        if line.strip():
+            msg = json.loads(line)
+            replies[msg.get("id")] = msg
+    return replies
+
+
+class _AppStandIn:
+    """The Crew app's /internal endpoints, recording what the agents' device tools send."""
+
+    def __init__(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        got = self.got = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                return
+
+            def do_POST(self):
+                got.append(json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"))
+                data = b'{"result": {"ok": true}}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+class ToolServerTests(unittest.TestCase):
+    @staticmethod
+    def windows_like_env(**extra) -> dict:
+        """What Codex gives a tool server on Windows: only the variables named in its settings, so Python falls back
+        to the console's code page (cp1252) for stdin and stdout."""
+        env = {k: v for k, v in os.environ.items() if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+        env.update(PYTHONIOENCODING="cp1252", PYTHONUTF8="0", PYTHONPATH=str(ROOT), **extra)
+        return env
+
+    def test_c31_the_team_tools_read_and_write_utf8_whatever_the_code_page(self):
+        """The CEO's runs on ChatGPT (Codex) start the team tools with only a few variables: on Windows the tool server
+        then spoke the console's code page. The symbols Crew itself writes into the team chat ("✔", "→") could not be
+        sent back, and a letter outside cp1252 in what an agent sent stopped the tool server altogether."""
+        d = Path(tempfile.mkdtemp(prefix="crew-utf8-"))
+        st = Store(d / "team.db")
+        st.upsert_seat("ada", role="lead", vendor="claude", account="claude-1", status="idle")
+        st.post("crew", "system", "Task #1 merged into the team's result. ✔")
+        st.post("ada", "update", "@all → the owner wrote: add the Łódź office to the chart")
+        env = self.windows_like_env(CREW_DB=st.path, CREW_SEAT="ceo-plan", CREW_ROLE="ceo")
+        replies = _rpc_session("crewlib.mcp_server", env, [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "team_chat_read", "arguments": {}}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "team_decide", "arguments": {"text": "Łódź stays in — done ✔"}}},
+        ])
+        self.assertIn(2, replies, "the team tool server died")
+        read = replies[2]["result"]
+        self.assertFalse(read["isError"], read)
+        self.assertIn("✔", read["content"][0]["text"])
+        self.assertIn("Łódź", read["content"][0]["text"])
+        self.assertIn(3, replies, "the team tool server died reading a letter outside cp1252")
+        self.assertFalse(replies[3]["result"]["isError"], replies[3])
+        self.assertEqual(st.recent_messages(1)[0]["text"], "Łódź stays in — done ✔")
+
+    def test_c31_the_device_tools_pass_any_language_through_exactly(self):
+        """A ChatGPT chat typing on the owner's computer: text outside cp1252 stopped the device tool server (Ł's
+        UTF-8 holds the byte 0x81, which cp1252 cannot read), and what it could read arrived garbled."""
+        app = _AppStandIn()
+        try:
+            text = "Grüße aus Łódź → پنجاب ✔"
+            replies = _rpc_session("crewapp.devices_mcp", self.windows_like_env(CREW_APP_URL=app.url, CREW_APP_TOKEN="t"), [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "computer_type", "arguments": {"text": text}}},
+            ])
+        finally:
+            app.close()
+        self.assertIn(2, replies, "the device tool server died reading the text")
+        self.assertFalse(replies[2]["result"]["isError"], replies[2])
+        self.assertEqual(app.got, [{"text": text}])
+
+    def test_c31_codex_is_told_to_start_the_tool_servers_in_utf8(self):
+        """Codex passes a tool server only the variables named in its settings: those settings now carry UTF-8."""
+        setup = agents.CodexSetup(model="gpt-6-astra", effort="high", run_dir=Path(tempfile.mkdtemp()), extra_env={})
+        args = agents._codex_config_args(setup, "ceo-plan", "ceo", None, read_only=True)
+        env = next(a for a in args if a.startswith("mcp_servers.crew_team.env="))
+        self.assertIn('PYTHONUTF8 = "1"', env)
+        self.assertIn('PYTHONIOENCODING = "utf-8"', env)
+
+    def test_a59_the_device_tools_reach_crew_directly_behind_an_office_proxy(self):
+        """With a web proxy set for the computer (an office network), every browser, computer and phone tool of a
+        chat or an agent failed: it asked Crew, on this very computer, through the proxy — which cannot reach it."""
+        app = _AppStandIn()
+        try:
+            env = {k: v for k, v in os.environ.items() if k.lower() not in ("no_proxy", "http_proxy", "https_proxy")}
+            env.update(HTTP_PROXY="http://127.0.0.1:9", http_proxy="http://127.0.0.1:9", PYTHONPATH=str(ROOT),
+                       CREW_APP_URL=app.url, CREW_APP_TOKEN="t")
+            replies = _rpc_session("crewapp.devices_mcp", env, [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                 "params": {"name": "browser_open", "arguments": {"url": "example.com"}}},
+            ])
+        finally:
+            app.close()
+        self.assertFalse(replies[2]["result"]["isError"], replies[2])
+        self.assertEqual(app.got, [{"url": "example.com"}])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -43,6 +43,9 @@ AUTH_RE = re.compile(
     r"(401 unauthori[sz]ed|unauthori[sz]ed|invalid api key|please run /login|not logged in|missing bearer|"
     r"token has expired|login required|authentication_error|invalid x-api-key)", re.I)
 
+# Codex gives its tool servers only the variables named in their settings: these keep them speaking UTF-8 on Windows.
+UTF8_ENV = {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
 # Variables that belong to *this* process's own Claude/Codex session (e.g. when
 # Crew itself runs inside Claude Code). Children must not inherit them.
 _KEEP_CLAUDE_VARS = {
@@ -539,7 +542,7 @@ def codex_effort(effort: str | None, model: str | None = "") -> str | None:
 
 def _codex_config_args(setup: CodexSetup, seat: str, role: str, task_id: int | None, read_only: bool) -> list[str]:
     team_env = {"CREW_DB": str(setup.run_dir / "team.db"), "CREW_SEAT": seat, "CREW_ROLE": role,
-                "PYTHONPATH": str(CREW_ROOT)}
+                "PYTHONPATH": str(CREW_ROOT), **UTF8_ENV}
     if task_id is not None:
         team_env["CREW_TASK"] = str(task_id)
     env_table = "{" + ", ".join(f"{k} = {_toml_str(v)}" for k, v in team_env.items()) + "}"
