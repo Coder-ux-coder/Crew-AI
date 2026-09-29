@@ -688,6 +688,26 @@ has no microphone permission; that notice is the right one), 16 red notices and 
 and Connect pressed with empty fields (a 400 with "Enter the IP address and port …"), and 16 from the pages
 it opens on purpose that do not exist (404, "That chat is gone"). Nothing new to fix.
 
+Round 6 (the team engine, line by line: orchestrator.py read in full):
+
+- C20 · P2 · orchestrator.on_result · a seat at its usage limit parked its subscription until a time left over
+  from an earlier limit: already past, so it was parked for one minute, tried again, failed again, and the
+  team was told it "resets" at a time gone by (ChatGPT seats report their limit only in words) · a stale
+  parked_until was trusted · a reset still ahead is used; otherwise the time in the message ("try again in 2
+  hours 5 minutes"), else an hour (usage.limit_resets_at, now shared with the chats) ·
+  test_c20_a_limit_parks_the_subscription_until_it_really_lifts.
+- C21 · P2 · orchestrator.prepare and every choice of a subscription · a seat that had moved to another
+  subscription at a limit, which the owner later removed in Settings: continuing the project failed at once
+  ("unknown account"); and a reviewer, judge, CEO or prompt writer could be given a removed subscription (the
+  project's record keeps every one it used) · the record was trusted over the settings · a seat whose last
+  subscription is gone continues on its own (a fresh conversation, from its notes); choices are made only
+  among subscriptions still in the settings (Orchestrator.accounts); the report still lists every one used ·
+  test_c21_a_project_resumes_after_a_subscription_it_used_was_removed (end to end, with the fakes).
+- C22 · P3 · orchestrator.on_final_done · every task merged but the final checks failing: the lead was sent
+  back to fix them again and again, with nothing to end it (no task was open, so the stall guard did not
+  look) · no limit · after two rounds of fixes, an honest stop with the report (a resume gets fresh
+  attempts) · test_c22_final_checks_that_keep_failing_end_with_an_honest_stop.
+
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
 The whole of test_campaign.py (44 tests, the round-1 tests plus C14/C15) was run against the code before the
