@@ -152,32 +152,36 @@ export function workflowsPage(view) {
       effortRow,
       accountRow,
       h('div', { class: 'field' }, h('span', null, 'When'), kind, when));
-    const v = await dialog({
-      title: w ? 'Edit workflow' : 'New workflow', wide: true, body,
-      actions: [{ label: 'Cancel', value: null }, {
-        label: w ? 'Save' : 'Create', primary: true, value: () => {
-          if (!name.value.trim()) { name.focus(); toast('Give it a name.', { bad: true }); return undefined; }
-          if (prompt.value.trim().length < 5) { prompt.focus(); toast('Say what it should do.', { bad: true }); return undefined; }
-          const k = kind.value;
-          const schedule = k === 'weekdays' ? { kind: 'daily', time: time.value || '08:00', days: [0, 1, 2, 3, 4] }
-            : k === 'daily' ? { kind: 'daily', time: time.value || '08:00', days: [0, 1, 2, 3, 4, 5, 6] }
-              : k === 'weekly' ? { kind: 'weekly', time: time.value || '08:00', days: [...chosen].sort() }
-                : k === 'hourly' ? { kind: 'hourly', every: Math.max(1, parseInt(every.value, 10) || 1) }
-                  : k === 'once' ? { kind: 'once', at: at.value } : { kind: 'manual' };
-          if (k === 'weekly' && !chosen.size) { toast('Choose at least one day.', { bad: true }); return undefined; }
-          if (k === 'once' && !at.value) { toast('Choose the date and time.', { bad: true }); return undefined; }
-          return { name: name.value.trim(), prompt: prompt.value.trim(), engine, effort: engine === 'team' ? 'auto' : effortSel.value,
-            account: engine === 'team' ? '' : accountSel.value, schedule };
-        },
-      }],
-    });
-    if (!v) return;
-    try {
-      if (w) await api('/api/workflows/' + w.id, { method: 'PUT', body: v });
-      else await api('/api/workflows', { method: 'POST', body: v });
-      toast(w ? 'Saved.' : 'Workflow created.');
-      load();
-    } catch (e) { fail(e); }
+    // Until it is saved or the owner cancels: a refused save opens the same form again, with everything in it.
+    for (;;) {
+      const v = await dialog({
+        title: w ? 'Edit workflow' : 'New workflow', wide: true, body,
+        actions: [{ label: 'Cancel', value: null }, {
+          label: w ? 'Save' : 'Create', primary: true, value: () => {
+            if (!name.value.trim()) { name.focus(); toast('Give it a name.', { bad: true }); return undefined; }
+            if (prompt.value.trim().length < 5) { prompt.focus(); toast('Say what it should do.', { bad: true }); return undefined; }
+            const k = kind.value;
+            const schedule = k === 'weekdays' ? { kind: 'daily', time: time.value || '08:00', days: [0, 1, 2, 3, 4] }
+              : k === 'daily' ? { kind: 'daily', time: time.value || '08:00', days: [0, 1, 2, 3, 4, 5, 6] }
+                : k === 'weekly' ? { kind: 'weekly', time: time.value || '08:00', days: [...chosen].sort() }
+                  : k === 'hourly' ? { kind: 'hourly', every: Math.max(1, parseInt(every.value, 10) || 1) }
+                    : k === 'once' ? { kind: 'once', at: at.value } : { kind: 'manual' };
+            if (k === 'weekly' && !chosen.size) { toast('Choose at least one day.', { bad: true }); return undefined; }
+            if (k === 'once' && !at.value) { toast('Choose the date and time.', { bad: true }); return undefined; }
+            return { name: name.value.trim(), prompt: prompt.value.trim(), engine, effort: engine === 'team' ? 'auto' : effortSel.value,
+              account: engine === 'team' ? '' : accountSel.value, schedule };
+          },
+        }],
+      });
+      if (!v) return;
+      try {
+        if (w) await api('/api/workflows/' + w.id, { method: 'PUT', body: v });
+        else await api('/api/workflows', { method: 'POST', body: v });
+        toast(w ? 'Saved.' : 'Workflow created.');
+        load();
+        return;
+      } catch (e) { fail(e); }
+    }
   }
 
   load();

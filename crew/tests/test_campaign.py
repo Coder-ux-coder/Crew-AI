@@ -1194,6 +1194,64 @@ with sync_playwright() as p:
         self.assertLessEqual(checks, 6)  # every 1.5 s while the team works: about 5 in 7.6 s, not twice that
 
 
+class WorkflowFormTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    tries = []
+    def save(route, request):
+        if request.method != "POST":
+            return route.continue_()
+        tries.append(1)
+        if len(tries) == 1:  # the first save is refused
+            return route.fulfill(status=400, content_type="application/json",
+                                 body=json.dumps({"error": "That schedule cannot be used."}))
+        route.continue_()
+    page.route("**/api/workflows", save)
+    page.goto(sys.argv[1] + "#/workflows")
+    page.click("text=New workflow")
+    page.fill(".dialog input[type=text]", "Morning briefing")
+    page.fill(".dialog textarea", "Summarise the morning news on Punjab's industry, with sources.")
+    page.click(".dialog .btn.primary")
+    page.wait_for_timeout(800)
+    kept = page.evaluate("document.querySelector('.dialog input[type=text]') ? "
+                         "[document.querySelector('.dialog input[type=text]').value, "
+                         "document.querySelector('.dialog textarea').value] : null")
+    if kept:
+        page.click(".dialog .btn.primary")  # the owner tries again
+        page.wait_for_timeout(1200)
+    names = page.evaluate("[...document.querySelectorAll('.wf b')].map((b) => b.textContent)")
+    print(json.dumps({"kept": kept, "open": page.evaluate("!!document.querySelector('.dialog')"), "names": names}))
+    b.close()
+"""
+
+    def test_f14_a_refused_workflow_keeps_what_the_owner_wrote(self):
+        """Crew refused to save a workflow (a schedule it cannot use, a subscription removed meanwhile, Crew not
+        answering): the form had already closed, so the name, the instructions and the schedule were gone."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+            for w in s.api("GET", "/api/workflows")["workflows"]:  # leave the shared app as it was
+                if w["name"] == "Morning briefing":
+                    s.api("DELETE", f"/api/workflows/{w['id']}")
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        res = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(res["kept"], ["Morning briefing",
+                                       "Summarise the morning news on Punjab's industry, with sources."])
+        self.assertFalse(res["open"])
+        self.assertIn("Morning briefing", res["names"])
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys
