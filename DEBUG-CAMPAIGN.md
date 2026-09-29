@@ -18,10 +18,9 @@ never copy it onto the owner's computer.)
   continuation stopped; that one carried `claude/exciting-heisenberg-6w6gge`). All work and execution in the cloud.
 - Fifth continuation: every branch read. The parallel branch `claude/funny-turing-8ra205` had real bugs this line
   lacked; they are brought over (C31, A59, F21). Found and fixed besides: C32 (on Windows the checks ran in cmd.exe
-  and could never pass: P1), A60, A61, A63, A65, A66, A67, C33, F20, F22 — each with a test that fails without
-  its fix
-  (section 12, "Fifth continuation"). Questions for the owner: the parallel session recorded "no Urdu", later
-  briefs include Urdu (not applied; ask); the earlier request to run the campaign three times.
+  and could never pass: P1), A60, A61, A63, A65, A66, A67, A68, C33, F20, F22 — each with a test that fails
+  without its fix (section 12, "Fifth continuation"). Questions for the owner: the parallel session recorded "no
+  Urdu", later briefs include Urdu (not applied; ask); the earlier request to run the campaign three times.
 - The owner's request (2026-09-29): Sonnet 5.5 replaces GPT-6 Sol as the team's workhorse; GPT-6 Sol leaves
   Crew. Done (section 12, "Fourth continuation"); full suite 211 tests OK with Playwright present (0 skipped);
   ruff (the cloud config), eslint and `node --check` clean; Settings and a finished project checked in Chromium.
@@ -46,7 +45,8 @@ never copy it onto the owner's computer.)
   test that fails on the code before it; the scorecard labels a replaced model as the earlier one. Round 10
   (Windows, by reading) done: launcher.py, the installer and uninstaller, server.main, __main__.py, crew.cmd (C30).
 - Last full suite (fifth continuation): 240 tests OK in 7 min 9 s on eea3625 (Python 3.11, Playwright + Chromium,
-  0 skipped); after it, F22 and A67 with their own tests and the Markdown tests. Earlier: 216 tests OK (after C25–C29). After F10–F19 each fix's own test and the related browser tests
+  0 skipped); after it, F22, A67 and A68 with their own tests and the Markdown tests. The cloud checks (Python
+  3.12: full suite, compileall, ruff, eslint, node --check) passed on 4364d69 (run 24). Earlier: 216 tests OK. After F10–F19 each fix's own test and the related browser tests
   passed; a full run was started and interrupted before it finished — run it first (section 8 of CODEX-HANDOFF).
   The cloud checks run on every push to this branch (run 16, the model change and round 6: success).
 - Next: carry on the clean round (rounds 11+); the open question on per-model weekly limits (section 12); release
@@ -452,8 +452,8 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   on a Windows code page and behind a proxy; how the checks run on Windows; the server's answers to odd codes and
   to viewers that hang up; connections, the phone's screen list, the keys file, file names in other alphabets;
   the chat page and the update screen when the connection drops and comes back (Chromium). Found and fixed: C31,
-  A59, C32 (P1 on Windows), A60, A61, A63, A65, A66, A67, C33, F20, F21, F22. Left: the rest of the clean
-  round.
+  A59, C32 (P1 on Windows), A60, A61, A63, A65, A66, A67, A68, C33, F20, F21, F22. Left: the rest of the
+  clean round.
 
 ---------------------------------------------------------------------------------------------------------------
 
@@ -981,6 +981,12 @@ fix (checked by running each against the code without the fix) and passes with i
 - A67 · P3 · runs._run_dir · "/api/runs/.." answered as if a project were starting there (the id stood for Crew's
   own folder, "." for the projects folder); nothing was read or changed · the id check allowed names made only of
   dots · refused, as captures.resolve already did · test_a67_a_name_made_of_dots_is_not_a_project.
+- A68 · P2 · server._sse (every live view: chats, projects, the browser, the phone, the computer, the app) · half
+  of a character pair (an emoji cut in two, as a web page's shortened title or a damaged file may hold) in one live
+  event stopped that live view for everyone watching: the event could not be written, an error was written into the
+  middle of the stream, and nothing more reached the screen until it reconnected · live events were encoded
+  strictly, where every other answer already replaced such a half · written the same way as the answers ·
+  test_a68_a_broken_character_does_not_cut_a_live_view (on the old code neither that event nor the next arrived).
 - Looked at, no change (A62 and A64 were the first two's ids; left unused): the chat's saved details read back
   (written by Crew only, as JSON); the captures list racing a deletion (a moment, answered again at once); the sign-in window's command line on Windows (a path with
   a space works; one with brackets or & would not, which no install of Claude Code or Codex makes; by reading);
