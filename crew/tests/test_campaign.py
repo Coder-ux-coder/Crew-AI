@@ -1049,7 +1049,7 @@ with sync_playwright() as p:
         for md, res in zip(cases[:len(self.ATTACKS)], results, strict=False):
             self.assertEqual((res["handlers"], res["pwned"]), ([], 0), (md, res["html"]))
         for (md, want), res in zip(self.NORMAL.items(), results[len(self.ATTACKS):], strict=True):
-            self.assertEqual(res["html"], f"<p>{want}</p>", md)
+            self.assertEqual(res["html"], f'<p dir="auto">{want}</p>', md)
 
 
 class BlockedStorageTests(unittest.TestCase):
@@ -2608,6 +2608,55 @@ with sync_playwright() as p:
         self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
                          {"blip_still_waiting": False, "blip_answer_shown": True,
                           "restart_still_waiting": False, "restart_told": True})
+
+
+class RightToLeftTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+base, chrome, cid = sys.argv[1], sys.argv[2], sys.argv[3]
+ANSWER = ("کریو ایک ٹیم ہے جو آپ کے لیے کام کرتی ہے۔\n\n- پہلا نکتہ: یہ تیز ہے!\n- دوسرا نکتہ: Crew 2.3 میں نیا کیا ہے؟\n\n"
+          "| نام | Value |\n|---|---|\n| رفتار | Fast |\n\nAn English line at the end.")
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=chrome)
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    page.goto(base + "#/chat/" + cid)
+    page.wait_for_selector(".turn-user .bubble")
+    page.evaluate("(md) => import('/js/ui.js').then((ui) => { const d = document.createElement('div'); d.className = 'md';"
+                  " d.id = 'answer'; d.innerHTML = ui.markdown(md); document.querySelector('.thread').append(d); })", ANSWER)
+    page.fill(".composer textarea", "اگلا سوال")
+    rtl = lambda sel: page.evaluate("(s) => [...document.querySelectorAll(s)].map((e) => e.matches(':dir(rtl)'))", sel)
+    print(json.dumps({"message": rtl(".turn-user .bubble"), "paragraphs": rtl("#answer p"), "items": rtl("#answer li"),
+                      "cells": rtl("#answer td"), "typing": rtl(".composer textarea"),
+                      "bullet_on_the_right": page.evaluate("(() => { const li = document.querySelector('#answer li');"
+                          " const r = li.getBoundingClientRect(), ul = li.parentElement.getBoundingClientRect();"
+                          " return ul.right - r.right > 10 && r.left - ul.left < 2; })()")}))
+    b.close()
+"""
+
+    def test_f22_urdu_reads_right_to_left_with_english_words_in_place(self):
+        """Urdu in a message or an answer was laid out as English is: left to right. A sentence with an English
+        word or a number in it came out in the wrong order ("دوسرا نکتہ: Crew 2.3 میں نیا کیا ہے؟" read back to
+        front), its "!" and "?" stood at the start, and list bullets sat on the wrong side. Each paragraph, list item,
+        table cell and message now takes its direction from its own text; English stays left to right."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        os.environ.update(ENV)
+        s = AppServer()
+        try:
+            cid = s.api("POST", "/api/chats", {})["id"]
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "کریو کیا ہے؟ مجھے Crew 2.3 کے بارے میں بتائیں۔"})
+            until(lambda: not s.api("GET", f"/api/chats/{cid}")["busy"], timeout=30)
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium(), cid],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
+                         {"message": [True], "paragraphs": [True, False], "items": [True, True], "cells": [True, False],
+                          "typing": [True], "bullet_on_the_right": True})
 
 
 class UpdateReconnectTests(unittest.TestCase):

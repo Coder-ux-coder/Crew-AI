@@ -109,7 +109,7 @@ class Composer {
   }
 
   build() {
-    this.ta = h('textarea', { rows: 1, 'aria-label': 'Message', placeholder: this.o.placeholder || 'Reply…' });
+    this.ta = h('textarea', { rows: 1, 'aria-label': 'Message', placeholder: this.o.placeholder || 'Reply…', dir: 'auto' });
     this.fit = autosize(this.ta, 0.42);
     this.ta.addEventListener('keydown', (e) => this.onKey(e));
     this.ta.addEventListener('input', () => { this.slash(); this.sync(); });
@@ -856,7 +856,7 @@ class ChatView {
     return h('div', { class: 'turn-user' },
       meta.mode === 'plan' ? h('span', { class: 'mode-tag' }, icon('map'), 'Plan mode') : null,
       atts.length ? h('div', { class: 'atts' }, atts.map((a) => h('span', { class: 'att' }, icon('clip'), h('span', null, String(a.name || a.path || a).split('/').pop())))) : null,
-      h('div', { class: 'bubble' }, text));
+      h('div', { class: 'bubble', dir: 'auto' }, text));
   }
 
   addTurn(turn) {

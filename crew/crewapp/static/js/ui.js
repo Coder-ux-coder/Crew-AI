@@ -190,7 +190,7 @@ export async function ask(title, fields, { ok = 'Save', intro = '' } = {}) {
   const body = h('div', { class: 'stack' }, intro ? h('p', { class: 'muted', style: { margin: 0 } }, intro) : null,
     fields.map((f) => {
       let input;
-      if (f.type === 'textarea') input = h('textarea', { rows: f.rows || 4, placeholder: f.placeholder || '' }, f.value || '');
+      if (f.type === 'textarea') input = h('textarea', { rows: f.rows || 4, placeholder: f.placeholder || '', dir: 'auto' }, f.value || '');
       else if (f.type === 'select') input = h('select', null, f.options.map((o) => h('option', { value: o.value, selected: o.value === f.value }, o.label)));
       else input = h('input', { type: f.type || 'text', value: f.value || '', placeholder: f.placeholder || '', autocomplete: 'off' });
       inputs[f.name] = input;
@@ -323,9 +323,9 @@ function listHtml(items) {
     if (!top || it.indent > top.indent) {
       const tag = it.ordered ? 'ol' : 'ul';
       stack.push({ indent: it.indent, tag });
-      html += `<${tag}${it.ordered && it.start > 1 ? ` start="${it.start}"` : ''}><li>`;
+      html += `<${tag}${it.ordered && it.start > 1 ? ` start="${it.start}"` : ''}><li dir="auto">`;
     } else {
-      html += '</li><li>';
+      html += '</li><li dir="auto">';
     }
     let text = it.text;
     const task = text.match(/^\[([ xX])\]\s+(.*)$/);
@@ -340,6 +340,8 @@ function cells(line) {
   return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
 }
 
+// Every paragraph, heading, list item and table cell takes its direction from its own text (dir="auto"): Urdu or
+// Arabic reads right to left, with its punctuation, bullets and any English words in their right places.
 export function markdown(src) {
   const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];
@@ -357,7 +359,7 @@ export function markdown(src) {
     }
     if (!line.trim()) { i++; continue; }
     const hd = line.match(/^(#{1,6})\s+(.*)$/);
-    if (hd) { const n = Math.min(hd[1].length + 1, 4); out.push(`<h${n}>${inline(hd[2].replace(/\s#+\s*$/, ''))}</h${n}>`); i++; continue; }
+    if (hd) { const n = Math.min(hd[1].length + 1, 4); out.push(`<h${n} dir="auto">${inline(hd[2].replace(/\s#+\s*$/, ''))}</h${n}>`); i++; continue; }
     if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) { out.push('<hr>'); i++; continue; }
     if (/^\s*>/.test(line)) {
       const body = [];
@@ -370,8 +372,8 @@ export function markdown(src) {
       i += 2;
       const rows = [];
       while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(cells(lines[i++]));
-      out.push('<table><thead><tr>' + head.map((c) => `<th>${inline(c)}</th>`).join('') + '</tr></thead><tbody>' +
-        rows.map((r) => '<tr>' + head.map((_, k) => `<td>${inline(r[k] || '')}</td>`).join('') + '</tr>').join('') + '</tbody></table>');
+      out.push('<table><thead><tr>' + head.map((c) => `<th dir="auto">${inline(c)}</th>`).join('') + '</tr></thead><tbody>' +
+        rows.map((r) => '<tr>' + head.map((_, k) => `<td dir="auto">${inline(r[k] || '')}</td>`).join('') + '</tr>').join('') + '</tbody></table>');
       continue;
     }
     if (LI.test(line)) {
@@ -394,8 +396,8 @@ export function markdown(src) {
     const para = [];
     while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*```|\s*~~~|\s*>)/.test(lines[i]) && !LI.test(lines[i]) &&
       !(lines[i].includes('|') && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]))) para.push(lines[i++]);
-    if (!para.length) { out.push(`<p>${inline(lines[i++])}</p>`); continue; }
-    out.push(`<p>${para.map(inline).join('<br>')}</p>`);
+    if (!para.length) { out.push(`<p dir="auto">${inline(lines[i++])}</p>`); continue; }
+    out.push(`<p dir="auto">${para.map(inline).join('<br>')}</p>`);
   }
   return out.join('\n');
 }

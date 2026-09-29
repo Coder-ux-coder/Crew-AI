@@ -505,14 +505,14 @@ class MarkdownTests(unittest.TestCase):
     def test_safe_and_rich(self):
         html = self.render("# Title\n\n**bold** and <script>alert(1)</script> [x](javascript:alert(1)) "
                            "[ok](https://example.com)\n\n- one\n- two\n  - nested\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```\ncode <b>\n```")
-        self.assertIn("<h2>Title</h2>", html)
+        self.assertIn('<h2 dir="auto">Title</h2>', html)
         self.assertIn("<strong>bold</strong>", html)
         self.assertNotIn("<script>", html)
         self.assertIn("&lt;script&gt;", html)
         self.assertNotIn('href="javascript', html)
         self.assertIn('<a href="https://example.com" target="_blank" rel="noopener">ok</a>', html)
-        self.assertIn("<ul><li>one</li><li>two<ul><li>nested</li></ul></li></ul>", html)
-        self.assertIn("<th>a</th>", html)
+        self.assertIn('<ul><li dir="auto">one</li><li dir="auto">two<ul><li dir="auto">nested</li></ul></li></ul>', html)
+        self.assertIn('<th dir="auto">a</th>', html)
         self.assertIn("<pre><code>code &lt;b&gt;</code></pre>", html)
 
 

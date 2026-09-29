@@ -73,7 +73,7 @@ export function workflowsPage(view) {
     let extra = '';
     if (/\bwhen I run\b|\btopic I give\b/i.test(w.prompt)) {
       const v = await dialog({
-        title: `Run “${w.name}”`, body: (() => { const ta = h('textarea', { rows: 3, placeholder: 'Anything to add this time (the topic, a date, a name…)' }); run.ta = ta; return h('div', { class: 'stack' }, ta); })(),
+        title: `Run “${w.name}”`, body: (() => { const ta = h('textarea', { rows: 3, placeholder: 'Anything to add this time (the topic, a date, a name…)', dir: 'auto' }); run.ta = ta; return h('div', { class: 'stack' }, ta); })(),
         actions: [{ label: 'Cancel', value: null }, { label: 'Run', primary: true, value: () => run.ta.value }],
       });
       if (v === null) return;
@@ -106,7 +106,7 @@ export function workflowsPage(view) {
     const src = w || template || { name: '', prompt: '', engine: 'claude', schedule: { kind: 'manual' } };
     const sch = { kind: 'manual', time: '08:00', days: [0, 1, 2, 3, 4], every: 2, at: '', ...(src.schedule || {}) };
     const name = h('input', { type: 'text', value: src.name || '', placeholder: 'e.g. Morning briefing' });
-    const prompt = h('textarea', { rows: 6, placeholder: 'What should it do? Write it as you would ask Claude.' }, src.prompt || '');
+    const prompt = h('textarea', { rows: 6, placeholder: 'What should it do? Write it as you would ask Claude.', dir: 'auto' }, src.prompt || '');
     let engine = src.engine || 'claude';
     const engineSeg = h('div', { class: 'seg' }, ['claude', 'codex', 'team'].map((p) => h('button', {
       type: 'button', class: p === engine ? 'on' : '', onclick: (e) => { engine = p; [...engineSeg.children].forEach((b) => b.classList.toggle('on', b === e.currentTarget)); drawEffort(); },

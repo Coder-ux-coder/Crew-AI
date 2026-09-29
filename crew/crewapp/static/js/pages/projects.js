@@ -80,7 +80,7 @@ class ProjectView {
     this.waitEl = h('div', { class: 'sysline conv-wait' }, h('span', { class: 'spinner' }), h('span', null, ''));
     this.toBtn = h('button', { class: 'chip-btn to-btn', type: 'button', title: 'Who reads your message: the whole team, or one agent privately', onclick: () => this.toMenu() });
     this.hint = h('span', { class: 'muted small say-hint' });
-    this.say = h('textarea', { rows: 1, placeholder: 'Message the team — they read it at their next step', 'aria-label': 'Message the team' });
+    this.say = h('textarea', { rows: 1, placeholder: 'Message the team — they read it at their next step', 'aria-label': 'Message the team', dir: 'auto' });
     this.say.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); } });
     this.say.addEventListener('input', () => { this.say.style.height = 'auto'; this.say.style.height = Math.min(this.say.scrollHeight, 200) + 'px'; });
     const mic = h('button', { class: 'icon-btn sm mic', type: 'button', title: 'Speak', onclick: () => dictate(this.say, mic) }, icon('mic'));
