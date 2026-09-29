@@ -1144,6 +1144,56 @@ with sync_playwright() as p:
         self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]), {"runs": 1, "chats": 1})
 
 
+class ProjectPollingTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys, time
+from playwright.sync_api import sync_playwright
+STATE = {"title": "Bakery site", "running": True, "starting": False, "raw_phase": "build", "phase": "Building",
+         "messages": [], "agents": [], "tasks": [], "accounts": []}
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    asked, held = [], []
+    def state(route, request):
+        asked.append(time.time())
+        if len(asked) == 2:
+            held.append(route)  # this check is slow to answer: the owner sends a message meanwhile
+        else:
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(STATE))
+    page.route("**/api/runs/t1?after=*", state)
+    page.route("**/api/runs/t1/say", lambda route, request: route.fulfill(status=200, content_type="application/json",
+                                                                           body="{}"))
+    page.goto(sys.argv[1] + "#/projects/t1")
+    page.wait_for_timeout(2000)
+    page.fill(".say-dock textarea", "Please use our brand colours")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(300)
+    for route in held:
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(STATE))
+    start = len(asked)
+    page.wait_for_timeout(7600)
+    print(json.dumps({"checks": len(asked) - start}))
+    b.close()
+"""
+
+    def test_f13_a_project_page_checks_on_the_team_once_at_a_time(self):
+        """A message sent (or Continue pressed) while the page was checking on the team started a second round of
+        checks beside the first, for as long as the page stayed open; every such moment added one more."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        checks = json.loads(out.stdout.strip().splitlines()[-1])["checks"]
+        self.assertLessEqual(checks, 6)  # every 1.5 s while the team works: about 5 in 7.6 s, not twice that
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

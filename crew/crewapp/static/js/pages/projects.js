@@ -59,8 +59,9 @@ class ProjectView {
     this.alive = true;
     this.seen = new Set();
     this.last = null;
+    this.gen = 0;  // one round of checks at a time: a newer round retires the older one
     this.build();
-    this.tick();
+    this.tick(this.gen);
   }
 
   build() {
@@ -117,18 +118,27 @@ class ProjectView {
     this.feed.append(h('div', { class: 'sysline', dataset: { placeholder: '1' } }, 'Getting the team ready…'));
   }
 
-  async tick() {
-    if (!this.alive) return;
+  async tick(gen) {
+    if (!this.alive || gen !== this.gen) return;
     let s = null;
     try {
       s = await api(`/api/runs/${this.id}?after=${this.after}`);
-      if (!this.alive) return;
+      if (!this.alive || gen !== this.gen) return;  // a newer check has taken over (a message was sent meanwhile)
       if (!s.starting) this.update(s);
       else if (s.problem) this.cannotStart(s.problem);
     } catch (e) {
       if (e.status === 404) { toast('That project could not be found.'); location.hash = '#/projects'; return; }
+      if (gen !== this.gen) return;
     }
-    this.timer = setTimeout(() => this.tick(), s && (s.running || (s.starting && !s.problem)) ? 1500 : 6000);
+    this.timer = setTimeout(() => this.tick(gen), s && (s.running || (s.starting && !s.problem)) ? 1500 : 6000);
+  }
+
+  // Check now (or after `delay` ms), instead of the round of checks already going: never beside it.
+  poll(delay = 0) {
+    clearTimeout(this.timer);
+    const gen = ++this.gen;
+    if (delay) this.timer = setTimeout(() => this.tick(gen), delay);
+    else this.tick(gen);
   }
 
   // Its program ended before the team began (git missing, a settings problem …): say why, instead of
@@ -408,8 +418,7 @@ class ProjectView {
     try {
       await api(`/api/runs/${this.id}/say`, { method: 'POST', body: { text, to: this.to || null } });
       if (this.to) this.convLast[this.to] = 'you';
-      clearTimeout(this.timer);
-      this.tick();
+      this.poll();
     } catch (e) { fail(e); this.say.value = text; }
   }
 
@@ -422,8 +431,7 @@ class ProjectView {
     try {
       const r = await api(`/api/runs/${this.id}/resume`, { method: 'POST', body: {} });
       toast(r.already_running ? 'The team is still working on this project — nothing needed restarting.' : 'The team is picking up where it left off.');
-      clearTimeout(this.timer);
-      setTimeout(() => this.tick(), 1200);
+      this.poll(1200);
     } catch (e) { fail(e); }
   }
 
