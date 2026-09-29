@@ -1505,6 +1505,52 @@ with sync_playwright() as p:
         self.assertFalse(res["skill_open"])
 
 
+class ScorecardLabelTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+cell = {"n": 4, "passed": 3, "rate": 0.75, "label": "fair", "minutes": 5, "tokens": 900}
+def model(mid, label, tier):
+    return {**{k: v for k, v in cell.items() if k != "label"}, "model": mid, "label": label, "tier": tier,
+            "verdict": "fair", "by_size": {}, "strong": [],
+            "weak": [], "moved_up": 0, "handovers": 0, "wins": 0, "losses": 0,
+            "by_kind": {"docs S": {"kind": "docs", "size": "S", **cell}}}
+DATA = {"window_days": 180, "records": 12, "projects": 3, "workhorse": "claude-sonnet-5-5", "manager": "claude-opus-5-5",
+        "thresholds": {"evidence": 4, "weak": 0.5, "strong": 0.8}, "rules": {"up": [], "down": []}, "contests": [],
+        "models": [model("claude-sonnet-5-5", "Sonnet 5.5", "workhorse"), model("gpt-6-sol", "GPT-6 Sol", "workhorse"),
+                   model("claude-opus-5-5", "Opus 5.5", "manager")],
+        "matrix": [{"kind": "docs", "size": "S", "best": None, "cells": {"claude-sonnet-5-5": cell, "gpt-6-sol": cell,
+                                                                         "claude-opus-5-5": cell}}]}
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    page.route("**/api/scorecard", lambda route, request: route.fulfill(status=200, content_type="application/json",
+                                                                        body=json.dumps(DATA)))
+    page.goto(sys.argv[1] + "#/usage/scorecard")
+    page.wait_for_selector(".score-tile")
+    print(json.dumps(page.evaluate("Object.fromEntries([...document.querySelectorAll('.score-tile .who')].map((w) => "
+                                   "[w.querySelector('b').textContent, w.querySelector('.pill').textContent]))")))
+    b.close()
+"""
+
+    def test_a_model_no_longer_in_its_tier_is_labelled_as_earlier(self):
+        """After the owner replaced GPT-6 Sol with Sonnet 5.5, the scorecard (180 days of record) showed both as the
+        Workhorse. The record stays; the model that left says so."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
+                         {"Sonnet 5.5": "Workhorse", "GPT-6 Sol": "Earlier workhorse", "Opus 5.5": "Manager"})
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

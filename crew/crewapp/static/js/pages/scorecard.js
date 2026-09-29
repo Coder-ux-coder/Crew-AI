@@ -12,6 +12,13 @@ const VERDICT = {
 };
 
 const pctOf = (r) => (r == null ? '–' : `${Math.round(r * 100)}%`);
+// A model the owner has since replaced keeps its record, and says it is an earlier one (GPT-6 Sol, once Sonnet 5.5
+// became the workhorse).
+const tierWord = (m, d) => {
+  const word = TIER[m.tier] || m.tier;
+  const now = { workhorse: d.workhorse, manager: d.manager }[m.tier];
+  return now && now !== m.model ? `Earlier ${word.toLowerCase()}` : word;
+};
 const mins = (m) => (m == null ? '–' : m < 1 ? 'under a minute' : `${Math.round(m)} min`);
 const kindName = (kind, size) => `${KIND[kind] || kind} · ${SIZE[size] || size}`;
 
@@ -41,7 +48,7 @@ function draw(box, d) {
     const strong = (m.strong || []).map((k) => kindName(...k.split(' ')));
     const weak = (m.weak || []).map((k) => kindName(...k.split(' ')));
     return h('div', { class: `card score-tile t-${m.tier}` },
-      h('div', { class: 'who' }, h('b', null, m.label), h('span', { class: `pill t-${m.tier}` }, TIER[m.tier] || m.tier)),
+      h('div', { class: 'who' }, h('b', null, m.label), h('span', { class: `pill t-${m.tier}` }, tierWord(m, d))),
       h('div', { class: 'hero', title: `${m.passed} of ${m.n} passed the first check` }, pctOf(m.rate),
         h('small', null, m.n ? `passed the first check · ${m.passed} of ${m.n}` : 'no pieces built yet')),
       h('div', { class: 'facts' },
