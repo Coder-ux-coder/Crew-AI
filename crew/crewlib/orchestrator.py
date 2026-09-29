@@ -26,6 +26,7 @@ from .config import Account, Config, SeatSpec
 from .store import Store, StoreError
 from .tiers import TIERS, model_label, seat_tier, vendor_of
 from .tools import _fmt_msg, _mentions, owner_words
+from .usage import limit_resets_at
 from .util import Redactor, atomic_write, clip, crew_home, hhmm, human_duration, load_env_file, now
 
 TICK = 1.0
@@ -661,8 +662,11 @@ class Orchestrator:
             return
         if data.get("limit_hit"):
             acc = self.store.account(rt.account.name) or {}
-            until = acc.get("parked_until") or int(now() + 3600)
-            self.store.upsert_account(rt.account.name, status="rejected", parked_until=max(until, int(now() + 60)))
+            until = int(acc.get("parked_until") or 0)  # reported with the limit (Claude Code) …
+            if until <= now():  # … or left over from an earlier one: read it from the message (Codex), else an hour
+                until = int(limit_resets_at(data.get("text") or "") or now() + 3600)
+            until = max(until, int(now() + 60))
+            self.store.upsert_account(rt.account.name, status="rejected", parked_until=until)
             self.store.event("limit_hit", seat=rt.name, account=rt.account.name)
             self.say(f"{rt.account.name} reached its usage limit (resets {hhmm(until)}). Moving {rt.name} to another account.")
             self.failover(rt, reason="usage limit")

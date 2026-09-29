@@ -196,6 +196,31 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(fake.stall_count, 0)
             st.close()
 
+    def test_c20_a_limit_parks_the_subscription_until_it_really_lifts(self):
+        """A seat at its limit parked its subscription until the time left over from an earlier limit: already
+        past, so it was parked for one minute, tried again, failed again, and so on, and the team was told it
+        "resets" at a time already gone (ChatGPT seats report the limit only in words)."""
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            st.upsert_account("chatgpt-1", vendor="codex", status="allowed", parked_until=int(time.time() - 86400))
+            said, moved = [], []
+            fake = types.SimpleNamespace(store=st, say=lambda text, **k: said.append(text),
+                                         failover=lambda rt, reason: moved.append(reason),
+                                         answer_owner=lambda *a, **k: None, log=lambda *a: None)
+            rt = types.SimpleNamespace(name="sol-1", busy=True, owner_interrupt=0.0, pending=[],
+                                       account=Account("chatgpt-1", "codex"))
+            orchestrator.Orchestrator.on_result(fake, rt, {"limit_hit": True, "is_error": True, "text":
+                "You've hit your usage limit. Upgrade to Pro, or try again in 2 hours 5 minutes."})
+            until = st.account("chatgpt-1")["parked_until"]
+            self.assertAlmostEqual(until, time.time() + 7500, delta=60)  # when the message says it lifts
+            self.assertEqual(moved, ["usage limit"])
+            self.assertIn(time.strftime("%H:%M", time.localtime(until)), said[0])
+            st.upsert_account("chatgpt-1", parked_until=int(time.time() - 60))
+            orchestrator.Orchestrator.on_result(fake, rt, {"limit_hit": True, "is_error": True,
+                                                           "text": "Usage limit reached."})  # no time given
+            self.assertGreater(st.account("chatgpt-1")["parked_until"], time.time() + 3000)  # an hour, not a minute
+            st.close()
+
     def test_a4_the_heartbeat_says_whether_a_project_runs(self):
         with TempHome() as home:
             st = Store(home / "team.db")

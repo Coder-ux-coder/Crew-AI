@@ -6,6 +6,7 @@ SQLite at ~/.crew/usage.db (safe with several writers).
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 
@@ -77,6 +78,42 @@ def record_tokens(account: str, usage: dict | None) -> None:
             db.close()
     except sqlite3.Error:
         pass
+
+
+_RESET_EPOCH = re.compile(r"\|(\d{10})\b")  # Claude Code: "Claude AI usage limit reached|1790000000"
+_RESET_IN = re.compile(r"(?:try again|resets?|available again)\s+in\s+(\d+\s*[a-z]+(?:(?:\s*,\s*|\s+and\s+|\s+)"
+                       r"\d+\s*[a-z]+)*)", re.I)  # Codex: "… or try again in 2 hours 5 minutes."
+_RESET_AT = re.compile(r"(?:try again at|resets?(?: at)?)\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?m\b)?", re.I)
+
+
+def limit_resets_at(text: str, at: float | None = None) -> float | None:
+    """When a usage limit lifts, from the words of its message ("…|1790000000", "try again in 2 hours 5 minutes",
+    "resets 3pm"); None when the message does not say."""
+    at = time.time() if at is None else at
+    text = text or ""
+    m = _RESET_EPOCH.search(text)
+    if m:
+        return int(m.group(1))
+    m = _RESET_IN.search(text)
+    if m:
+        def unit(word: str) -> int:
+            w = word.lower()
+            return 60 if w == "m" else next((n for k, n in (("w", 604800), ("d", 86400), ("h", 3600), ("mi", 60),
+                                                            ("s", 1)) if w.startswith(k)), 0)
+        total = sum(int(n) * unit(u) for n, u in re.findall(r"(\d+)\s*([a-z]+)", m.group(1), re.I))
+        return at + total if total else None
+    m = _RESET_AT.search(text)
+    if m:
+        if not (m.group(2) or m.group(3)):
+            return None  # "resets 3 days …": not a time of day
+        hour, minute, half = int(m.group(1)), int(m.group(2) or 0), (m.group(3) or "").lower()
+        hour += 12 if half == "p" and hour < 12 else -12 if half == "a" and hour == 12 else 0
+        if hour > 23 or minute > 59:
+            return None
+        day = time.localtime(at)
+        when = time.mktime((day.tm_year, day.tm_mon, day.tm_mday, hour, minute, 0, 0, 0, -1))
+        return when if when > at else when + 86400
+    return None
 
 
 def limited_until(lim: dict | None, at: float | None = None) -> float:
