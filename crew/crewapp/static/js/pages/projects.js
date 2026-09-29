@@ -453,7 +453,7 @@ const TIER_HINT = {
 };
 const tierModel = (tier) => {
   const m = (store.overview && store.overview.models) || {};
-  return modelName({ workhorse: m.codex, manager: m.work, ceo: m.ceo }[tier] || '');
+  return modelName({ workhorse: m.workhorse, manager: m.work, ceo: m.ceo }[tier] || '');
 };
 
 const statusWord = (a) => {

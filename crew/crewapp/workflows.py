@@ -12,6 +12,7 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
+from crewlib.tiers import RETIRED
 from crewlib.util import clip, now
 
 from .sse import hub
@@ -103,6 +104,8 @@ class Workflows:
         have = {r[1] for r in self.db.db.execute("PRAGMA table_info(workflows)")}
         if "account" not in have:  # the subscription the owner chose for this workflow ("" = automatic)
             self.db.db.execute("ALTER TABLE workflows ADD COLUMN account TEXT DEFAULT ''")
+        for old, new in RETIRED.items():  # a model the owner took out of Crew: its workflows run on its successor
+            self.db.db.execute("UPDATE workflows SET model=? WHERE model=?", (new, old))
         self._running: set[str] = set()
         self._lock = threading.Lock()
         self._stop = False

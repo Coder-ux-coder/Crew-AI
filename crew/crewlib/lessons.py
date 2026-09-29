@@ -267,7 +267,7 @@ def effort_stats() -> list[dict]:
     return rows
 
 
-TIER_WORDS = {"workhorse": "workhorse (GPT-6 Sol)", "manager": "manager (Opus 5.5)"}
+TIER_WORDS = {"workhorse": "workhorse (Sonnet 5.5)", "manager": "manager (Opus 5.5)"}
 
 
 def render_for_ceo(limit: int = 12) -> str:

@@ -103,7 +103,7 @@ class Store:
         self.db.execute("PRAGMA busy_timeout=30000")
         with self._lock:
             self.db.executescript(SCHEMA)
-            for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT"),
+            for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT"), ("seats", "tier", "TEXT"),
                                         ("tasks", "tier", "TEXT"), ("tasks", "twin", "INTEGER"),
                                         ("messages", "recipient", "TEXT"), ("messages", "ref", "INTEGER"),
                                         ("messages", "original", "TEXT")):

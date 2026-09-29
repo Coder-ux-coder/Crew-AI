@@ -256,8 +256,8 @@ def _task_line(t: dict) -> str:
 def _tier_models(ctx: Ctx) -> tuple[str, str]:
     """The models the run's workhorse and manager seats use (for the scorecard)."""
     seats = ctx.store.seats()
-    workhorse = next((s["model"] for s in seats if s["vendor"] == "codex" and s.get("model")), "")
-    manager = next((s["model"] for s in seats if s["vendor"] == "claude" and s.get("model")), "")
+    workhorse = next((s["model"] for s in seats if seat_tier(s) == "workhorse" and s.get("model")), "")
+    manager = next((s["model"] for s in seats if seat_tier(s) == "manager" and s.get("model")), "")
     return workhorse, manager
 
 
@@ -268,13 +268,13 @@ def _check_owner_tier(ctx: Ctx, owner: str | None, tier: str | None) -> None:
     seat = ctx.store.seat(owner) or {}
     if not seat:
         return
-    has_workhorse = any(s["vendor"] == "codex" for s in ctx.store.seats())
-    if tier == "manager" and seat.get("vendor") == "codex":
+    workhorses = [s["name"] for s in ctx.store.seats() if seat_tier(s) == "workhorse"]
+    if tier == "manager" and seat_tier(seat) == "workhorse":
         raise ToolError(f"{owner} is a workhorse seat ({model_label(seat.get('model') or '')}); manager tasks need a "
-                        "manager seat. Suggest a Claude seat, or make the task tier=workhorse if it is routine.")
-    if tier == "workhorse" and seat.get("vendor") != "codex" and has_workhorse:
+                        "manager seat. Suggest a manager seat, or make the task tier=workhorse if it is routine.")
+    if tier == "workhorse" and seat_tier(seat) != "workhorse" and workhorses:
         raise ToolError(f"{owner} is a manager seat. Workhorse tasks go to the workhorse seats "
-                        f"({', '.join(s['name'] for s in ctx.store.seats() if s['vendor'] == 'codex')}); leave "
+                        f"({', '.join(workhorses)}); leave "
                         "suggested_owner empty or pick one of them, or make the task tier=manager if it needs judgement.")
 
 
@@ -317,7 +317,7 @@ def status_view(ctx: Ctx, a: dict) -> str:
     lines.append("Seats:")
     for s in st.seats():
         task = f" on #{s['current_task']}" if s.get("current_task") else ""
-        lines.append(f"  {s['name']} ({s['role']}, {s['vendor']}/{s['account']}): {s['status']}{task}")
+        lines.append(f"  {s['name']} ({s['role']}, {seat_tier(s)}, {s['vendor']}/{s['account']}): {s['status']}{task}")
     lines.append("Accounts:")
     for acc in st.accounts():
         util = "" if acc["util_5h"] is None else f" 5h {acc['util_5h'] * 100:.0f}% (resets {hhmm(acc['reset_5h'])})"
@@ -352,7 +352,7 @@ def task_create(ctx: Ctx, a: dict) -> str:
     if tier == "workhorse":  # the record decides: a kind of work the workhorse keeps failing goes to the manager
         workhorse, manager = _tier_models(ctx)
         tier, moved = scorecard.route_tier(a.get("kind", "build"), a.get("size", "M"), tier, workhorse, manager)
-        if moved and owner and (ctx.store.seat(owner) or {}).get("vendor") == "codex":
+        if moved and owner and seat_tier(ctx.store.seat(owner)) == "workhorse":
             owner = None
     _check_owner_tier(ctx, owner, tier)
     try:
@@ -367,7 +367,7 @@ def task_create(ctx: Ctx, a: dict) -> str:
     task = ctx.store.task(task_id) or {}
     if not tier and owner:  # the default tier must not strand a task with an owner who cannot take it
         seat = ctx.store.seat(owner) or {}
-        ctx.store.update_task(task_id, tier=seat_tier(seat.get("vendor") or "claude"))
+        ctx.store.update_task(task_id, tier=seat_tier(seat))
         task = ctx.store.task(task_id) or {}
     return f"Created task #{task_id} ({task.get('tier', 'manager')} tier)." + (
         f" It goes to the manager tier: {moved}." if moved else "")
@@ -554,7 +554,7 @@ def verdict(ctx: Ctx, a: dict) -> str:
             if tier in TIERS and tier != task.get("tier"):
                 fields["tier"] = tier
                 owner = ctx.store.seat(task.get("suggested_owner") or "") or {}
-                if owner and seat_tier(owner.get("vendor") or "claude") != tier:
+                if owner and seat_tier(owner) != tier:
                     fields["suggested_owner"] = None  # the old suggestion cannot take the task any more
             if fields:
                 ctx.store.update_task(tid, **fields)

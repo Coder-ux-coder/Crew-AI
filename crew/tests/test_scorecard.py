@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 from crewlib import lessons, scorecard, tools  # noqa: E402
 from crewlib.store import Store  # noqa: E402
 
-SOL, OPUS = "gpt-6-sol", "claude-opus-5-5"
+SONNET, OPUS = "claude-sonnet-5-5", "claude-opus-5-5"
 
 
 class Base(unittest.TestCase):
@@ -30,7 +30,7 @@ class Base(unittest.TestCase):
         os.environ["CREW_HOME"] = self.saved or ""
 
     def record(self, model: str, kind: str, size: str, passed: int, total: int, **kw):
-        tier = "workhorse" if model == SOL else "manager"
+        tier = "workhorse" if model == SONNET else "manager"
         for i in range(total):
             lessons.record_effort_outcome(kind, size, "medium", 1 if i < passed else 2, 10 + i, 20000 + 1000 * i,
                                           project="p", tier=tier, model=model, **kw)
@@ -70,69 +70,70 @@ class FirstCheckFix(Base):
 
 class Figures(Base):
     def test_per_model_and_kind_with_labels(self):
-        self.record(SOL, "docs", "S", 5, 5)
-        self.record(SOL, "fix", "M", 1, 5)
+        self.record(SONNET, "docs", "S", 5, 5)
+        self.record(SONNET, "fix", "M", 1, 5)
         self.record(OPUS, "fix", "M", 4, 4)
         self.record(OPUS, "docs", "S", 4, 4)
-        self.record(SOL, "build", "S", 2, 2)
+        self.record(SONNET, "build", "S", 2, 2)
         models = scorecard.stats()["models"]
-        sol = models[SOL]
-        self.assertEqual((sol["tier"], sol["n"], sol["passed"]), ("workhorse", 12, 8))
-        self.assertEqual(sol["by_kind"]["docs S"]["label"], "strong")
-        self.assertEqual(sol["by_kind"]["fix M"]["label"], "weak")
-        self.assertEqual(sol["by_kind"]["build S"]["label"], "thin")  # two pieces are not evidence yet
-        self.assertEqual(sol["strong"], ["docs S"])
-        self.assertEqual(sol["weak"], ["fix M"])
-        self.assertIn("S", sol["by_size"])
+        wh = models[SONNET]
+        self.assertEqual((wh["tier"], wh["n"], wh["passed"]), ("workhorse", 12, 8))
+        self.assertEqual(wh["by_kind"]["docs S"]["label"], "strong")
+        self.assertEqual(wh["by_kind"]["fix M"]["label"], "weak")
+        self.assertEqual(wh["by_kind"]["build S"]["label"], "thin")  # two pieces are not evidence yet
+        self.assertEqual(wh["strong"], ["docs S"])
+        self.assertEqual(wh["weak"], ["fix M"])
+        self.assertIn("S", wh["by_size"])
 
     def test_rules_move_weak_work_up_and_suggest_strong_work_down(self):
-        self.record(SOL, "fix", "M", 1, 5)
+        self.record(SONNET, "fix", "M", 1, 5)
         self.record(OPUS, "fix", "M", 4, 4)
-        self.record(SOL, "docs", "S", 5, 5)
+        self.record(SONNET, "docs", "S", 5, 5)
         self.record(OPUS, "docs", "S", 4, 4)
-        rules = scorecard.rules(SOL, OPUS)
+        rules = scorecard.rules(SONNET, OPUS)
         self.assertEqual([(r["kind"], r["size"]) for r in rules["up"]], [("fix", "M")])
         self.assertIn("1 of 5", rules["up"][0]["why"])
         self.assertEqual([(r["kind"], r["size"]) for r in rules["down"]], [("docs", "S")])
-        self.assertEqual(scorecard.route_tier("fix", "M", "workhorse", SOL, OPUS)[0], "manager")
-        self.assertEqual(scorecard.route_tier("docs", "S", "workhorse", SOL, OPUS), ("workhorse", ""))
-        self.assertEqual(scorecard.route_tier("fix", "M", "manager", SOL, OPUS), ("manager", ""))
-        text = scorecard.render(SOL, OPUS)
-        self.assertIn("GPT-6 Sol (workhorse)", text)
+        self.assertEqual(scorecard.route_tier("fix", "M", "workhorse", SONNET, OPUS)[0], "manager")
+        self.assertEqual(scorecard.route_tier("docs", "S", "workhorse", SONNET, OPUS), ("workhorse", ""))
+        self.assertEqual(scorecard.route_tier("fix", "M", "manager", SONNET, OPUS), ("manager", ""))
+        text = scorecard.render(SONNET, OPUS)
+        self.assertIn("Sonnet 5.5 (workhorse)", text)
         self.assertIn("weak at fix M 20% (5)", text)
         self.assertIn("Automatic rule", text)
         self.assertIn("your call", text)
 
     def test_head_to_head_results_count(self):
         for _ in range(2):
-            lessons.record_contest("p", "Header", "build", "S", SOL, OPUS, "workhorse", "manager", True, True, "simpler")
-        lessons.record_contest("p", "Parser", "build", "S", OPUS, SOL, "manager", "workhorse", True, False, "handles errors")
+            lessons.record_contest("p", "Header", "build", "S", SONNET, OPUS, "workhorse", "manager", True, True, "simpler")
+        lessons.record_contest("p", "Parser", "build", "S", OPUS, SONNET, "manager", "workhorse", True, False, "handles errors")
         models = scorecard.stats()["models"]
-        self.assertEqual((models[SOL]["wins"], models[SOL]["losses"]), (2, 1))
-        self.assertEqual(scorecard.rules(SOL, OPUS)["down"][0]["why"], "GPT-6 Sol won 2 of 3 head-to-heads")
-        summary = scorecard.summary(SOL, OPUS)
+        self.assertEqual((models[SONNET]["wins"], models[SONNET]["losses"]), (2, 1))
+        self.assertEqual(scorecard.rules(SONNET, OPUS)["down"][0]["why"], "Sonnet 5.5 won 2 of 3 head-to-heads")
+        summary = scorecard.summary(SONNET, OPUS)
         self.assertEqual(len(summary["contests"]), 3)
         self.assertEqual(summary["contests"][0]["winner"], "Opus 5.5")  # newest first
 
     def test_summary_table_marks_the_better_model(self):
-        self.record(SOL, "docs", "S", 4, 4)
+        self.record(SONNET, "docs", "S", 4, 4)
         self.record(OPUS, "docs", "S", 3, 4)
-        summary = scorecard.summary(SOL, OPUS)
-        self.assertEqual([m["model"] for m in summary["models"]], [SOL, OPUS])  # workhorse first
+        summary = scorecard.summary(SONNET, OPUS)
+        self.assertEqual([m["model"] for m in summary["models"]], [SONNET, OPUS])  # workhorse first
         row = summary["matrix"][0]
-        self.assertEqual((row["kind"], row["size"], row["best"]), ("docs", "S", SOL))
+        self.assertEqual((row["kind"], row["size"], row["best"]), ("docs", "S", SONNET))
 
     def test_nothing_recorded_yet(self):
-        self.assertEqual(scorecard.render(SOL, OPUS), "")
-        self.assertEqual(scorecard.summary(SOL, OPUS)["models"], [])
+        self.assertEqual(scorecard.render(SONNET, OPUS), "")
+        self.assertEqual(scorecard.summary(SONNET, OPUS)["models"], [])
 
 
 class TaskTool(Base):
     def test_a_workhorse_task_of_a_weak_kind_goes_to_the_manager(self):
-        self.record(SOL, "fix", "M", 1, 5)
+        self.record(SONNET, "fix", "M", 1, 5)
         st = Store(Path(tempfile.mkdtemp(prefix="crew-score-run-")) / "team.db")
-        for name, role, vendor, model in (("ada", "lead", "claude", OPUS), ("curie", "member", "codex", SOL)):
-            st.upsert_seat(name, role=role, vendor=vendor, model=model, account=name, status="idle")
+        for name, role, vendor, model in (("ada", "lead", "claude", OPUS), ("curie", "member", "claude", SONNET)):
+            st.upsert_seat(name, role=role, vendor=vendor, model=model, account=name, status="idle",
+                           tier="workhorse" if model == SONNET else "manager")
         st.set("phase", "plan")
         lead = tools.Ctx(store=st, seat="ada", role="lead")
         text, err = tools.call(lead, "team_task_create", {"title": "Fix the parser", "spec": "Handle blank lines.",

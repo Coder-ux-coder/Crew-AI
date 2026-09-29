@@ -18,14 +18,16 @@ from pathlib import Path
 
 from crewlib import config as cfgmod
 from crewlib.prompts import team_rules
+from crewlib.tiers import RETIRED
 from crewlib.util import atomic_write, crew_home, load_env_file
 
 # Models offered in the pickers. The owner can type any other name too; the ban list still applies.
 KNOWN_MODELS = [
     {"id": "claude-opus-5-5", "label": "Opus 5.5", "note": "Best for everyday work", "engine": "claude"},
+    {"id": "claude-sonnet-5-5", "label": "Sonnet 5.5", "note": "Fast and economical: the team's workhorse",
+     "engine": "claude"},
     {"id": "claude-fable-5-1", "label": "Fable 5.1", "note": "Most capable, tighter limits", "engine": "claude"},
     {"id": "claude-opus-5", "label": "Opus 5", "note": "Previous Opus", "engine": "claude"},
-    {"id": "gpt-6-sol", "label": "GPT-6 Sol", "note": "Workhorse for coding and everyday work", "engine": "codex"},
     {"id": "gpt-6-astra", "label": "GPT-6 Astra", "note": "Frontier intelligence for the most demanding work",
      "engine": "codex"},
 ]
@@ -36,7 +38,7 @@ APP_DEFAULTS = {
     "chat_model": "claude-opus-5-5",
     "chat_effort": "auto",
     "chat_account": "",
-    "codex_model": "gpt-6-sol",
+    "codex_model": "gpt-6-astra",
     "codex_effort": "auto",
     "start_with_windows": False,
     "voice_name": "",
@@ -50,7 +52,7 @@ APP_DEFAULTS = {
     "phone_enabled": False,
     "auto_update": True,
     "improve_prompts": False,
-    "settings_version": 3,
+    "settings_version": 4,
 }
 
 
@@ -69,9 +71,32 @@ def _raw() -> dict:
     return tomllib.loads(p.read_text(encoding="utf-8"))
 
 
-SETTINGS_VERSION = 3
+SETTINGS_VERSION = 4
+
+
+def _sonnet_workhorse(raw: dict) -> None:
+    """2.3.1, the owner's decision: Sonnet 5.5 replaces GPT-6 Sol as the team's workhorse, and GPT-6 Sol leaves Crew.
+    Sonnet was banned by default until now, so the ban on it is lifted and it joins the allowed Claude models;
+    GPT-6 Sol joins the ban list; ChatGPT chats that used it by default use GPT-6 Astra. Nothing else changes."""
+    models = raw.get("models")
+    if isinstance(models, dict):
+        if models.pop("codex", None) is not None:  # the old ChatGPT workhorse: the workhorse is models.workhorse now
+            models.setdefault("workhorse", "claude-sonnet-5-5")
+        banned = models.get("banned")
+        if isinstance(banned, list):
+            banned = [b for b in banned if not (isinstance(b, str) and b.strip().lower() == "sonnet")]
+            models["banned"] = banned + ([] if "gpt-6-sol" in banned else ["gpt-6-sol"])
+        allowed = models.get("allowed")
+        if isinstance(allowed, list) and allowed and "claude-sonnet-5-5" not in allowed:
+            models["allowed"] = allowed + ["claude-sonnet-5-5"]
+    app = raw.get("app")
+    if isinstance(app, dict) and app.get("codex_model") in RETIRED:
+        app["codex_model"] = RETIRED[app["codex_model"]]
+
+
 # Each settings version: values an older Crew wrote as its defaults, and what they became. Only an exact old
 # default is changed, and each step runs once, so a choice the owner made afterwards is never overwritten.
+# A step can also be a function, for a change the owner asked for that is more than one value.
 MIGRATIONS = {
     2: [("models", "effort_work", "high", "auto"), ("models", "effort_light", "medium", "auto"),
         ("models", "effort_ceo", "high", "max"), ("team", "max_hours", 3.0, 0.0),
@@ -79,6 +104,7 @@ MIGRATIONS = {
     # 2.1: the three-tier team (GPT-6 Sol workhorse, Opus 5.5 manager, GPT-6 Astra CEO); GPT-6 has no "minimal"
     3: [("models", "ceo", "claude-fable-5-1", "gpt-6-astra"), ("models", "codex", "", "gpt-6-sol"),
         ("app", "codex_model", "", "gpt-6-sol"), ("app", "codex_effort", "minimal", "low")],
+    4: [_sonnet_workhorse],
 }
 
 
@@ -90,7 +116,11 @@ def _migrate(raw: dict) -> dict:
     for version in sorted(MIGRATIONS):
         if version <= have:
             continue
-        for section, key, old, new in MIGRATIONS[version]:
+        for step in MIGRATIONS[version]:
+            if callable(step):
+                step(raw)
+                continue
+            section, key, old, new = step
             sec = raw.get(section)
             if isinstance(sec, dict) and key in sec and sec[key] == old:
                 sec[key] = new
@@ -184,7 +214,8 @@ def _load() -> dict:
     models = {k: getattr(cfg.models, k) for k in cfg.models.__dataclass_fields__}
     app = {**APP_DEFAULTS, **(raw.get("app") or {})}
     accounts = [{"name": a.name, "vendor": a.vendor, "profile": a.profile} for a in cfg.accounts]
-    seats = [{"name": s.name, "vendor": s.vendor, "account": s.account, "role": s.role} for s in cfg.seats]
+    seats = [{"name": s.name, "vendor": s.vendor, "account": s.account, "role": s.role, "tier": s.tier}
+             for s in cfg.seats]
     explicit_seats = bool(raw.get("seat"))
     return {"team": team, "models": models, "app": app, "accounts": accounts, "seats": seats,
             "explicit_seats": explicit_seats, "known_models": KNOWN_MODELS, "efforts": EFFORTS,
@@ -286,7 +317,7 @@ def _save(update: dict) -> dict:
 
 _HEADERS = {
     "team": "How the team works",
-    "models": "Which models may run (Haiku and Sonnet stay banned unless you remove them)",
+    "models": "Which models run: Opus 5.5 manages, Sonnet 5.5 is the workhorse, GPT-6 Astra is the CEO",
     "app": "The app: voice, look, phone",
 }
 
@@ -320,8 +351,9 @@ def dump(data: dict) -> str:
         out.append("")
     for seat in data.get("seat") or []:
         out.append("[[seat]]")
-        for k in ("name", "vendor", "account", "role"):
-            out.append(f"{k} = {_val(seat[k])}")
+        for k in ("name", "vendor", "account", "role", "tier"):
+            if seat.get(k) not in (None, ""):
+                out.append(f"{k} = {_val(seat[k])}")
         out.append("")
     return "\n".join(out)
 

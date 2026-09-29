@@ -384,7 +384,7 @@ class SeatTests(unittest.TestCase):
     def test_c5_a_codex_turn_that_cannot_run_still_ends(self):
         with TempHome() as home:
             events: queue.Queue = queue.Queue()
-            setup = agents.CodexSetup(model="gpt-6-sol", effort="auto", run_dir=home, extra_env={})
+            setup = agents.CodexSetup(model="gpt-6-astra", effort="auto", run_dir=home, extra_env={})
             seat = agents.CodexSeat("curie", "member", Account("mohidzeeshanrana-gmail.com", "codex"), home, setup,
                                     "system", events, Redactor({}))
             seat.busy = True
@@ -1144,7 +1144,7 @@ class AppCampaignTests(unittest.TestCase):
     def test_a18_a_model_of_the_other_product_is_refused(self):
         s = self.s
         cid, _ = self.new_chat()
-        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "gpt-6-sol"}, expect=400)
+        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "gpt-6-astra"}, expect=400)
         self.assertIn("ChatGPT model", err["error"])
         self.assertEqual(s.api("GET", f"/api/chats/{cid}")["messages"], [])  # nothing recorded
         self.with_chatgpt()
@@ -1447,7 +1447,7 @@ class AppCampaignTests(unittest.TestCase):
         cid, _ = self.new_chat()
         err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "claude-opus-5"}, expect=400)["error"]
         self.assertIn("claude-opus-5 is not one of the Claude models allowed in Settings → Models", err)
-        self.assertIn("claude-opus-5-5, claude-fable-5-1", err)
+        self.assertIn("claude-opus-5-5, claude-sonnet-5-5, claude-fable-5-1", err)
         err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "claude-haiku-4-5"}, expect=400)["error"]
         self.assertIn("claude-haiku-4-5 is on your list of banned models", err)
         for text in (err,):

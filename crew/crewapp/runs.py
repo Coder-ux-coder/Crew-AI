@@ -345,7 +345,7 @@ def agents_view(st: Store) -> list[dict]:
     for s in st.seats():
         mine = [h for h in helpers.values() if h["seat"] == s["name"]]
         out.append({"name": s["name"], "title": agent_title(s["name"], s["role"]), "role": ROLES.get(s["role"], s["role"] or "Builder"),
-                    "tier": tiers.seat_tier(s["vendor"] or "claude"),
+                    "tier": tiers.seat_tier(s),
                     "product": PRODUCTS.get(s["vendor"], s["vendor"] or ""), "model": s["model"] or "",
                     "account": s["account"] or "", "effort": s.get("effort") or "auto", "status": s["status"],
                     "doing": friendly_activity(s["note"] or "", s["status"]), "task": s["current_task"],
@@ -358,7 +358,7 @@ def agents_view(st: Store) -> list[dict]:
         if d.get("state") == "start":
             oneoffs[ev["seat"]] = {"name": ev["seat"], "title": agent_title(ev["seat"], d.get("role"), ev["task_id"]),
                                    "role": ROLES.get(d.get("role"), d.get("role") or ""),
-                                   "tier": "ceo" if d.get("role") == "ceo" else tiers.seat_tier(d.get("vendor") or "claude"),
+                                   "tier": "ceo" if d.get("role") == "ceo" else tiers.seat_tier(d),
                                    "product": PRODUCTS.get(d.get("vendor"), d.get("vendor") or ""),
                                    "model": d.get("model") or "", "account": d.get("account") or "",
                                    "effort": d.get("effort") or "auto", "status": "working", "task": ev["task_id"],

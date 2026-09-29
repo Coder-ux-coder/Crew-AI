@@ -98,10 +98,10 @@ def _burn(acc: dict) -> float:
 
 
 def tier_allows(seat: dict, task: dict, workhorse_usable: bool, manager_may_help: bool) -> bool:
-    """Workhorse seats (GPT-6 Sol) take only workhorse tasks; manager seats (Opus) take manager tasks, and
+    """Workhorse seats (Sonnet) take only workhorse tasks; manager seats (Opus) take manager tasks, and
     workhorse tasks only when no workhorse seat can run or when the manager may help (see the orchestrator)."""
     tier = task.get("tier") or "manager"
-    if seat_tier(seat.get("vendor") or "claude") == "workhorse":
+    if seat_tier(seat) == "workhorse":
         return tier == "workhorse" and task.get("kind") != "foundation"
     if task.get("twin"):
         return tier == "manager"  # a head-to-head needs the two tiers' own models: no stand-ins

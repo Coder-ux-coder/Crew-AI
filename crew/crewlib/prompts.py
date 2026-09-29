@@ -56,7 +56,7 @@ def roster_text(seats: list[dict]) -> str:
     rows = []
     for s in seats:
         who = "Claude Code" if s["vendor"] == "claude" else "Codex (OpenAI)"
-        tier = seat_tier(s["vendor"])
+        tier = seat_tier(s)
         model = s.get("model") or ""
         record = scorecard.profile(model, data) if model else ""
         rows.append(f"- @{s['name']}: {s['role']}, {model_label(model)} ({who}), {tier} — {TIER_STRENGTHS[tier]}."
@@ -97,10 +97,10 @@ TEAMWORK = """How the team works:
 
 
 TIER_GUIDE = """The team has three tiers, set by the owner:
-- Workhorse (GPT-6 Sol, the Codex seats): routine, fully specified work that needs no deep judgement: research and
+- Workhorse (Sonnet 5.5, the workhorse seats): routine, fully specified work that needs no deep judgement: research and
   look-ups, text and copy changes, styling tweaks (font sizes, spacing, colours), small UI adjustments, repetitive
   edits, docs, tests for behaviour that is already decided, simple scripts. Most tasks by count are workhorse tasks.
-- Manager (Opus 5.5, the Claude seats, including the lead): anything that needs high intelligence: the foundation
+- Manager (Opus 5.5, the manager seats, including the lead): anything that needs high intelligence: the foundation
   and shared interfaces, architecture, security (logins, secrets, permissions, untrusted input), data models and
   migrations, concurrency, tricky algorithms, design plans, ambiguous or cross-cutting work, hard debugging. A
   manager also reviews every workhorse task before it is merged.
@@ -125,7 +125,7 @@ def _common(seat: str, seats: list[dict]) -> str:
 
 def lead_system(seat: str, seats: list[dict], scorecard: str = "") -> str:
     n = len(seats)
-    workhorse = [s["name"] for s in seats if s["vendor"] == "codex"]
+    workhorse = [s["name"] for s in seats if seat_tier(s) == "workhorse"]
     who = (f"The workhorse seats are {', '.join(workhorse)}." if workhorse else
            "This run has no workhorse seats, so the manager seats build everything; still give every task its tier.")
     return _common(seat, seats) + f"""
@@ -188,7 +188,7 @@ CEO model. You own the whole result.
 def solo_manager_system(seat: str, seats: list[dict], builder: str) -> str:
     return _common(seat, seats) + f"""
 
-YOUR ROLE: MANAGER (Opus 5.5) of a one-builder job. The job is routine, so {builder}, the workhorse (GPT-6 Sol),
+YOUR ROLE: MANAGER (Opus 5.5) of a one-builder job. The job is routine, so {builder}, the workhorse (Sonnet 5.5),
 builds it, and a fresh manager reviewer checks each submission. You answer {builder}'s questions and make the
 decisions it needs (team_decide) when the orchestrator passes them to you. When everything is merged you verify
 the whole result against the brief yourself (run it, test it, look at it), fix small gaps directly on your branch
@@ -198,7 +198,7 @@ the whole result against the brief yourself (run it, test it, look at it), fix s
 
 def _member_role(seat: str, seats: list[dict], lead: str) -> str:
     me = next((s for s in seats if s["name"] == seat), {})
-    if me.get("vendor") == "codex":
+    if seat_tier(me) == "workhorse":
         return f"""YOUR ROLE: WORKHORSE ENGINEER ({model_label(me.get('model') or '')}). You take the routine, fully
 specified tasks. The lead is {lead}. A manager (Opus 5.5) reviews every task you submit, so work carefully.
 - Follow the spec and the acceptance criteria exactly. Do not redesign, add extras, or change files outside the scope.
@@ -234,7 +234,7 @@ def reviewer_prompt(task: dict, base: str, checks: list[str], check_log: str, au
                     scan_notes: str = "") -> str:
     check_part = ("Checks: " + "; ".join(checks) + "\nOrchestrator's check run (tail):\n" + clip(check_log, 3000)
                   if checks else "No check commands are set: run whatever tests the project has.")
-    author = ("\nThe author is the team's workhorse model (GPT-6 Sol). You are the manager checking its work: make sure "
+    author = ("\nThe author is the team's workhorse model (Sonnet 5.5). You are the manager checking its work: make sure "
               "it followed the spec exactly, did not cut corners or fake results, handled the edge cases, and left "
               "nothing half-done.\n" if author_tier == "workhorse" else "")
     return f"""You are a senior reviewer with fresh eyes. You did not write this change and share no history with
@@ -449,7 +449,7 @@ Also estimate, for planning:
   editing the same files, once a shared foundation exists (1 if the work does not split well);
 - builder_tier, in case one engineer builds the whole job: "workhorse" if it is routine and fully specified (text
   or styling changes, small UI tweaks, simple scripts, research, docs, repetitive edits) — the team's workhorse
-  model, GPT-6 Sol, builds it; "manager" if it needs high intelligence (architecture, security, data, tricky
+  model, Sonnet 5.5, builds it; "manager" if it needs high intelligence (architecture, security, data, tricky
   logic, design decisions, unclear requirements) — Opus 5.5 builds it;
 - builder_effort: how hard that builder should think. {EFFORT_GUIDE}
 {("Effort record from past projects:" + chr(10) + record) if record else ""}

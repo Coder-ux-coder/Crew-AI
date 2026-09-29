@@ -39,7 +39,7 @@ def record_rate(account: str, info: dict) -> None:
     five, week = windows.get("five_hour") or {}, windows.get("seven_day") or {}
     if not five and info.get("rateLimitType") == "five_hour":
         five = {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}
-    if not week and info.get("rateLimitType") in ("seven_day", "seven_day_opus"):
+    if not week and info.get("rateLimitType") in ("seven_day", "seven_day_opus", "seven_day_sonnet"):
         week = {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}
     try:
         db = _db()

@@ -1,4 +1,4 @@
-"""The three-tier team: GPT-6 Sol is the workhorse, Opus 5.5 the manager, GPT-6 Astra the CEO.
+"""The three-tier team: Sonnet 5.5 is the workhorse, Opus 5.5 the manager, GPT-6 Astra the CEO.
 
 Seats per tier, the rules that route each task to its tier, the effort names each model accepts, the lead's and
 the CEO's tier tools, and the token shares measured against the owner's targets.
@@ -24,13 +24,13 @@ from crewlib.store import Store  # noqa: E402
 
 
 def team_store() -> Store:
-    """A lead and a manager on Claude, two workhorse seats on one ChatGPT subscription."""
+    """A lead and a manager, and two workhorse seats, all on Claude subscriptions."""
     st = Store(Path(tempfile.mkdtemp(prefix="crew-tiers-")) / "team.db")
-    for name, role, vendor, model, account in (("ada", "lead", "claude", "claude-opus-5-5", "claude-1"),
-                                               ("boole", "member", "claude", "claude-opus-5-5", "claude-2"),
-                                               ("curie", "member", "codex", "gpt-6-sol", "codex-1"),
-                                               ("dijkstra", "member", "codex", "gpt-6-sol", "codex-1")):
-        st.upsert_seat(name, role=role, vendor=vendor, model=model, account=account, status="idle")
+    for name, role, tier, model, account in (("ada", "lead", "manager", "claude-opus-5-5", "claude-1"),
+                                             ("boole", "member", "manager", "claude-opus-5-5", "claude-2"),
+                                             ("curie", "member", "workhorse", "claude-sonnet-5-5", "claude-2"),
+                                             ("dijkstra", "member", "workhorse", "claude-sonnet-5-5", "claude-1")):
+        st.upsert_seat(name, role=role, vendor="claude", tier=tier, model=model, account=account, status="idle")
     st.set("settings", {"chat_budget": 3, "max_escalations": 2})
     st.set("phase", "plan")
     return st
@@ -49,24 +49,56 @@ ACCOUNTS = ('[[account]]\nname = "claude-1"\nvendor = "claude"\n\n[[account]]\nn
 class DefaultsAndSeats(unittest.TestCase):
     def test_the_owners_structure_is_the_default(self):
         m = config.ModelPolicy()
-        self.assertEqual((m.codex, m.work, m.ceo, m.ceo_backup),
-                         ("gpt-6-sol", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-1"))
+        self.assertEqual((m.workhorse, m.work, m.ceo, m.ceo_backup),
+                         ("claude-sonnet-5-5", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-1"))
+        self.assertIn("claude-sonnet-5-5", m.allowed)
+        self.assertNotIn("sonnet", m.banned)
+        with self.assertRaises(config.ConfigError):  # the owner took GPT-6 Sol out of Crew
+            m.check("gpt-6-sol")
         self.assertEqual(tiers.TARGETS, {"workhorse": (25, 35), "manager": (60, 70), "ceo": (0, 5)})
 
-    def test_manager_seats_per_claude_account_and_workhorse_seats_per_chatgpt_account(self):
+    def test_manager_seats_per_claude_account_and_workhorse_seats_spread_over_them(self):
         cfg = config.load(write_toml(ACCOUNTS))
-        self.assertEqual([(s.name, s.vendor, s.account, s.role) for s in cfg.seats],
-                         [("ada", "claude", "claude-1", "lead"), ("boole", "claude", "claude-2", "member"),
-                          ("curie", "codex", "codex-1", "member"), ("dijkstra", "codex", "codex-1", "member")])
+        self.assertEqual([(s.name, s.vendor, s.account, s.role, s.tier) for s in cfg.seats],
+                         [("ada", "claude", "claude-1", "lead", "manager"),
+                          ("boole", "claude", "claude-2", "member", "manager"),
+                          ("curie", "claude", "claude-2", "member", "workhorse"),
+                          ("dijkstra", "claude", "claude-1", "member", "workhorse")])  # ChatGPT runs the CEO only
         cfg = config.load(write_toml("[team]\nworkhorse_seats = 3\n\n" + ACCOUNTS))
-        self.assertEqual(sum(1 for s in cfg.seats if s.vendor == "codex"), 3)
-        cfg = config.load(write_toml(ACCOUNTS), seats=2)  # an explicit count still shares accounts round-robin
-        self.assertEqual([s.account for s in cfg.seats], ["claude-1", "claude-2"])
+        self.assertEqual(sum(1 for s in cfg.seats if s.tier == "workhorse"), 3)
+        cfg = config.load(write_toml(ACCOUNTS), seats=2)  # an explicit count: managers first, one per account
+        self.assertEqual([(s.account, s.tier) for s in cfg.seats], [("claude-1", "manager"), ("claude-2", "manager")])
+        cfg = config.load(write_toml(ACCOUNTS), seats=3)
+        self.assertEqual([s.tier for s in cfg.seats], ["manager", "manager", "workhorse"])
+        one = '[[account]]\nname = "claude-1"\nvendor = "claude"\n'  # one Claude subscription: it hosts them all
+        cfg = config.load(write_toml(one))
+        self.assertEqual([(s.account, s.tier) for s in cfg.seats],
+                         [("claude-1", "manager"), ("claude-1", "workhorse"), ("claude-1", "workhorse")])
+
+    def test_a_settings_file_from_before_sonnet_still_loads(self):
+        """2.3.0 wrote the ChatGPT workhorse as models.codex and could list ChatGPT seats by hand: both are left out
+        (ChatGPT only runs the CEO now), so a project still starts."""
+        seats = ('[[seat]]\nname = "ada"\nvendor = "claude"\naccount = "claude-1"\nrole = "lead"\n\n'
+                 '[[seat]]\nname = "curie"\nvendor = "codex"\naccount = "codex-1"\n\n'
+                 '[[seat]]\nname = "euler"\nvendor = "claude"\naccount = "claude-2"\ntier = "workhorse"\n')
+        cfg = config.load(write_toml('[models]\ncodex = "gpt-6-sol"\n\n' + ACCOUNTS + "\n" + seats))
+        self.assertEqual([(s.name, s.tier) for s in cfg.seats], [("ada", "manager"), ("euler", "workhorse")])
+        self.assertEqual(cfg.models.workhorse, "claude-sonnet-5-5")
+        with self.assertRaises(config.ConfigError):  # the lead must be a manager
+            config.load(write_toml(ACCOUNTS + '\n[[seat]]\nname = "ada"\nvendor = "claude"\naccount = "claude-1"\n'
+                                   'role = "lead"\ntier = "workhorse"\n'))
+
+    def test_a_seat_recorded_before_tiers_were_stored_keeps_its_tier(self):
+        self.assertEqual(tiers.seat_tier({"vendor": "codex", "model": "gpt-6-sol"}), "workhorse")
+        self.assertEqual(tiers.seat_tier({"vendor": "claude"}), "manager")
+        self.assertEqual(tiers.seat_tier({"vendor": "claude", "tier": "workhorse"}), "workhorse")
+        self.assertEqual(tiers.seat_tier(None), "manager")
 
     def test_each_tier_must_run_on_the_right_kind_of_model(self):
-        for bad in ('[models]\nwork = "gpt-6-sol"\n', '[models]\ncodex = "claude-opus-5-5"\n',
+        for bad in ('[models]\nwork = "gpt-6-astra"\n', '[models]\nworkhorse = "gpt-6-astra"\n',
+                    '[models]\nworkhorse = ""\n', '[models]\nworkhorse = "claude-haiku-5"\n',
                     '[models]\nceo_backup = "gpt-6-astra"\n', '[models]\nceo = "gpt-6-luna"\n',
-                    '[team]\nworkhorse_seats = 0\n'):
+                    '[models]\nceo = "gpt-6-sol"\n', '[team]\nworkhorse_seats = 0\n'):
             with self.assertRaises(config.ConfigError, msg=bad):
                 config.load(write_toml(bad + "\n" + ACCOUNTS))
         cfg = config.load(write_toml('[models]\neffort_ceo = "ultra"\n\n' + ACCOUNTS))
@@ -75,7 +107,8 @@ class DefaultsAndSeats(unittest.TestCase):
     def test_models_are_named_and_placed(self):
         self.assertEqual(tiers.vendor_of("gpt-6-astra"), "codex")
         self.assertEqual(tiers.vendor_of("claude-fable-5-1"), "claude")
-        self.assertEqual(tiers.model_label("gpt-6-sol"), "GPT-6 Sol")
+        self.assertEqual(tiers.model_label("claude-sonnet-5-5"), "Sonnet 5.5")
+        self.assertEqual(tiers.model_label("gpt-6-sol"), "GPT-6 Sol")  # older projects' records still read well
         self.assertEqual(tiers.model_label(""), "ChatGPT")
         self.assertEqual(tiers.default_tier("foundation", "S"), "manager")
         self.assertEqual(tiers.default_tier("docs", "M"), "workhorse")
@@ -86,10 +119,9 @@ class DefaultsAndSeats(unittest.TestCase):
 class EffortNames(unittest.TestCase):
     def test_gpt6_levels_are_passed_as_openai_names_them(self):
         for level in ("low", "medium", "high", "xhigh", "max", "ultra"):
-            self.assertEqual(codex_effort(level, "gpt-6-sol"), level)
             self.assertEqual(codex_effort(level, "gpt-6-astra"), level)
-        self.assertEqual(codex_effort("minimal", "gpt-6-sol"), "low")  # GPT-6 has no "minimal"
-        self.assertIsNone(codex_effort("auto", "gpt-6-sol"))
+        self.assertEqual(codex_effort("minimal", "gpt-6-astra"), "low")  # GPT-6 has no "minimal"
+        self.assertIsNone(codex_effort("auto", "gpt-6-astra"))
         self.assertEqual(codex_effort("max", ""), "max")  # Codex's own default is a GPT-6 model
 
     def test_older_models_get_their_nearest_level(self):
@@ -99,17 +131,17 @@ class EffortNames(unittest.TestCase):
 
 
 class Routing(unittest.TestCase):
-    sol = {"name": "curie", "vendor": "codex", "account": "codex-1"}
-    opus = {"name": "boole", "vendor": "claude", "account": "claude-2"}
+    sonnet = {"name": "curie", "vendor": "claude", "tier": "workhorse", "account": "claude-2"}
+    opus = {"name": "boole", "vendor": "claude", "tier": "manager", "account": "claude-2"}
 
     def test_each_tier_takes_its_own_work(self):
         routine = {"id": 1, "tier": "workhorse", "kind": "build", "size": "S"}
         hard = {"id": 2, "tier": "manager", "kind": "build", "size": "M"}
         foundation = {"id": 3, "tier": "workhorse", "kind": "foundation", "size": "S"}
         allows = scheduler.tier_allows
-        self.assertTrue(allows(self.sol, routine, True, False))
-        self.assertFalse(allows(self.sol, hard, True, False))  # never: work that needs judgement
-        self.assertFalse(allows(self.sol, foundation, True, False))
+        self.assertTrue(allows(self.sonnet, routine, True, False))
+        self.assertFalse(allows(self.sonnet, hard, True, False))  # never: work that needs judgement
+        self.assertFalse(allows(self.sonnet, foundation, True, False))
         self.assertTrue(allows(self.opus, hard, True, False))
         self.assertFalse(allows(self.opus, routine, True, False))  # routine work waits for the workhorse
         self.assertTrue(allows(self.opus, routine, False, False))  # ...unless no workhorse can run
@@ -119,8 +151,8 @@ class Routing(unittest.TestCase):
     def test_choose_task_uses_the_tier(self):
         ready = [{"id": 1, "tier": "manager", "kind": "build", "size": "M", "suggested_owner": None},
                  {"id": 2, "tier": "workhorse", "kind": "build", "size": "S", "suggested_owner": None}]
-        pick = scheduler.choose_task(self.sol, ready, {"name": "codex-1"}, "normal", {}, "gpt-6-sol", {"curie"}, {},
-                                     workhorse_usable=True)
+        pick = scheduler.choose_task(self.sonnet, ready, {"name": "claude-2"}, "normal", {}, "claude-sonnet-5-5",
+                                     {"curie"}, {}, workhorse_usable=True)
         self.assertEqual(pick["id"], 2)
         pick = scheduler.choose_task(self.opus, ready, {"name": "claude-2"}, "normal", {}, "claude-opus-5-5",
                                      {"boole"}, {}, workhorse_usable=True)
@@ -168,11 +200,11 @@ class TierTools(unittest.TestCase):
 
     def test_the_solo_builder_may_set_the_checks(self):
         st = team_store()
-        sol = tools.Ctx(store=st, seat="curie", role="member")
-        _, err = tools.call(sol, "team_set_checks", {"commands": ["pytest -q"]})
+        builder = tools.Ctx(store=st, seat="curie", role="member")
+        _, err = tools.call(builder, "team_set_checks", {"commands": ["pytest -q"]})
         self.assertTrue(err)
         st.set("solo_builder", "curie")
-        _, err = tools.call(sol, "team_set_checks", {"commands": ["pytest -q"]})
+        _, err = tools.call(builder, "team_set_checks", {"commands": ["pytest -q"]})
         self.assertFalse(err)
         self.assertEqual(st.get("checks"), ["pytest -q"])
 
@@ -191,7 +223,7 @@ class Shares(unittest.TestCase):
         by = {t["tier"]: t for t in data["tiers"]}
         self.assertEqual((by["workhorse"]["pct"], by["manager"]["pct"], by["ceo"]["pct"]), (30.0, 65.0, 5.0))
         self.assertTrue(all(t["on_target"] for t in data["tiers"]))
-        self.assertEqual({m["label"] for m in data["models"]}, {"GPT-6 Sol", "Opus 5.5", "GPT-6 Astra"})
+        self.assertEqual({m["label"] for m in data["models"]}, {"Sonnet 5.5", "Opus 5.5", "GPT-6 Astra"})
         self.assertEqual(tiers.share_of(st, "manager"), 65.0)
 
 

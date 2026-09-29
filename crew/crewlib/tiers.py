@@ -1,8 +1,8 @@
 """The team's three tiers, as the owner set them.
 
-  workhorse  GPT-6 Sol (Codex seats): routine, fully specified work — most tasks by count.
+  workhorse  Sonnet 5.5 (Claude seats): routine, fully specified work — most tasks by count.
   manager    Opus 5.5 (Claude seats): plans, reviews every workhorse task, builds what needs high intelligence.
-  ceo        GPT-6 Astra: reviews the plan and gives the final approval; checks rather than builds.
+  ceo        GPT-6 Astra (ChatGPT): reviews the plan and gives the final approval; checks rather than builds.
 
 Token targets (share of all tokens a project uses): manager 60–70%, CEO about 5%, workhorse the rest.
 """
@@ -14,9 +14,14 @@ TARGETS = {"workhorse": (25, 35), "manager": (60, 70), "ceo": (0, 5)}  # percent
 TIER_NAMES = {"workhorse": "Workhorse", "manager": "Manager", "ceo": "CEO"}
 
 MODEL_LABELS = {
-    "gpt-6-sol": "GPT-6 Sol", "gpt-6-astra": "GPT-6 Astra", "gpt-6-luna": "GPT-6 Luna",
-    "claude-opus-5-5": "Opus 5.5", "claude-fable-5-1": "Fable 5.1", "claude-opus-5": "Opus 5",
+    "gpt-6-astra": "GPT-6 Astra", "gpt-6-sol": "GPT-6 Sol", "gpt-6-luna": "GPT-6 Luna",  # Sol: older records
+    "claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5", "claude-fable-5-1": "Fable 5.1",
+    "claude-opus-5": "Opus 5",
 }
+
+
+# Models the owner took out of Crew, and the model that takes each one's place where it was chosen before.
+RETIRED = {"gpt-6-sol": "gpt-6-astra"}  # 2.3.1: Sonnet 5.5 replaced GPT-6 Sol as the workhorse
 
 
 def vendor_of(model: str) -> str:
@@ -34,8 +39,13 @@ def model_label(model: str) -> str:
     return MODEL_LABELS.get(m.lower(), m)
 
 
-def seat_tier(vendor: str) -> str:
-    return "workhorse" if vendor == "codex" else "manager"
+def seat_tier(seat: dict | None) -> str:
+    """A seat's tier, as recorded when the seat was set up. Seats recorded before tiers were (when the workhorse
+    ran in Codex) are told apart by their product."""
+    seat = seat or {}
+    if seat.get("tier") in ("workhorse", "manager"):
+        return seat["tier"]
+    return "workhorse" if seat.get("vendor") == "codex" else "manager"
 
 
 def default_tier(kind: str | None, size: str | None) -> str:
@@ -48,7 +58,7 @@ def default_tier(kind: str | None, size: str | None) -> str:
 
 
 def shares(store) -> dict:
-    """Tokens per tier so far, with each tier's share and target: seats by their vendor, one-off runs by role."""
+    """Tokens per tier so far, with each tier's share and target: seats by their tier, one-off runs by role."""
     used = {"workhorse": 0, "manager": 0, "ceo": 0}
     models: dict[str, dict] = {}
 
@@ -61,7 +71,7 @@ def shares(store) -> dict:
         slot["tokens"] += tokens
 
     for s in store.seats():
-        add(seat_tier(s.get("vendor") or "claude"), s.get("model") or "", int(s.get("tokens") or 0))
+        add(seat_tier(s), s.get("model") or "", int(s.get("tokens") or 0))
     started: dict[str, dict] = {}
     for ev in store.events("oneoff", limit=2000):
         d = ev["data"]
@@ -69,8 +79,7 @@ def shares(store) -> dict:
             started[ev["seat"]] = d
             continue
         info = started.get(ev["seat"]) or {}
-        role, vendor = info.get("role") or "", info.get("vendor") or "claude"
-        tier = "ceo" if role == "ceo" else seat_tier(vendor)
+        tier = "ceo" if info.get("role") == "ceo" else seat_tier(info)
         add(tier, info.get("model") or "", int(d.get("tokens") or 0))
     total = sum(used.values())
     tiers = []

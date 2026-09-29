@@ -224,7 +224,7 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual(done["meta"]["effort"], "xhigh")
 
     def test_chatgpt_chats_use_gpt6_names(self):
-        """A ChatGPT chat runs GPT-6 Sol by default; a chat saved with the old "minimal" level runs at "low"."""
+        """A ChatGPT chat runs GPT-6 Astra by default; a chat saved with the old "minimal" level runs at "low"."""
         s = self.s
         before = s.api("GET", "/api/settings")
         calls = STATE / "codex-calls.jsonl"
@@ -233,19 +233,21 @@ class UpgradeTests(unittest.TestCase):
             s.api("PUT", "/api/settings", {"accounts": before["accounts"] + [{"name": "chatgpt-1", "vendor": "codex",
                                                                                "profile": ""}]})
             known = {m["id"]: m["engine"] for m in s.api("GET", "/api/settings")["known_models"]}
-            self.assertEqual((known["gpt-6-sol"], known["gpt-6-astra"]), ("codex", "codex"))
+            self.assertEqual((known["gpt-6-astra"], known["claude-sonnet-5-5"]), ("codex", "claude"))
+            self.assertNotIn("gpt-6-sol", known)  # the owner took GPT-6 Sol out of Crew
             cid, ev = self.new_chat(engine="codex", effort="minimal")
-            self.assertEqual(s.api("GET", f"/api/chats/{cid}")["model"], "gpt-6-sol")
+            self.assertEqual(s.api("GET", f"/api/chats/{cid}")["model"], "gpt-6-astra")
             s.api("POST", f"/api/chats/{cid}/send", {"text": "hi"})
             _, done = collect_turn(ev)
             self.assertEqual((done["meta"]["engine"], done["meta"]["effort"]), ("codex", "low"))
             call = [json.loads(x) for x in calls.read_text().splitlines()][-1]
-            self.assertEqual((call["model"], call["effort"]), ("gpt-6-sol", "low"))
+            self.assertEqual((call["model"], call["effort"]), ("gpt-6-astra", "low"))
             s.api("POST", f"/api/chats/{cid}/send", {"text": "think hard", "effort": "ultra"})
             _, done = collect_turn(ev)
             self.assertEqual([json.loads(x) for x in calls.read_text().splitlines()][-1]["effort"], "ultra")
-            err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "gpt-6-luna"}, expect=400)
-            self.assertIn("banned", err["error"])
+            for banned in ("gpt-6-luna", "gpt-6-sol"):
+                err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": banned}, expect=400)
+                self.assertIn("banned", err["error"])
         finally:
             s.api("PUT", "/api/settings", {"accounts": before["accounts"]})
 
@@ -398,7 +400,7 @@ class UpgradeTests(unittest.TestCase):
     def test_scorecard_endpoint(self):
         d = self.s.api("GET", "/api/scorecard")
         self.assertEqual(d["window_days"], 180)
-        self.assertEqual((d["workhorse"], d["manager"]), ("gpt-6-sol", "claude-opus-5-5"))
+        self.assertEqual((d["workhorse"], d["manager"]), ("claude-sonnet-5-5", "claude-opus-5-5"))
         for key in ("models", "matrix", "rules", "contests", "thresholds"):
             self.assertIn(key, d)
 
@@ -571,7 +573,7 @@ class SettingsMigrationTests(unittest.TestCase):
             self.assertEqual(st["app"]["theme"], "dark")  # the owner's own choices are kept
             self.assertEqual([a["name"] for a in st["accounts"]], ["claude-1"])
             again = settings_mod.load()
-            self.assertEqual(again["app"]["settings_version"], 3)
+            self.assertEqual(again["app"]["settings_version"], 4)
             # a choice made after the upgrade is not "migrated" again
             settings_mod.save({"models": {"effort_work": "high"}})
             self.assertEqual(settings_mod.load()["models"]["effort_work"], "high")
@@ -591,16 +593,62 @@ class SettingsMigrationTests(unittest.TestCase):
                 'settings_version = 2\n\n[[account]]\nname = "claude-1"\nvendor = "claude"\n')
             st = settings_mod.load()
             m = st["models"]
-            self.assertEqual((m["codex"], m["work"], m["ceo"], m["ceo_backup"]),
-                             ("gpt-6-sol", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-1"))
-            self.assertEqual((st["app"]["codex_model"], st["app"]["codex_effort"]), ("gpt-6-sol", "low"))
+            self.assertEqual((m["workhorse"], m["work"], m["ceo"], m["ceo_backup"]),
+                             ("claude-sonnet-5-5", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-1"))
+            self.assertNotIn("codex", m)
+            self.assertEqual((st["app"]["codex_model"], st["app"]["codex_effort"]), ("gpt-6-astra", "low"))
             self.assertEqual(m["effort_work"], "high")  # chosen after 2.0: the 2.0 step does not run again
             self.assertEqual(st["team"]["max_hours"], 3.0)
             self.assertEqual(st["team"]["workhorse_seats"], 2)
-            self.assertEqual(st["app"]["settings_version"], 3)
+            self.assertEqual(st["app"]["settings_version"], 4)
             self.assertTrue((home / "crew.toml").read_text().count("gpt-6-astra"))
             settings_mod.save({"models": {"ceo": "claude-fable-5-1"}})  # the owner may still choose Fable
             self.assertEqual(settings_mod.load()["models"]["ceo"], "claude-fable-5-1")
+        finally:
+            os.environ["CREW_HOME"] = saved or ""
+            shutil.rmtree(home, ignore_errors=True)
+
+    def test_version_3_moves_the_workhorse_to_sonnet_and_keeps_everything_else(self):
+        """What Crew 2.3.0 wrote for the owner (three Claude subscriptions, one ChatGPT): after the update the
+        workhorse is Sonnet 5.5 on Claude, Sonnet is no longer banned, GPT-6 Sol is, and every other choice stays."""
+        home = Path(tempfile.mkdtemp(prefix="crew-migrate-"))
+        saved = os.environ.get("CREW_HOME")
+        os.environ["CREW_HOME"] = str(home)
+        try:
+            written = settings_mod.dump({
+                "team": {"mode": "team", "workhorse_seats": 2, "max_hours": 2.0},
+                "models": {"work": "claude-opus-5-5", "ceo": "gpt-6-astra", "ceo_backup": "claude-fable-5-1",
+                           "codex": "gpt-6-sol", "allowed": ["claude-opus-5-5", "claude-fable-5-1"],
+                           "banned": ["haiku", "sonnet", "terra", "luna", "grok"], "effort_work": "auto",
+                           "effort_light": "auto", "effort_ceo": "ultra"},
+                "app": {"codex_model": "gpt-6-sol", "codex_effort": "high", "theme": "dark", "settings_version": 3},
+                "account": [{"name": "claude-1", "vendor": "claude", "profile": "default"},
+                            {"name": "ceo-pbit.gop.pk", "vendor": "claude"},
+                            {"name": "zeeshandmg36-gmail.com", "vendor": "claude"},
+                            {"name": "mohidzeeshanrana-gmail.com", "vendor": "codex"}]})
+            (home / "crew.toml").write_text(written, encoding="utf-8")
+            st = settings_mod.load()
+            m = st["models"]
+            self.assertEqual(m["workhorse"], "claude-sonnet-5-5")
+            self.assertEqual(m["allowed"], ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"])
+            self.assertEqual(m["banned"], ["haiku", "terra", "luna", "grok", "gpt-6-sol"])  # "grok": the owner's own
+            self.assertEqual((m["ceo"], m["effort_ceo"]), ("gpt-6-astra", "ultra"))
+            self.assertEqual((st["app"]["codex_model"], st["app"]["codex_effort"], st["app"]["theme"]),
+                             ("gpt-6-astra", "high", "dark"))
+            self.assertEqual((st["team"]["mode"], st["team"]["max_hours"]), ("team", 2.0))
+            self.assertEqual([(s["account"], s["tier"]) for s in st["seats"]],
+                             [("claude-1", "manager"), ("ceo-pbit.gop.pk", "manager"),
+                              ("zeeshandmg36-gmail.com", "manager"), ("ceo-pbit.gop.pk", "workhorse"),
+                              ("zeeshandmg36-gmail.com", "workhorse")])
+            self.assertTrue((home / "crew.toml.bak").read_text(encoding="utf-8").count("gpt-6-sol"))  # as it was
+            text = (home / "crew.toml").read_text(encoding="utf-8")
+            self.assertNotIn("codex = ", text)
+            self.assertIn('workhorse = "claude-sonnet-5-5"', text)
+            with self.assertRaises(ValueError) as caught:  # banning the workhorse's own model is refused plainly
+                settings_mod.save({"models": {"banned": ["haiku", "sonnet"]}})
+            self.assertIn("banned", str(caught.exception))
+            self.assertEqual(settings_mod.load()["models"]["banned"], ["haiku", "terra", "luna", "grok", "gpt-6-sol"])
+            self.assertEqual(settings_mod.load()["app"]["settings_version"], 4)
         finally:
             os.environ["CREW_HOME"] = saved or ""
             shutil.rmtree(home, ignore_errors=True)

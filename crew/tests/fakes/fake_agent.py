@@ -19,8 +19,8 @@ injected through CREW_FAKE_SCENARIO (JSON):
   review_limit_task: [ids]   the reviewer of these tasks hits its usage limit once on every Claude account
   limit_seconds: N           how long a usage limit lasts (default 3600)
   reject_twice: [ids]        the reviewer requests changes the first two times (a workhorse task moves up)
-  contest_winner: vendor     the head-to-head judge prefers this vendor's version (default "codex")
-  contest_fail: vendor       the judge finds problems in this vendor's version
+  contest_winner: tier       the head-to-head judge prefers this tier's version (default "workhorse")
+  contest_fail: tier         the judge finds problems in this tier's version
   contest_borrow: text       what the judge says the losing version does better (default: nothing)
   no_reply_tool: true        an agent answers the owner's private message without team_reply_owner
   leak_task: [ids]           the first version of these tasks contains an API key (Crew's scan must send it back)
@@ -244,13 +244,9 @@ class Brain:
 
     def plan(self) -> str:
         n = int(SCEN.get("tasks", 3))
-        pairs = []
-        for item in (s.strip() for s in os.environ.get("CREW_FAKE_SEATS", "").split(",")):
-            if item:
-                name, _, vendor = item.partition(":")
-                pairs.append((name, vendor or "claude"))
-        managers = [name for name, vendor in pairs if vendor == "claude" and name != self.seat] or [self.seat]
-        workhorse = [name for name, vendor in pairs if vendor == "codex"]
+        pairs = list(seat_tiers().items())
+        managers = [name for name, tier in pairs if tier == "manager" and name != self.seat] or [self.seat]
+        workhorse = [name for name, tier in pairs if tier == "workhorse"]
         t, _ = self.tool("team_task_create", title="Foundation", spec="Create the package skeleton.",
                          acceptance="package imports", scope=["app/__init__.py"], size="S", kind="foundation",
                          suggested_owner=self.seat, tier="manager")
@@ -323,19 +319,29 @@ class Brain:
         return "reviewed"
 
 
-def judge_verdict() -> dict:
-    """The head-to-head judge's answer: it looks at who committed each version (./a and ./b) to find its vendor."""
-    vendors = dict(item.partition(":")[::2] for item in os.environ.get("CREW_FAKE_SEATS", "").split(",") if item)
+def seat_tiers() -> dict[str, str]:
+    """The team's seats and their tiers, from CREW_FAKE_SEATS ("name:tier,…", as the tests set it)."""
+    out = {}
+    for item in (s.strip() for s in os.environ.get("CREW_FAKE_SEATS", "").split(",")):
+        if item:
+            name, _, tier = item.partition(":")
+            out[name] = tier or "manager"
+    return out
 
-    def vendor(folder: str) -> str:
+
+def judge_verdict() -> dict:
+    """The head-to-head judge's answer: it looks at who committed each version (./a and ./b) to find its tier."""
+    tiers = seat_tiers()
+
+    def tier(folder: str) -> str:
         subject = sh("git", "-C", folder, "log", "-1", "--format=%s")
         m = re.search(r"by ([\w-]+)", subject)
-        return vendors.get(m.group(1), "claude") if m else "claude"
+        return tiers.get(m.group(1), "manager") if m else "manager"
 
-    v = {k: vendor(k) for k in ("a", "b")}
+    v = {k: tier(k) for k in ("a", "b")}
     out = {k: ({"verdict": "changes", "notes": "1. The edge case fails; add a test and handle it."}
                if v[k] == SCEN.get("contest_fail") else {"verdict": "approve", "notes": "Meets the spec."}) for k in v}
-    prefer = SCEN.get("contest_winner", "codex")
+    prefer = SCEN.get("contest_winner", "workhorse")
     out["winner"] = next((k for k in ("a", "b") if v[k] == prefer), "a")
     out["reason"] = f"The {prefer} version is simpler and fully tested."
     out["borrow"] = SCEN.get("contest_borrow", "")

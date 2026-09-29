@@ -281,8 +281,10 @@ class AppTests(unittest.TestCase):
     def test_assistant_refusals(self):
         s = self.s
         cid = s.api("POST", "/api/chats", {})["id"]
-        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "claude-sonnet-5"}, expect=400)
+        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "claude-haiku-5"}, expect=400)
         self.assertIn("banned", err["error"])
+        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "claude-sonnet-5"}, expect=400)
+        self.assertIn("not one of the Claude models allowed", err["error"])  # an older Sonnet: not on the list
         err = s.api("POST", f"/api/chats/{cid}/send", {"text": "   "}, expect=400)
         self.assertIn("Type or say", err["error"])
         self.assertEqual(s.api("GET", f"/api/chats/{cid}")["messages"], [])  # nothing recorded

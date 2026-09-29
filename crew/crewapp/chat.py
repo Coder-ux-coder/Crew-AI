@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 from crewlib import claude_cli, config as cfgmod, connections, usage as usage_log
 from crewlib.usage import limit_resets_at, limited_until
-from crewlib.tiers import vendor_of
+from crewlib.tiers import RETIRED, vendor_of
 from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, _kill_tree, _popen, _toml_str, child_env, codex_effort,
                             copy_claude_session, default_claude_home, default_codex_home, drain, which)
 from crewlib.util import atomic_write, clip, crew_home, load_env_file, now, open_db
@@ -235,6 +235,8 @@ class ChatDB:
         for col, decl in self.COLUMNS.items():
             if col not in have:
                 db.execute(f"ALTER TABLE chats ADD COLUMN {col} {decl}")
+        for old, new in RETIRED.items():  # a model the owner took out of Crew: its chats carry on with its successor
+            db.execute("UPDATE chats SET model=? WHERE model=?", (new, old))
 
     def q(self, sql: str, args=()) -> list[dict]:
         with self._lock:

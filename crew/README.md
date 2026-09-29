@@ -11,13 +11,15 @@ screens unless you ask.
 
   | Tier | Model | Does | Share of tokens (target) |
   |---|---|---|---|
-  | Workhorse | GPT-6 Sol | Routine, fully specified work — research, text and styling changes, small design tweaks, repetitive edits. Most tasks by count. | the rest (about 25–35%) |
+  | Workhorse | Claude Sonnet 5.5 | Routine, fully specified work — research, text and styling changes, small design tweaks, repetitive edits. Most tasks by count. | the rest (about 25–35%) |
   | Manager | Claude Opus 5.5 | Plans, checks every workhorse task, builds what needs high intelligence — security, design plans, shared foundations, hard problems. | 60–70% |
   | CEO | GPT-6 Astra | Used sparingly: reviews the plan (each task's tier and effort) and gives the final approval. Checks rather than builds. | about 5% |
 
   Each project shows how its tokens were actually shared against these targets.
-  Without a ChatGPT subscription the managers do everything and Claude Fable
-  5.1 stands in as CEO. Haiku, Sonnet, GPT-6 Luna and Terra are never used.
+  The workhorse and the managers both run on your Claude subscriptions; the
+  ChatGPT subscription runs the CEO. Without a ChatGPT subscription Claude
+  Fable 5.1 stands in as CEO. Haiku, GPT-6 Sol, GPT-6 Luna and Terra are never
+  used.
 - **Effort chosen for you:** the CEO sets each task's effort at plan review
   and learns, project by project, which effort suits which work; for small
   jobs the manager decides, so the CEO is kept for checking.
@@ -99,7 +101,7 @@ To remove Crew, run **Uninstall Crew.cmd**.
 
 | Screen | What it does |
 |---|---|
-| **New chat** | One box, like Claude. Choose **Claude**, **ChatGPT** or the **Team**; pick the model and the effort (named exactly as Anthropic and OpenAI name them: Claude *auto, low, medium, high, xhigh, max*; ChatGPT (GPT-6 Sol or Astra) *auto, low, medium, high, xhigh, max, ultra*). **Plan** mode: it plans first and changes nothing until you press **Approve**. Type **/** for commands (/compact, /context, /usage, /plan, skills such as /docx or /xlsx). The ring shows how full the conversation's context is. |
+| **New chat** | One box, like Claude. Choose **Claude**, **ChatGPT** or the **Team**; pick the model and the effort (named exactly as Anthropic and OpenAI name them: Claude *auto, low, medium, high, xhigh, max*; ChatGPT (GPT-6 Astra) *auto, low, medium, high, xhigh, max, ultra*). **Plan** mode: it plans first and changes nothing until you press **Approve**. Type **/** for commands (/compact, /context, /usage, /plan, skills such as /docx or /xlsx). The ring shows how full the conversation's context is. |
 | **Chats** | Answers stream in with everything Claude Code shows: thinking, each step it takes, its to-do list, the helpers (sub-agents) it starts, files it makes (they open beside the chat), tokens and time. Attach files or pictures; the microphone types for you; the sound-wave button starts a spoken conversation. |
 | **Projects** | The team at work: the team chat (you can write to them — to everyone, or with **To** to one agent or the CEO privately), and a panel with every agent and helper — tier, product, model, effort, what it is doing, tokens, a **Message** button, and **Ask** beside each helper — plus estimates of time and tokens left, **who did the work** (each tier's share of the tokens against your targets), the plan with each task's tier, and your subscriptions. Optional timer. Stop and continue any time. |
 | **Workflows** | Jobs you repeat — a morning briefing, a weekly investor round-up, a letter in your style — run with one click or on a schedule, by Claude, ChatGPT or the team. |
@@ -130,7 +132,7 @@ both devices.
   tested there end to end with a real browser, simulated agents and a
   simulated phone. If a step fails, the installer says which one and how to
   fix it.
-- ChatGPT through Codex (GPT-6 Sol and Astra) has not been tried with a real
+- ChatGPT through Codex (GPT-6 Astra) has not been tried with a real
   ChatGPT sign-in yet: the model names, effort levels and options were read
   from the Codex program itself and tested with a simulated Codex. If GPT-6
   Astra cannot run, the CEO's work passes automatically to Claude Fable 5.1.

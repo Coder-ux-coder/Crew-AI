@@ -170,11 +170,15 @@ class Instructions(unittest.TestCase):
         try:
             for i in range(5):
                 lessons.record_effort_outcome("docs", "S", "medium", 1, 5, 1000, project="p", tier="workhorse",
-                                              model="gpt-6-sol")
-            seats = [{"name": "ada", "role": "lead", "vendor": "claude", "model": "claude-opus-5-5"},
-                     {"name": "curie", "role": "member", "vendor": "codex", "model": "gpt-6-sol"}]
+                                              model="claude-sonnet-5-5")
+            seats = [{"name": "ada", "role": "lead", "vendor": "claude", "tier": "manager", "model": "claude-opus-5-5"},
+                     {"name": "curie", "role": "member", "vendor": "claude", "tier": "workhorse",
+                      "model": "claude-sonnet-5-5"}]
             roster = prompts.roster_text(seats)
-            self.assertIn("- @curie: member, GPT-6 Sol (Codex (OpenAI)), workhorse", roster)
+            self.assertIn("- @curie: member, Sonnet 5.5 (Claude Code), workhorse", roster)
+            self.assertIn("- @ada: lead, Opus 5.5 (Claude Code), manager", roster)
+            self.assertIn("WORKHORSE ENGINEER (Sonnet 5.5)", prompts.member_system("curie", seats, "ada"))
+            self.assertIn("The workhorse seats are curie.", prompts.lead_system("ada", seats))
             self.assertIn("Record: 100% of 5 pieces passed the first check; strong at documents (S)", roster)
             system = prompts.member_system("curie", seats, "ada")
             for duty in ("@name", "share_with_team", "team_share", "no acknowledgements", "fails without it"):

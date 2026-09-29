@@ -219,7 +219,9 @@ class ConfigTests(unittest.TestCase):
         cfg = config.load(str(ROOT / "crew.toml.example"))
         self.assertEqual([a.name for a in cfg.accounts], ["claude-1", "claude-2", "claude-3", "codex-1"])
         self.assertEqual(cfg.seats[0].role, "lead")
-        self.assertEqual(cfg.seats[-1].vendor, "codex")
+        self.assertEqual([s.tier for s in cfg.seats], ["manager"] * 3 + ["workhorse"] * 2)
+        self.assertEqual({s.vendor for s in cfg.seats}, {"claude"})  # the ChatGPT subscription runs the CEO
+        self.assertEqual(cfg.models.workhorse, "claude-sonnet-5-5")
 
 
 class LessonTests(unittest.TestCase):

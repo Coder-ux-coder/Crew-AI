@@ -522,7 +522,7 @@ def _toml_str(value: str) -> str:
     return json.dumps(value)  # a JSON string is a valid TOML basic string
 
 
-GPT6_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")  # GPT-6 Sol and Astra (no "minimal")
+GPT6_EFFORTS = ("low", "medium", "high", "xhigh", "max", "ultra")  # GPT-6 models such as Astra (no "minimal")
 OLDER_CODEX_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")  # earlier OpenAI models
 
 

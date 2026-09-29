@@ -162,8 +162,11 @@ Only the models on the allow-list run. Defaults: **Claude Opus 5.5** does the
 work (lead, members, reviews, refiner, and every sub-agent, forced via
 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`); **Claude Fable 5.1** is the "CEO":
 plan review, rulings, final review — high-leverage and rare, because it has
-its own tighter limit. Haiku and Sonnet are banned; Claude Code's background
-"small fast model" is redirected to Opus 5.5 (`ANTHROPIC_DEFAULT_HAIKU_MODEL`).
+its own tighter limit. Since 2.3.1 the team's routine work goes to the
+workhorse, **Claude Sonnet 5.5** (Claude seats with `tier = "workhorse"`; their
+sub-agents run Sonnet too), and GPT-6 Astra is the CEO on ChatGPT with Fable 5.1
+as its backup. Haiku and GPT-6 Sol are banned; Claude Code's background
+"small fast model" is redirected to the seat's model (`ANTHROPIC_DEFAULT_HAIKU_MODEL`).
 Cost is saved by effort level, caching and less chatter — never by a weaker
 model.
 

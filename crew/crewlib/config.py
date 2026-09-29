@@ -3,8 +3,8 @@
 Everything has a default, so a run works with no settings file at all: one
 Claude account (your normal login) and one seat.
 
-The team has three tiers (see tiers.py): GPT-6 Sol is the workhorse (Codex seats),
-Opus 5.5 the manager (Claude seats, the lead among them), GPT-6 Astra the CEO.
+The team has three tiers (see tiers.py): Sonnet 5.5 is the workhorse and Opus 5.5 the manager (both on Claude
+seats; the lead is a manager), GPT-6 Astra the CEO (on ChatGPT, with a Claude model as its backup).
 """
 
 from __future__ import annotations
@@ -21,10 +21,12 @@ from .tiers import vendor_of
 from .util import crew_home
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+ALLOWED = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1")  # the Claude models Crew may run
+BANNED = ("haiku", "terra", "luna", "gpt-6-sol")  # the owner's choice: GPT-6 Sol was replaced by Sonnet 5.5
 EFFORT_CHOICES = ("auto",) + EFFORTS  # auto: the model decides (assistant), or the CEO decides per task (team)
 CEO_EFFORT_CHOICES = EFFORT_CHOICES + ("ultra",)  # GPT-6's deepest level; a Claude CEO runs it as max
 VENDORS = ("claude", "codex")
-MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+\[\]-]{0,127}")  # claude-opus-5-5, gpt-6-sol, sonnet[1m] …
+MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/+\[\]-]{0,127}")  # claude-opus-5-5, gpt-6-astra, sonnet[1m] …
 
 
 class ConfigError(ValueError):
@@ -36,16 +38,16 @@ class ModelPolicy:
     work: str = "claude-opus-5-5"        # the manager: plans, reviews, builds the hard parts (Claude seats)
     ceo: str = "gpt-6-astra"             # the CEO: plan review, final approval, rulings
     ceo_backup: str = "claude-fable-5-1"  # the CEO when its model cannot run (no ChatGPT, a limit, an error)
-    codex: str = "gpt-6-sol"             # the workhorse: routine work (Codex seats); empty = Codex's default
-    allowed: list[str] = field(default_factory=lambda: ["claude-opus-5-5", "claude-fable-5-1"])
-    banned: list[str] = field(default_factory=lambda: ["haiku", "sonnet", "terra", "luna"])
+    workhorse: str = "claude-sonnet-5-5"  # the workhorse: routine, fully specified work (Claude seats)
+    allowed: list[str] = field(default_factory=lambda: list(ALLOWED))
+    banned: list[str] = field(default_factory=lambda: list(BANNED))
     effort_work: str = "auto"   # auto: the CEO sets each task's effort when it reviews the plan
     effort_light: str = "auto"  # checks, notes, research
     effort_ceo: str = "max"     # the CEO always thinks hardest
 
     def check(self, model: str) -> str:
-        """Return the model if policy allows it, else raise. Codex models are
-        governed by `codex`, Claude models by the allow/ban lists."""
+        """Return the model if policy allows it, else raise. Every model is subject to the ban list; Claude
+        models also to the allow list."""
         m = (model or "").strip()
         if m and not MODEL_NAME.fullmatch(m):  # a stray character would break every start of the chat later
             raise ConfigError(f"'{m[:60]}' is not a model's name (letters, digits and . - _ : @ / [ ] only)")
@@ -54,7 +56,7 @@ class ModelPolicy:
             if bad and bad.lower() in low:
                 raise ConfigError(f"{m} is on your list of banned models (it matches “{bad}”), so Crew will not use "
                                   "it. Choose another model, or lift the ban in Settings → Models")
-        if low.startswith("claude") or low in ("opus", "fable"):
+        if low.startswith("claude") or low in ("opus", "sonnet", "fable"):
             if self.allowed and m not in self.allowed:
                 raise ConfigError(f"{m} is not one of the Claude models allowed in Settings → Models "
                                   f"({', '.join(self.allowed)}). Choose one of those, or add it to that list")
@@ -69,13 +71,17 @@ class ModelPolicy:
         self.check(self.work)
         if vendor_of(self.work) != "claude":
             raise ConfigError("models.work (the manager, who leads the team) must be a Claude model")
-        for name in ("ceo", "ceo_backup", "codex"):
+        if not self.workhorse:
+            raise ConfigError("models.workhorse must name a model, such as claude-sonnet-5-5")
+        self.check(self.workhorse)
+        if vendor_of(self.workhorse) != "claude":
+            raise ConfigError("models.workhorse must be a Claude model, such as claude-sonnet-5-5 (the workhorse "
+                              "seats run on your Claude subscriptions)")
+        for name in ("ceo", "ceo_backup"):
             if getattr(self, name):
                 self.check(getattr(self, name))
         if self.ceo_backup and vendor_of(self.ceo_backup) != "claude":
             raise ConfigError("models.ceo_backup must be a Claude model (it runs when ChatGPT cannot)")
-        if self.codex and vendor_of(self.codex) != "codex":
-            raise ConfigError("models.codex (the workhorse) must be a ChatGPT model, such as gpt-6-sol")
 
 
 @dataclass
@@ -103,6 +109,7 @@ class SeatSpec:
     vendor: str
     account: str
     role: str = "member"  # lead | member
+    tier: str = ""  # manager | workhorse ("" in an older file: the lead and other seats are managers)
 
 
 @dataclass
@@ -120,7 +127,7 @@ class TeamSettings:
     max_review_rounds: int = 2
     checks_timeout_minutes: float = 15.0
     web_port: int = 8765
-    workhorse_seats: int = 2  # GPT-6 Sol seats per ChatGPT subscription (they do most tasks by count)
+    workhorse_seats: int = 2  # Sonnet 5.5 seats in a team, spread over the Claude subscriptions (most tasks by count)
     head_to_head: str = "off"  # off | some | all: parts built by both tiers' models, judged blind (feeds the scorecard)
     head_to_head_style: str = "combine"  # combine: keep the better version and fold in what the other did better
     prompt_writer: bool = True  # the owner's messages to a team are written up clearly before the agents read them
@@ -147,7 +154,10 @@ class Config:
         seats = [s for s in self.seats if s.account in chosen] if self.explicit_seats else \
             _default_seats(keep, None, int(self.team.workhorse_seats))
         if not any(s.role == "lead" for s in seats):
-            lead = next(s for s in seats if s.vendor == "claude")
+            lead = next((s for s in seats if s.vendor == "claude" and s.tier == "manager"), None)
+            if lead is None:
+                raise ConfigError("none of your seats on the chosen subscriptions can lead (a manager seat on "
+                                  "Claude): choose another subscription too")
             lead.role = "lead"
         self.accounts, self.seats = keep, seats
         return self
@@ -183,7 +193,7 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
     data = tomllib.loads(path.read_text(encoding="utf-8")) if path else {}
 
     team = TeamSettings(**_known(TeamSettings, data.get("team", {})))
-    models = ModelPolicy(**_known(ModelPolicy, data.get("models", {})))
+    models = ModelPolicy(**_known(ModelPolicy, _current_models(data.get("models", {}))))
     models.validate()
     if team.mode not in ("auto", "team", "solo"):
         raise ConfigError('team.mode must be "auto", "team" or "solo"')
@@ -222,14 +232,21 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
         if acc.vendor not in VENDORS:
             raise ConfigError(f"account {acc.name}: vendor must be claude or codex (ChatGPT)")
 
-    seat_specs = [SeatSpec(**_known(SeatSpec, s)) for s in data.get("seat", [])]
+    # Seats written by hand. ChatGPT seats were the workhorse before Sonnet 5.5 took that place; ChatGPT now only
+    # reviews (the CEO), so such a seat is left out rather than stopping every project.
+    seat_specs = [SeatSpec(**_known(SeatSpec, s)) for s in data.get("seat", [])
+                  if not (isinstance(s, dict) and s.get("vendor") == "codex")]
     if not seat_specs:
         seat_specs = _default_seats(accounts, seats or data.get("team", {}).get("seats"), int(team.workhorse_seats))
+    for spec in seat_specs:
+        spec.tier = spec.tier or "manager"
+        if spec.tier not in ("manager", "workhorse"):
+            raise ConfigError(f"seat {spec.name}: tier must be \"manager\" or \"workhorse\"")
     if sum(1 for s in seat_specs if s.role == "lead") != 1:
         raise ConfigError("exactly one seat must have role = \"lead\"")
     lead = next(s for s in seat_specs if s.role == "lead")
-    if lead.vendor != "claude":
-        raise ConfigError("the lead seat must be a Claude seat")
+    if lead.vendor != "claude" or lead.tier != "manager":
+        raise ConfigError("the lead seat must be a manager seat on Claude")
     for spec in seat_specs:
         acc = next((a for a in accounts if a.name == spec.account), None)
         if acc is None or acc.vendor != spec.vendor:
@@ -240,19 +257,27 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
 
 
 def _default_seats(accounts: list[Account], count: int | None, workhorse_seats: int = 2) -> list[SeatSpec]:
-    """One manager seat per Claude account (the first leads) and `workhorse_seats` GPT-6 Sol seats per ChatGPT
-    account. With an explicit seat count, seats share the accounts round-robin instead."""
+    """One manager seat per Claude account (the first leads), then `workhorse_seats` workhorse seats spread over
+    the Claude accounts, starting after the lead's so its account is not the busiest. With an explicit seat count,
+    the first seats are managers (one per Claude account) and the rest workhorses. ChatGPT accounts get no seats:
+    they run the CEO."""
     claude = [a for a in accounts if a.vendor == "claude"]
     if not claude:
         raise ConfigError("at least one Claude account is needed (the lead runs on Claude)")
-    codex = [a for a in accounts if a.vendor != "claude"]
-    if count:
-        ordered = claude + codex
-        plan = [ordered[i % len(ordered)] for i in range(max(int(count), 1))]
-    else:
-        plan = claude + [acc for acc in codex for _ in range(max(1, int(workhorse_seats or 1)))]
+    total = max(int(count), 1) if count else len(claude) + max(1, int(workhorse_seats or 1))
+    managers = min(total, len(claude))
+    plan = [(acc, "manager") for acc in claude[:managers]]
+    plan += [(claude[(1 + i) % len(claude)], "workhorse") for i in range(total - managers)]
     return [SeatSpec(name=_seat_name(i, acc.vendor), vendor=acc.vendor, account=acc.name,
-                     role="lead" if i == 0 else "member") for i, acc in enumerate(plan)]
+                     role="lead" if i == 0 else "member", tier=tier) for i, (acc, tier) in enumerate(plan)]
+
+
+def _current_models(values: dict) -> dict:
+    """The [models] section as this Crew reads it. A file from before Sonnet 5.5 became the workhorse names the old
+    ChatGPT workhorse as `codex`; that model no longer has a place in the team, so the setting is left out."""
+    if not isinstance(values, dict):
+        raise ConfigError("the models settings must be a group of named values")
+    return {k: v for k, v in values.items() if k != "codex"}
 
 
 _NAMES = ["ada", "boole", "curie", "dijkstra", "euler", "fermi", "gauss", "hopper", "ibn-sina", "jabir"]

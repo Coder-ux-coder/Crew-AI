@@ -12,16 +12,16 @@ ceo_reviews = true       # the CEO model reviews the plan and the final result
 deliver = "merge"        # "merge" into your project, "branch" (leave it separate), or "push" to GitHub
 permission_mode = "bypassPermissions"   # agents act without asking (default). Safer: "auto"
 web_port = 8765
-workhorse_seats = 2      # GPT-6 Sol seats per ChatGPT subscription (the workhorse does most tasks by count)
+workhorse_seats = 2      # Sonnet 5.5 seats in a team, spread over your Claude subscriptions (most tasks by count)
 
 # Three tiers. Token targets: manager 60-70%, CEO about 5%, workhorse the rest.
 [models]
 work = "claude-opus-5-5"         # the manager: plans, reviews every workhorse task, builds what needs high intelligence
-codex = "gpt-6-sol"              # the workhorse: routine, fully specified work (runs in Codex on your ChatGPT plan)
+workhorse = "claude-sonnet-5-5"  # the workhorse: routine, fully specified work (runs on your Claude plans)
 ceo = "gpt-6-astra"              # the CEO, used sparingly: plan review, rulings, final approval
 ceo_backup = "claude-fable-5-1"  # the CEO when ChatGPT cannot run it (no subscription, a limit, an error)
-allowed = ["claude-opus-5-5", "claude-fable-5-1"]
-banned = ["haiku", "sonnet", "terra", "luna"]
+allowed = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]
+banned = ["haiku", "terra", "luna", "gpt-6-sol"]
 effort_work = "auto"             # auto (the CEO decides per task) | low | medium | high | xhigh | max
 effort_light = "auto"            # small jobs such as refining your request
 effort_ceo = "max"               # the CEO always thinks hardest (GPT-6 also offers "ultra")
@@ -47,10 +47,12 @@ vendor = "codex"
 profile = "default"
 
 # Seats (the agents) default to one manager seat per Claude account (the first is the lead)
-# and `workhorse_seats` GPT-6 Sol seats per ChatGPT account.
+# and `workhorse_seats` Sonnet 5.5 seats spread over the Claude accounts. ChatGPT accounts
+# run the CEO and ChatGPT chats; they get no seats.
 # To choose yourself, add blocks like:
 # [[seat]]
 # name = "ada"
 # vendor = "claude"
 # account = "claude-1"
 # role = "lead"
+# tier = "manager"        # or "workhorse" (runs the workhorse model)

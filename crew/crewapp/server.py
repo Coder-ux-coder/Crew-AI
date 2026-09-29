@@ -676,7 +676,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_scorecard(self):
         from crewlib import scorecard
         m = settings.load()["models"]
-        return self._json(scorecard.summary(m.get("codex") or "", m.get("work") or ""))
+        return self._json(scorecard.summary(m.get("workhorse") or "", m.get("work") or ""))
 
     @route("GET", "/api/runs")
     def api_runs(self):
