@@ -1428,6 +1428,83 @@ with sync_playwright() as p:
                          {"tab": "Captures", "gallery": True, "files": False})
 
 
+class RefusedFormTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    out = {}
+    # A connected service whose name Crew refuses (a space): the address and the key must still be there.
+    page.goto(sys.argv[1] + "#/connections")
+    page.click("text=Add a service")
+    page.fill(".dialog label:has-text('Name') input", "My CRM")
+    page.fill(".dialog input[type=url]", "https://crm.example.com/mcp")
+    page.fill(".dialog textarea", "Authorization: Bearer sk-crm-1234567890")
+    page.click(".dialog .btn.primary")
+    page.wait_for_timeout(800)
+    out["service"] = page.evaluate("document.querySelector('.dialog input[type=url]') ? "
+                                   "[document.querySelector('.dialog input[type=url]').value, "
+                                   "document.querySelector('.dialog textarea').value] : null")
+    if out["service"]:
+        page.fill(".dialog label:has-text('Name') input", "my-crm")
+        page.click(".dialog .btn.primary")
+        page.wait_for_timeout(800)
+    out["service_saved"] = page.evaluate("[...document.querySelectorAll('.conn b')].some((b) => b.textContent === 'my-crm')")
+    # A skill whose first save fails: the procedure the owner wrote must still be there.
+    tries = []
+    def skill(route, request):
+        if request.method != "POST":
+            return route.continue_()
+        tries.append(1)
+        if len(tries) == 1:
+            return route.fulfill(status=503, content_type="application/json", body=json.dumps({"error": "Busy, try again."}))
+        route.continue_()
+    page.route("**/api/skills", skill)
+    page.goto(sys.argv[1] + "#/skills")
+    page.click("text=Create a skill")
+    fields = page.locator(".dialog input, .dialog textarea")
+    fields.nth(0).fill("Formal letter format")
+    fields.nth(1).fill("writing any official letter")
+    fields.nth(2).fill("1. Use the department letterhead. 2. Put the reference number and date at the top.")
+    page.click(".dialog .btn.primary")
+    page.wait_for_timeout(800)
+    out["skill"] = page.evaluate("[...document.querySelectorAll('.dialog input, .dialog textarea')].map((x) => x.value)")
+    if out["skill"]:
+        page.click(".dialog .btn.primary")
+        page.wait_for_timeout(1000)
+    out["skill_open"] = page.evaluate("!!document.querySelector('.dialog')")
+    print(json.dumps(out))
+    b.close()
+"""
+
+    def test_f19_a_refused_connection_or_skill_keeps_what_the_owner_wrote(self):
+        """Crew refused a connected service (a name with a space) or could not save a skill: the form had already
+        closed, so the service's address and pasted key, or the whole written procedure, were gone."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=180)
+            s.api("DELETE", "/api/connections/mcp/my-crm")  # leave the shared app as it was
+            for sk in s.api("GET", "/api/skills")["skills"]:
+                if sk["name"].lower().startswith("formal"):
+                    s.api("DELETE", f"/api/skills/{sk['id']}")
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        res = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(res["service"], ["https://crm.example.com/mcp", "Authorization: Bearer sk-crm-1234567890"])
+        self.assertTrue(res["service_saved"])
+        self.assertEqual(res["skill"], ["Formal letter format", "writing any official letter",
+                                        "1. Use the department letterhead. 2. Put the reference number and date at the top."])
+        self.assertFalse(res["skill_open"])
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

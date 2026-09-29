@@ -112,13 +112,16 @@ export function skillsPage(view) {
   }
 
   async function create() {
-    const v = await ask('Create a skill', [
-      { name: 'name', label: 'Name', placeholder: 'e.g. Formal letter format', required: true },
-      { name: 'when', label: 'When should it be used?', type: 'textarea', rows: 2, placeholder: 'e.g. writing any official letter or notification', required: true },
-      { name: 'steps', label: 'What should be done — in plain words', type: 'textarea', rows: 8, placeholder: '1. Use the department letterhead…\n2. Reference number and date at the top…\n3. …', required: true },
-    ], { ok: 'Create skill', intro: 'A skill is a written procedure Claude and the team follow whenever it applies.' });
-    if (!v) return;
-    try { await api('/api/skills', { method: 'POST', body: v }); toast('Skill created and switched on.'); loadMine(); } catch (e) { fail(e); }
+    let v = {};
+    for (;;) {  // a refused skill opens the form again with what was written: nothing has to be written twice
+      v = await ask('Create a skill', [
+        { name: 'name', label: 'Name', placeholder: 'e.g. Formal letter format', required: true, value: v.name },
+        { name: 'when', label: 'When should it be used?', type: 'textarea', rows: 2, placeholder: 'e.g. writing any official letter or notification', required: true, value: v.when },
+        { name: 'steps', label: 'What should be done — in plain words', type: 'textarea', rows: 8, placeholder: '1. Use the department letterhead…\n2. Reference number and date at the top…\n3. …', required: true, value: v.steps },
+      ], { ok: 'Create skill', intro: 'A skill is a written procedure Claude and the team follow whenever it applies.' });
+      if (!v) return;
+      try { await api('/api/skills', { method: 'POST', body: v }); toast('Skill created and switched on.'); loadMine(); return; } catch (e) { fail(e); }
+    }
   }
 
   poll();

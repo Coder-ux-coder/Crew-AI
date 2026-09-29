@@ -63,21 +63,23 @@ export function connectionsPage(view) {
     if (existing && !presets.some((p) => p.name === existing)) { sel.value = '__other'; nameRow.classList.remove('hidden'); }
     sel.addEventListener('change', () => nameRow.classList.toggle('hidden', sel.value !== '__other'));
     const value = h('input', { type: 'password', placeholder: 'Paste the key', autocomplete: 'off' });
-    const v = await dialog({
-      title: existing ? 'Replace a key' : 'Add an API key',
-      body: h('div', { class: 'stack', style: { gap: '14px' } }, h('label', { class: 'field' }, h('span', null, 'Service'), sel), nameRow,
-        h('label', { class: 'field' }, h('span', null, 'The key'), value, h('small', null, 'Stored only on this computer, in Crew’s folder.'))),
-      actions: [{ label: 'Cancel', value: null }, {
-        label: 'Save key', primary: true, value: () => {
-          const n = (sel.value === '__other' ? name.value : sel.value).trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
-          if (!n) { toast('Choose the service.', { bad: true }); return undefined; }
-          if (!value.value.trim()) { value.focus(); toast('Paste the key.', { bad: true }); return undefined; }
-          return { name: n, value: value.value.trim() };
-        },
-      }],
-    });
-    if (!v) return;
-    try { await api('/api/secrets', { method: 'PUT', body: v }); toast('Key saved. New chats can use it.'); load(); } catch (e) { fail(e); }
+    for (;;) {  // a refused key opens the same form again, with the key still in it
+      const v = await dialog({
+        title: existing ? 'Replace a key' : 'Add an API key',
+        body: h('div', { class: 'stack', style: { gap: '14px' } }, h('label', { class: 'field' }, h('span', null, 'Service'), sel), nameRow,
+          h('label', { class: 'field' }, h('span', null, 'The key'), value, h('small', null, 'Stored only on this computer, in Crew’s folder.'))),
+        actions: [{ label: 'Cancel', value: null }, {
+          label: 'Save key', primary: true, value: () => {
+            const n = (sel.value === '__other' ? name.value : sel.value).trim().toUpperCase().replace(/[^A-Z0-9_]/g, '_');
+            if (!n) { toast('Choose the service.', { bad: true }); return undefined; }
+            if (!value.value.trim()) { value.focus(); toast('Paste the key.', { bad: true }); return undefined; }
+            return { name: n, value: value.value.trim() };
+          },
+        }],
+      });
+      if (!v) return;
+      try { await api('/api/secrets', { method: 'PUT', body: v }); toast('Key saved. New chats can use it.'); load(); return; } catch (e) { fail(e); }
+    }
   }
 
   async function addServer() {
@@ -103,22 +105,25 @@ export function connectionsPage(view) {
         prog.classList.toggle('hidden', k !== 'stdio');
       },
     }, l)));
-    const v = await dialog({
-      title: 'Connect a service', wide: true,
-      body: h('div', { class: 'stack', style: { gap: '14px' } },
-        h('p', { class: 'muted small' }, 'The service’s instructions give you either a web address (most common) or a program to run.'),
-        h('label', { class: 'field' }, h('span', null, 'Name'), name), seg, web, prog),
-      actions: [{ label: 'Cancel', value: null }, {
-        label: 'Connect', primary: true, value: () => {
-          if (!name.value.trim()) { name.focus(); toast('Give it a short name.', { bad: true }); return undefined; }
-          const envObj = Object.fromEntries(env.value.split('\n').map((l) => l.trim()).filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()]));
-          return kind === 'http' ? { name: name.value.trim(), type: 'http', url: url.value.trim(), headers: headers.value }
-            : { name: name.value.trim(), type: 'stdio', command: command.value.trim(), args: args.value.trim(), env: envObj };
-        },
-      }],
-    });
-    if (!v) return;
-    try { await api('/api/connections/mcp', { method: 'POST', body: v }); toast('Connected. New chats and projects can use it.'); load(); } catch (e) { fail(e); }
+    // Until it is saved or the owner cancels: a refused service opens the same form again, with everything in it.
+    for (;;) {
+      const v = await dialog({
+        title: 'Connect a service', wide: true,
+        body: h('div', { class: 'stack', style: { gap: '14px' } },
+          h('p', { class: 'muted small' }, 'The service’s instructions give you either a web address (most common) or a program to run.'),
+          h('label', { class: 'field' }, h('span', null, 'Name'), name), seg, web, prog),
+        actions: [{ label: 'Cancel', value: null }, {
+          label: 'Connect', primary: true, value: () => {
+            if (!name.value.trim()) { name.focus(); toast('Give it a short name.', { bad: true }); return undefined; }
+            const envObj = Object.fromEntries(env.value.split('\n').map((l) => l.trim()).filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')).trim(), l.slice(l.indexOf('=') + 1).trim()]));
+            return kind === 'http' ? { name: name.value.trim(), type: 'http', url: url.value.trim(), headers: headers.value }
+              : { name: name.value.trim(), type: 'stdio', command: command.value.trim(), args: args.value.trim(), env: envObj };
+          },
+        }],
+      });
+      if (!v) return;
+      try { await api('/api/connections/mcp', { method: 'POST', body: v }); toast('Connected. New chats and projects can use it.'); load(); return; } catch (e) { fail(e); }
+    }
   }
 
   load();
