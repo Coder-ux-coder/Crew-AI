@@ -459,6 +459,32 @@ class SeatTests(unittest.TestCase):
 
 
 class CheckTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX hook scripts")
+    def test_c26_the_projects_own_commit_hooks_do_not_stop_crews_merges(self):
+        """A project whose hooks refuse Crew's commit messages (commitlint allows only "feat: …", "fix: …"): a
+        task's merge failed every time, and a merge that broke the checks could not be undone."""
+        with TempHome() as home:
+            repo = gitops.ensure_repo(home / "shop")
+            base = gitops.current_branch(repo)
+            gitops.git(repo, "checkout", "-q", "-b", "crew/task-1")
+            (repo / "page.html").write_text("<h1>Menu</h1>\n", encoding="utf-8")
+            gitops.commit_all(repo, "task 1 by ada")
+            gitops.git(repo, "checkout", "-q", base)
+            for name in ("commit-msg", "pre-merge-commit", "pre-commit"):
+                hook = Path(gitops.out(repo, "rev-parse", "--git-path", "hooks")) / name
+                if not hook.is_absolute():
+                    hook = repo / hook
+                hook.parent.mkdir(parents=True, exist_ok=True)
+                hook.write_text("#!/bin/sh\necho 'commitlint: type must be one of [feat, fix]' >&2\nexit 1\n")
+                hook.chmod(0o755)
+            res = gitops.merge_into(repo, "crew/task-1", "crew: task #1 Menu page")
+            self.assertTrue(res.ok, res.message)
+            self.assertTrue((repo / "page.html").is_file())
+            gitops.revert_last_merge(repo, "task #1 broke the checks")
+            self.assertFalse((repo / "page.html").exists())
+            self.assertEqual(gitops.out(repo, "log", "-1", "--format=%s"), "crew: revert merge — task #1 broke the checks")
+            self.assertFalse(gitops.is_dirty(repo))
+
     @unittest.skipIf(os.name == "nt", "a POSIX shell command")
     def test_c7_a_check_that_leaves_a_server_running_finishes(self):
         with TempHome() as home:

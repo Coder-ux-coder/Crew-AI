@@ -1838,7 +1838,7 @@ class Orchestrator:
         branch = f"{self.prefix}/final"
         self._free_branch(branch, keep=lead)
         gitops.checkout_task(lead.worktree, branch, self.integration)
-        gitops.git(lead.worktree, "merge", "--no-edit", self.integration, check=False)
+        gitops.git(lead.worktree, "merge", "--no-edit", "--no-verify", self.integration, check=False)  # as merge_into
 
     # ================================================================ deliver
 
