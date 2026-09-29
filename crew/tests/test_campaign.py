@@ -2599,6 +2599,12 @@ with sync_playwright() as p:
     page.wait_for_timeout(2500)
     out["blip_still_waiting"] = page.locator(".send-btn.stop").count() > 0
     out["blip_answer_shown"] = "That is all." in page.inner_text(".thread")
+    # Crew marks the chat free a moment before it sends "done": that "done" may come after the page caught up
+    last = page.evaluate("fetch('/api/chats/%s').then((r) => r.json()).then((c) => c.messages[c.messages.length - 1])" % cid)
+    answers = page.locator(".turn-ai").count()
+    page.evaluate(ch + ".send('done', {id: %d, text: %s, meta: {}})" % (last["id"], json.dumps(last["text"])))
+    page.wait_for_timeout(300)
+    out["blip_answer_shown_once"] = page.locator(".turn-ai").count() == answers
     # 2. Crew restarts in the middle of an answer and is back at once: that answer is gone, nothing more will come
     page.evaluate(ch + ".send('start', {engine: 'claude'})")
     page.evaluate(ch + ".send('delta', {text: 'Working on the second answer'})")
@@ -2631,7 +2637,7 @@ with sync_playwright() as p:
             s.stop()
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
         self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
-                         {"blip_still_waiting": False, "blip_answer_shown": True,
+                         {"blip_still_waiting": False, "blip_answer_shown": True, "blip_answer_shown_once": True,
                           "restart_still_waiting": False, "restart_told": True})
 
 

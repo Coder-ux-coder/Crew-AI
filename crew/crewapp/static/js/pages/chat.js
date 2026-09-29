@@ -954,6 +954,8 @@ class ChatView {
   }
 
   finishLive(d) {
+    if (d.id && d.id === this.finishedId) return;  // already shown: the page caught up with it after a reconnect
+    if (d.id) this.finishedId = d.id;
     const meta = d.meta || {};
     const turn = this.live || this.startLive();
     this.live = null;
@@ -1005,7 +1007,7 @@ class ChatView {
         const shown = ((this.chat && this.chat.messages) || []).filter((m) => m.role === 'assistant').length;
         const answers = c.messages.filter((m) => m.role === 'assistant');
         const last = answers[answers.length - 1];
-        if (answers.length > shown) this.finishLive({ text: last.text, meta: last.meta });
+        if (answers.length > shown) this.finishLive({ id: last.id, text: last.text, meta: last.meta });
         else this.finishLive({ text: 'This answer was interrupted: Crew restarted before it was finished. Please send your message again.', meta: { error: true } });
       }
     } catch (e) { /* still offline */ }
