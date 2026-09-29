@@ -51,9 +51,10 @@ export function dictate(textarea, button) {
   rec.interimResults = true;
   const base = textarea.value && !/\s$/.test(textarea.value) ? textarea.value + ' ' : textarea.value;
   let finals = '';
+  let written = textarea.value;  // what dictation last put in the box
   const session = {
-    textarea, stopped: false,
-    stop() { this.stopped = true; try { rec.stop(); } catch (e) { /* already stopped */ } },
+    textarea,
+    stop() { try { rec.stop(); } catch (e) { /* already stopped */ } },
   };
   rec.onresult = (e) => {
     let interim = '';
@@ -62,13 +63,16 @@ export function dictate(textarea, button) {
       if (r.isFinal) finals += r[0].transcript.trim() + ' ';
       else interim += r[0].transcript;
     }
-    textarea.value = base + finals + interim;
+    textarea.value = written = base + finals + interim;
     textarea.dispatchEvent(new Event('input'));
   };
   rec.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') micError(e.error); };
   rec.onend = () => {
     button && button.classList.remove('on');
     if (active === session) active = null;
+    // The end comes a moment after stop(): if the box changed meanwhile (the message was sent, or edited), that
+    // change stays — writing the heard words back would bring a sent message back into the box.
+    if (textarea.value !== written) return;
     textarea.value = (base + finals).replace(/\s+$/, finals ? ' ' : '');
     textarea.dispatchEvent(new Event('input'));
     textarea.focus();

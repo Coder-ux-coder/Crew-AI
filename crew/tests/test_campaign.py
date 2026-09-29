@@ -1295,6 +1295,52 @@ with sync_playwright() as p:
         self.assertTrue(res["again"])
 
 
+class DictationTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    # A speech recogniser as Chrome's behaves: words arrive, and the end comes a moment after stop().
+    page.add_init_script('''window.SpeechRecognition = class {
+        start() { setTimeout(() => this.onresult && this.onresult({resultIndex: 0,
+            results: [Object.assign([{transcript: "please draft the invitation letter"}], {isFinal: true})]}), 50); }
+        stop() { setTimeout(() => this.onend && this.onend(), 200); }
+        abort() { this.stop(); }
+    };''')
+    page.goto(sys.argv[1] + "#/chat/" + sys.argv[3])
+    page.wait_for_selector(".composer .mic")
+    page.click(".composer .mic")
+    page.wait_for_timeout(300)
+    heard = page.input_value(".composer textarea")
+    page.click(".composer .send-btn")  # the owner sends what was dictated
+    page.wait_for_timeout(900)
+    print(json.dumps({"heard": heard, "after": page.input_value(".composer textarea")}))
+    b.close()
+"""
+
+    def test_f16_a_dictated_message_does_not_come_back_after_it_is_sent(self):
+        """Sending stops the dictation, and the dictation's end arrives a moment later: it wrote the words it had
+        heard back into the box the message had just left, inviting the owner to send them twice."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            cid = s.api("POST", "/api/chats", {"engine": "claude"})["id"]
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium(), cid],
+                                 capture_output=True, text=True, timeout=120)
+            s.api("DELETE", f"/api/chats/{cid}")
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        res = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertIn("please draft the invitation letter", res["heard"])
+        self.assertEqual(res["after"], "")
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys
