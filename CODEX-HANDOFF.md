@@ -15,12 +15,15 @@
   **C32 (P1 on Windows: the team's checks ran in cmd.exe although the agents write them for bash, so they could
   never pass; they now run in Git for Windows' bash)**, A60 (odd pairing codes), A61 (viewers that hang up), A63
   (quoted connection arguments with spaces), A65 (the phone's screen list from an earlier screen: taps in the wrong
-  place), A66 (saving a key beside Notepad's older encoding), A67 (dot-only project ids), C33 (Urdu file names
-  escaped the scan; clashes in names with spaces), F20 (the chat catches up when its connection comes back), F21
+  place), A66 (saving a key beside Notepad's older encoding), A67 (dot-only project ids), A68 (a broken character
+  cut a live view for everyone), C33 (Urdu file names escaped the scan; clashes in names with spaces), F20 (the
+  chat catches up when its connection comes back, and draws each answer once), F21
   (after an update only Crew is taken for Crew; a rolled-back Crew is recognised), F22 (Urdu reads right to left:
   answers, messages, the team conversation, titles, the message boxes).
-- **Tests:** full suite 240 OK in 7 min 9 s (Python 3.11, Playwright + Chromium, 0 skipped) before F22 and A67;
-  their own tests and the Markdown tests after. ruff (cloud config), eslint and `node --check` clean.
+- **Tests:** full suite 240 OK in 7 min 9 s (Python 3.11, Playwright + Chromium, 0 skipped) before F22, A67 and
+  A68; their own tests and the Markdown tests after; the cloud checks (Python 3.12) passed on 4364d69. ruff (cloud
+  config), eslint and `node --check` clean. The browser sweep (120 screens, both sizes and themes) flags only the
+  404s of the two addresses it opens on purpose.
 - **What is left:** (1) the release, only with the owner's go-ahead; (2) on the owner's Windows PC: a small team
   project (its checks now run in Git's bash), the desktop icon, the Computer page's double-click, a message in
   Urdu; (3) the owner's answers on Urdu and on the per-model weekly limit; (4) carry on the clean round.
