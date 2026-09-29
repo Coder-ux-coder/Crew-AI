@@ -1252,6 +1252,49 @@ with sync_playwright() as p:
         self.assertIn("Morning briefing", res["names"])
 
 
+class SettingsFeedbackTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    page.goto(sys.argv[1] + "#/settings/team")
+    page.wait_for_selector("details.advanced")
+    page.click("details.advanced summary")
+    hours = page.locator("input[type=number]").first
+    hours.fill("500")  # more than a week: not a time limit Crew accepts
+    page.wait_for_timeout(1200)
+    said = page.evaluate("[...document.querySelectorAll('#toasts .toast')].map((t) => t.textContent)")
+    page.route("**/api/update?refresh=1", lambda route, request: route.abort())  # the check cannot reach Crew
+    page.goto(sys.argv[1] + "#/settings/updates")
+    page.wait_for_selector("text=Check now")
+    page.click("text=Check now")
+    page.wait_for_timeout(1000)
+    again = page.evaluate("!document.evaluate(\"//button[contains(., 'Check now')]\", document, null, 9, null).singleNodeValue.disabled")
+    print(json.dumps({"said": said, "again": again}))
+    b.close()
+"""
+
+    def test_f15_settings_say_when_a_number_is_refused_and_a_failed_check_can_be_retried(self):
+        """A number out of range (500 hours) was dropped without a word, so the owner believed it saved; a failed
+        "Check now" left its button switched off until the page was reloaded."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        res = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertTrue(any("0 to 168" in t for t in res["said"]), res["said"])
+        self.assertTrue(res["again"])
+
+
 class NoticeTimingTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

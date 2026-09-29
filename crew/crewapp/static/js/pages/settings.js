@@ -52,7 +52,14 @@ function number(value, { min = 0, max = 1000, step = 1 } = {}, onchange) {
   let t = null;
   return h('input', {
     type: 'number', value: String(value), min, max, step, style: { width: '110px' },
-    oninput: (e) => { clearTimeout(t); t = setTimeout(() => { const v = parseFloat(e.target.value); if (!Number.isNaN(v) && v >= min && v <= max) onchange(v); }, 600); },
+    oninput: (e) => {
+      clearTimeout(t);
+      t = setTimeout(() => {
+        const v = parseFloat(e.target.value);
+        if (!Number.isNaN(v) && v >= min && v <= max) onchange(v);
+        else if (e.target.value !== '') toast(`Choose a number from ${min} to ${max}. This one is not saved.`, { bad: true });
+      }, 600);
+    },
   });
 }
 
@@ -398,8 +405,9 @@ const RENDER = {
           h('div', { class: 'muted small' }, u.available ? `Version ${u.latest} is ready.` : u.error ? u.error : u.latest ? 'You have the newest version.' : 'Not checked yet.')),
         store.isLocal && u.available ? btn('Update now', () => store.installUpdate(u), { cls: 'accent sm', ic: 'download' }) : null,
         btn('Check now', async (e) => {
-          e.currentTarget.disabled = true;
-          try { drawCrew(await api('/api/update?refresh=1')); } catch (x) { fail(x); }
+          const b = e.currentTarget;
+          b.disabled = true;
+          try { drawCrew(await api('/api/update?refresh=1')); } catch (x) { fail(x); b.disabled = false; }  // it can be tried again
         }, { cls: 'sm', ic: 'reload' })),
         u.available && (u.notes || []).length ? h('ul', { class: 'small', style: { margin: 0, paddingLeft: '20px' } }, u.notes.map((n) => h('li', null, n))) : null,
         h('p', { class: 'muted small' }, 'Updates replace only Crew’s program. Your chats, projects, captures, sign-ins, API keys and settings stay exactly as they are — no reinstalling, nothing to enter again.'),
