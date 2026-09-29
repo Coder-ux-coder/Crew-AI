@@ -13,8 +13,13 @@ never copy it onto the owner's computer.)
 
 ## 0. Campaign state (updated after every step — read this first after any break or context summary)
 
-- Status: RUNNING — third continuation (Claude, cloud container, 2026-09-28). All work and execution in
-  the cloud (the owner's requirement), on branch `claude/exciting-heisenberg-6w6gge`.
+- Status: RUNNING — fourth continuation (Claude, cloud container, 2026-09-29), on branch
+  `claude/jolly-wright-lz430a` (it carries everything from `claude/exciting-heisenberg-6w6gge`, where the third
+  continuation stopped at the owner's usage limit). All work and execution in the cloud.
+- The owner's request (2026-09-29): Sonnet 5.5 replaces GPT-6 Sol as the team's workhorse; GPT-6 Sol leaves
+  Crew. Done (section 12, "Fourth continuation"); full suite 211 tests OK with Playwright present (0 skipped);
+  ruff (the cloud config), eslint and `node --check` clean; Settings and a finished project checked in Chromium.
+  C24 found by it and fixed.
 - Baseline (before any change here): full suite 157 tests OK (Python 3.11, Playwright + Chromium present);
   ruff 2 findings, triaged noise; eslint clean; `node --check` clean.
 - Round 1 done (section 11): C14, C15 (the cloud run's endless E2E loop); P1 tests proven against the
@@ -29,9 +34,13 @@ never copy it onto the owner's computer.)
 - The clicking sweep finished: 120 screens, 786 clicks, nothing new (every flag explained, section 12).
 - Rounds 3, 4, 5, 7, 9 partly done (section 11): A55–A58, F8, F9, each with a test that fails on the old
   code; the clicking sweep finished clean.
-- Next: round 6 (team engine line by line), round 8 (front end line by line), round 10 (Windows by
-  reading), the rest of the checklists in sections 7–9, then a clean round. Keep this section, the ledger
-  and section 11 current after every step.
+- Round 6 in progress: orchestrator.py, tools.py, store.py, agents.py's seats (third continuation);
+  scheduler.py, gitops.py, hook.py, quality.py, mcp_server.py (fourth). Candidates being proved: C25
+  (scheduler: a task suggested to an idle seat that cannot take it waits for ever), C26 (gitops: merges run
+  the project's own commit hooks).
+- Next: finish round 6 (lessons, scorecard, usage, util, connections, claude_cli, web, cli, prompts), round 8
+  (front end line by line), round 10 (Windows by reading), the rest of the checklists in sections 7–9, then a
+  clean round. Keep this section, the ledger and section 11 current after every step.
 - Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
   taskkill, a file held open during a conversation copy or a database set-aside, the message boxes.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
@@ -716,6 +725,49 @@ Round 6 (the team engine, line by line: orchestrator.py read in full):
 - Read, no change needed: tools.py (roles are enforced where tools are registered; any tool failure is
   answered to the agent, never crashes it), store.py, agents.py's seats (stop, interrupt, send to a dead
   process, Windows process trees).
+
+### Fourth continuation (2026-09-29) — the owner's model change; round 6 continued
+
+The owner's request (2026-09-29): **Sonnet 5.5 replaces GPT-6 Sol as the team's workhorse.** GPT-6 Sol leaves
+Crew; Opus 5.5 (manager), GPT-6 Astra (CEO) and Fable 5.1 (the CEO's backup) stay; the tiers, token targets,
+routing rules and everything else stay as they were.
+
+- Seats carry their tier (config.SeatSpec.tier; the seats table's new `tier` column; tiers.seat_tier reads it,
+  and a seat recorded before, by its product). Workhorse seats are Claude seats running models.workhorse
+  (default claude-sonnet-5-5): `team.workhorse_seats` of them (default 2), spread over the Claude subscriptions
+  after the lead's. ChatGPT subscriptions get no seats: they run the CEO and ChatGPT chats. A workhorse seat's
+  helpers (sub-agents) run Sonnet too. Every "Codex seat = workhorse" test in the engine now asks the tier
+  (orchestrator, scheduler, tools, prompts, runs, the token shares).
+- Settings: models.workhorse replaces models.codex. A 2.3.0 file still loads (its models.codex is ignored;
+  hand-written ChatGPT seats are left out). Settings version 4 (settings._sonnet_workhorse, runs once): "sonnet"
+  leaves the ban list, claude-sonnet-5-5 joins the allowed Claude models, gpt-6-sol joins the ban list, the
+  ChatGPT chat default gpt-6-sol becomes gpt-6-astra; chats and workflows set to gpt-6-sol move to gpt-6-astra
+  (tiers.RETIRED). Everything else the owner chose stays. Banning Sonnet while it is the workhorse is refused in
+  plain words (the engine could not run).
+- Wording: the agents' instructions (roster, tier guide, workhorse and reviewer roles), Settings → Models (the
+  workhorse's model is chosen from the Claude models; "Workhorse agents in a team"), the project screen,
+  README, ARCHITECTURE, crew.toml.example, `crew doctor`.
+- Tests: test_tiers (new: a 2.3.0 settings file still loads; old seat records keep their tier; the seat
+  layout for one and several Claude subscriptions), test_upgrade (new:
+  test_version_3_moves_the_workhorse_to_sonnet_and_keeps_everything_else, on the owner's own layout), test_e2e
+  (every team scenario now runs with Sonnet workhorse seats; the fakes tell seats apart by tier), test_scorecard,
+  test_talk, test_units.
+- A consequence to know: in a team project, how full the ChatGPT subscription is (its 5-hour and weekly
+  windows) was read from the ChatGPT seats' session files. The CEO's one-off runs leave none (`--ephemeral`), so
+  that reading is no longer taken during a project. The CEO's limit is still caught when it is reached (parked
+  until it lifts, C20; Fable 5.1 takes over) and its tokens are counted; ChatGPT chats still report it.
+
+Round 6, continued:
+
+- C24 · P2 · orchestrator (reviewer, judge, CEO, prompt writer: every choice of a subscription) · a reviewer
+  that ran out on a subscription was followed by another reviewer on the same subscription; with the real CLI
+  that one fails the same way, a wasted launch and a second limit message. Found by the model change, where a
+  task's author now shares the Claude subscriptions with the reviewers (the end-to-end test showed "Reviewing
+  task #2 … (claude-1)" twice and never waited) · the choice read each subscription's recorded mode, which the
+  main loop brings up to date only once per pass, so a limit reached a moment ago did not count yet ·
+  Orchestrator.modes() works the mode out as of now (scheduler.mode_of, from parked_until and usage) for every
+  choice · test_c24_a_subscription_that_just_reached_its_limit_is_not_chosen_again, and
+  test_a_review_at_a_usage_limit_moves_on_or_waits (end to end; fails with the old choice patched back in).
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
