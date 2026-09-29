@@ -557,6 +557,34 @@ class LiveViewTests(unittest.TestCase):
 
 
 class DataFileTests(unittest.TestCase):
+    def test_c27_a_file_held_open_for_a_moment_is_still_saved(self):
+        """Windows cannot replace a file another program has open (an antivirus scan of the file just written,
+        another Crew window reading it): the save failed at once, and its half-step file stayed behind."""
+        class Held:  # os, except that the file is held open for the first `busy` replacements
+            def __init__(self, busy):
+                self.busy = busy
+
+            def __getattr__(self, name):
+                return getattr(os, name)
+
+            def replace(self, src, dst):
+                if self.busy:
+                    self.busy -= 1
+                    raise PermissionError(13, "The process cannot access the file because it is being used by "
+                                              "another process")
+                return os.replace(src, dst)
+
+        with TempHome() as home:
+            target = home / "crew.toml"
+            target.write_text("old", encoding="utf-8")
+            with mock.patch.object(util_mod, "os", Held(2)):
+                util_mod.atomic_write(target, "new")
+            self.assertEqual(target.read_text(encoding="utf-8"), "new")
+            with mock.patch.object(util_mod, "os", Held(1000)), self.assertRaises(PermissionError):
+                util_mod.atomic_write(target, "newer")  # held for good: it says so …
+            self.assertEqual(target.read_text(encoding="utf-8"), "new")  # … the file is as it was …
+            self.assertEqual([f.name for f in home.iterdir() if f.name.startswith(".crew.toml")], [])  # … no leftovers
+
     def test_c8_a_connections_file_of_the_wrong_shape(self):
         with TempHome() as home:
             path = home / "connections.json"

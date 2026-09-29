@@ -57,11 +57,28 @@ def loads(text: str | None, default=None):
 
 
 def atomic_write(path: Path, text: str) -> None:
+    """Write a file whole or not at all. Windows cannot replace a file another program has open for a moment (an
+    antivirus scan of the file just written, another Crew window reading it), so that is tried again for about a
+    second; the half-step file never stays behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
-    os.replace(tmp, path)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 LOG_LIMIT = 5_000_000  # bytes: a larger log starts again, and the last one is kept as app.log.1
