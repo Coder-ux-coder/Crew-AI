@@ -520,9 +520,9 @@ select { appearance: none; padding-right: 32px; cursor: pointer;
 .tmsg .who b { color: var(--ink); font-size: 14px; }
 .tmsg .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; line-height: 1.55; }
 .tmsg.you .body { background: var(--user); padding: 8px 12px; border-radius: 4px 14px 14px 14px; justify-self: start; }
-.tmsg.decision .body { border-left: 3px solid var(--accent); padding-left: 10px; }
-.tmsg.blocker .body { border-left: 3px solid var(--bad); padding-left: 10px; }
-.tmsg.lesson .body { border-left: 3px solid var(--warn); padding-left: 10px; }
+.tmsg.decision .body { border-inline-start: 3px solid var(--accent); padding-inline-start: 10px; }
+.tmsg.blocker .body { border-inline-start: 3px solid var(--bad); padding-inline-start: 10px; }
+.tmsg.lesson .body { border-inline-start: 3px solid var(--warn); padding-inline-start: 10px; }
 .sysline { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: baseline; padding-left: 42px; }
 .sysline time { font-variant-numeric: tabular-nums; color: var(--faint); font-size: 12px; }
 .sysline.problem { color: var(--bad); }

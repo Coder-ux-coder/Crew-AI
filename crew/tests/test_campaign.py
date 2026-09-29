@@ -2639,11 +2639,25 @@ with sync_playwright() as p:
                   " d.id = 'answer'; d.innerHTML = ui.markdown(md); document.querySelector('.thread').append(d); })", ANSWER)
     page.fill(".composer textarea", "اگلا سوال")
     rtl = lambda sel: page.evaluate("(s) => [...document.querySelectorAll(s)].map((e) => e.matches(':dir(rtl)'))", sel)
-    print(json.dumps({"message": rtl(".turn-user .bubble"), "paragraphs": rtl("#answer p"), "items": rtl("#answer li"),
-                      "cells": rtl("#answer td"), "typing": rtl(".composer textarea"),
-                      "bullet_on_the_right": page.evaluate("(() => { const li = document.querySelector('#answer li');"
-                          " const r = li.getBoundingClientRect(), ul = li.parentElement.getBoundingClientRect();"
-                          " return ul.right - r.right > 10 && r.left - ul.left < 2; })()")}))
+    out = {"message": rtl(".turn-user .bubble"), "paragraphs": rtl("#answer p"), "items": rtl("#answer li"),
+           "cells": rtl("#answer td"), "typing": rtl(".composer textarea"),
+           "bullet_on_the_right": page.evaluate("(() => { const li = document.querySelector('#answer li');"
+               " const r = li.getBoundingClientRect(), ul = li.parentElement.getBoundingClientRect();"
+               " return ul.right - r.right > 10 && r.left - ul.left < 2; })()")}
+    # A project's conversation: the owner writes to the team in Urdu, and an agent answers in Urdu
+    state = {"title": "Bakery site", "running": True, "starting": False, "raw_phase": "build", "phase": "Building",
+             "agents": [], "tasks": [], "accounts": [], "messages": [
+                 {"id": 1, "t": 1, "who": "you", "kind": "chat", "text": "Use our brand colours: سبز اور سفید",
+                  "original": "ہمارے برانڈ کے رنگ استعمال کریں: سبز اور سفید"},
+                 {"id": 2, "t": 2, "who": "lead", "kind": "decision", "text": "ٹھیک ہے! Header سبز ہوگا۔"}]}
+    page.route("**/api/runs/t1?after=*", lambda route: route.fulfill(status=200, content_type="application/json",
+                                                                      body=json.dumps(state)))
+    page.goto(base + "#/projects/t1")
+    page.wait_for_selector(".tmsg .body")
+    out["team"] = rtl(".tmsg .body")
+    out["own_words"] = rtl(".own-words div")
+    out["team_box"] = page.evaluate("document.querySelector('.say-dock textarea').getAttribute('dir')")
+    print(json.dumps(out))
     b.close()
 """
 
@@ -2669,7 +2683,8 @@ with sync_playwright() as p:
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
         self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
                          {"message": [True], "paragraphs": [True, False], "items": [True, True], "cells": [True, False],
-                          "typing": [True], "bullet_on_the_right": True})
+                          "typing": [True], "bullet_on_the_right": True,
+                          "team": [False, True], "own_words": [True], "team_box": "auto"})
 
 
 class UpdateReconnectTests(unittest.TestCase):

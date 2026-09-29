@@ -523,12 +523,12 @@ function message(m, s) {
     : null;
   // The prompt writer's version: the owner's own words are one tap away.
   const own = !drafting && m.original && m.original.trim() !== m.text.trim()
-    ? h('details', { class: 'own-words' }, h('summary', null, icon('pen'), 'Written up by the prompt writer · your words'), h('div', null, m.original))
+    ? h('details', { class: 'own-words' }, h('summary', null, icon('pen'), 'Written up by the prompt writer · your words'), h('div', { dir: 'auto' }, m.original))
     : null;
   const avatar = m.who === 'ceo' ? h('span', { class: 'av', style: { background: 'var(--tier-ceo)' } }, icon('brain'))
     : h('span', { class: 'av', style: { background: m.who === 'you' ? 'var(--ink-2)' : colorFor(m.who) } }, m.who === 'you' ? 'Y' : m.who.replace(/[^a-z0-9]/gi, '').slice(0, 2));
   return h('div', { class: 'tmsg ' + kind + (direct ? ' direct' : '') + (m.kind === 'share' ? ' share' : ''), dataset: { id: m.id } },
     avatar,
     h('div', { class: 'stack tight' }, h('div', { class: 'who' }, h('b', null, who), h('span', null, clock(m.t)), label ? h('span', { class: 'pill' }, m.kind === 'share' ? icon('clip') : null, label) : null, dm, pending),
-      h('div', { class: 'body' }, m.text), own));
+      h('div', { class: 'body', dir: 'auto' }, m.text), own));
 }
