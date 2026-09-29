@@ -388,11 +388,12 @@ def save_secret(name: str, value: str | None) -> None:
     if "\n" in value or "\r" in value:
         raise ValueError("Paste the key on its own: it should be one line, without line breaks.")
     p = secrets_path()
-    lines = p.read_text(encoding="utf-8-sig").splitlines() if p.is_file() else [
+    # "surrogateescape": a line the owner saved in another encoding (Notepad's older one) goes back byte for byte
+    lines = p.read_bytes().decode("utf-8-sig", "surrogateescape").splitlines() if p.is_file() else [
         "# Your API keys. Written by the Crew app; values are hidden from every chat, log and report."]
     lines = [ln for ln in lines if not re.match(rf"^\s*(export\s+)?{re.escape(name)}\s*=", ln)]
     if value:
         lines.append(f"{name}={value}")
-    atomic_write(p, "\n".join(lines) + "\n")
+    atomic_write(p, "\n".join(lines) + "\n", errors="surrogateescape")
     if os.name != "nt":
         os.chmod(p, 0o600)

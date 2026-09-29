@@ -37,6 +37,11 @@ def adb_path() -> str | None:
     return str(local) if local.is_file() else None
 
 
+UI_DUMP = "/sdcard/crew-ui.xml"
+UNREADABLE = ("The phone's screen could not be listed just now: something on it is moving (a video or an animation), "
+              "or the app keeps its screen private. Take a screenshot to see it, or try again in a moment.")
+
+
 class PhoneService:
     def __init__(self):
         self.serial: str | None = None
@@ -236,9 +241,15 @@ class PhoneService:
         return {"ok": True, "package": package}
 
     def elements(self) -> list[dict]:
-        """What is on screen: visible text, descriptions and where to tap (for the assistant)."""
-        self._adb("shell", "uiautomator", "dump", "/sdcard/crew-ui.xml", timeout=30)
-        xml = self._adb("shell", "cat", "/sdcard/crew-ui.xml", timeout=20)
+        """What is on screen: visible text, descriptions and where to tap (for the assistant). While something moves
+        (a video, an animation) Android cannot list the screen and writes no new list: the one left from an earlier
+        screen is removed first, as its positions would tap the wrong thing."""
+        self._adb("shell", "rm", "-f", UI_DUMP)
+        try:
+            self._adb("shell", "uiautomator", "dump", UI_DUMP, timeout=30)
+            xml = self._adb("shell", "cat", UI_DUMP, timeout=20)
+        except PhoneError:
+            raise PhoneError(UNREADABLE) from None
         return parse_ui(xml, self.size())
 
     def tap_text(self, text: str, driver: str = "you") -> dict:
@@ -291,7 +302,10 @@ def shrink(png: bytes) -> tuple[bytes, str]:
 
 def parse_ui(xml: str, size: tuple[int, int]) -> list[dict]:
     start = xml.find("<?xml")
-    root = ET.fromstring(xml[start:] if start >= 0 else xml)
+    try:
+        root = ET.fromstring(xml[start:] if start >= 0 else xml)
+    except ET.ParseError:  # no list, or one cut off half-way
+        raise PhoneError(UNREADABLE) from None
     w, h = size
     out = []
     for node in root.iter("node"):

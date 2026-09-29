@@ -2443,5 +2443,66 @@ class ServerRobustnessTests(unittest.TestCase):
         self.assertEqual(conn_mod.split_args("  "), [])
 
 
+class _PhoneFiles:
+    """A phone's own storage, as the commands Crew sends see it. The screen listing fails the way Android's does
+    while a video plays or an animation runs ("could not get idle state"): no new file is written."""
+
+    def __init__(self):
+        self.files: dict[str, str] = {}
+        self.screen: str | None = "<?xml version='1.0'?><hierarchy><node text=\"Send\" clickable=\"true\" " \
+                                  "bounds=\"[900,2200][1060,2320]\" /></hierarchy>"
+
+    def adb(self, *args: str, **_kw):
+        if args[:2] == ("shell", "rm"):
+            self.files.pop(args[-1], None)
+        elif args[:2] == ("shell", "uiautomator"):
+            if self.screen is None:
+                return "ERROR: could not get idle state.\n"
+            self.files[args[-1]] = self.screen
+            return f"UI hierchary dumped to: {args[-1]}\n"
+        elif args[:2] == ("shell", "cat"):
+            if args[-1] not in self.files:
+                raise phone_mod.PhoneError(f"cat: {args[-1]}: No such file or directory")
+            return self.files[args[-1]]
+        return ""
+
+
+class PhoneScreenTests(unittest.TestCase):
+    def test_a65_a_screen_that_cannot_be_listed_is_never_answered_with_an_earlier_one(self):
+        """While a video plays or something moves on the phone, Android cannot list the screen and writes no new
+        list. Crew then read the list left from an earlier screen: the assistant was told that screen was showing,
+        and "tap Send" tapped where Send had been. A list cut off half-way stopped with a "syntax error"."""
+        phone, files = phone_mod.PhoneService(), _PhoneFiles()
+        with mock.patch.object(phone, "_adb", files.adb), mock.patch.object(phone, "size", lambda: (1080, 2400)), \
+                mock.patch.object(phone, "tap", lambda *a, **k: {"ok": True}) as tap:
+            self.assertEqual([e["text"] for e in phone.elements()], ["Send"])
+            files.screen = None  # a video starts playing
+            for attempt in (phone.elements, lambda: phone.tap_text("Send")):
+                with self.assertRaises(phone_mod.PhoneError) as caught:
+                    attempt()
+                self.assertIn("screenshot", str(caught.exception))
+            files.screen = "<?xml version='1.0'?><hierarchy><node text=\"Chats\" bounds=\"[0,0]["  # cut off
+            with self.assertRaises(phone_mod.PhoneError) as caught:
+                phone.elements()
+            self.assertIn("screenshot", str(caught.exception))
+        del tap
+
+
+class KeysFileTests(unittest.TestCase):
+    def test_a66_a_key_saves_when_the_keys_file_was_last_saved_by_notepad(self):
+        """secrets.env edited by hand and saved by Notepad in Windows' older encoding (a note with "é" or "£" in it):
+        every key the owner then added or removed in Settings was refused with a message about a "codec". The key is
+        saved, and the owner's own lines stay exactly as they were written."""
+        with TempHome():
+            path = settings_mod.secrets_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"# Cl\xe9s de Mohid \xa3\r\nOPENAI_API_KEY=sk-abc123456789\r\n")
+            settings_mod.save_secret("WEATHER_KEY", "w-123456789")
+            self.assertIn(b"# Cl\xe9s de Mohid \xa3\n", path.read_bytes())  # byte for byte
+            self.assertEqual(load_env_file(path), {"OPENAI_API_KEY": "sk-abc123456789", "WEATHER_KEY": "w-123456789"})
+            settings_mod.save_secret("WEATHER_KEY", None)
+            self.assertEqual(path.read_bytes(), b"# Cl\xe9s de Mohid \xa3\nOPENAI_API_KEY=sk-abc123456789\n")
+
+
 if __name__ == "__main__":
     unittest.main()

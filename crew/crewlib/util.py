@@ -68,14 +68,14 @@ def loads(text: str | None, default=None):
         return default
 
 
-def atomic_write(path: Path, text: str) -> None:
+def atomic_write(path: Path, text: str, errors: str = "strict") -> None:
     """Write a file whole or not at all. Windows cannot replace a file another program has open for a moment (an
     antivirus scan of the file just written, another Crew window reading it), so that is tried again for about a
     second; the half-step file never stays behind."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", errors=errors) as fh:
             fh.write(text)
         for attempt in range(6):
             try:
