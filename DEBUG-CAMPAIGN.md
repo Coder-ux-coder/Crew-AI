@@ -988,6 +988,14 @@ fix (checked by running each against the code without the fix) and passes with i
   middle of the stream, and nothing more reached the screen until it reconnected · live events were encoded
   strictly, where every other answer already replaced such a half · written the same way as the answers ·
   test_a68_a_broken_character_does_not_cut_a_live_view (on the old code neither that event nor the next arrived).
+- The API fuzzer again (quick: 3,233 requests over every route, 532 s): no 500, no traceback, no hang. Its three
+  flags, explained: "data changed" twice was the test fake writing a conversation file for `claude auth status`
+  (the real program writes none; the fake now answers as it does, and those routes fuzz clean); "no answer" once
+  was a DELETE sent with a very large body, which that route does not read: Crew answered and closed the
+  connection (it speaks HTTP/1.0, one request per connection, so nothing is left for a next request) while the
+  fuzzer was still sending. The app sends no body with DELETE and only small ones elsewhere: no change.
+- The browser sweep again (120 screens, both sizes and themes, after F22): only the 404s of the two addresses it
+  opens on purpose; the Urdu title in the chats list reads from the right.
 - Looked at, no change (A62 and A64 were the first two's ids; left unused): the chat's saved details read back
   (written by Crew only, as JSON); the captures list racing a deletion (a moment, answered again at once); the sign-in window's command line on Windows (a path with
   a space works; one with brackets or & would not, which no install of Claude Code or Codex makes; by reading);
