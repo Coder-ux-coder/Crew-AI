@@ -251,7 +251,7 @@ def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float,
     log_path.parent.mkdir(parents=True, exist_ok=True)
     chunks: list[str] = []
     ok = True
-    bash = shutil.which("bash") if os.name != "nt" else None  # agents write bash; /bin/sh may be dash
+    bash = check_shell()
     for cmd in commands:
         output, code = _run_check(cmd, cwd, timeout_s, env, bash)
         if no_tests_yet(output, code):
@@ -264,6 +264,34 @@ def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float,
     text = "\n".join(chunks)
     log_path.write_text(text, encoding="utf-8")
     return CheckResult(ok, tail(text, 40, 3000), log_path)
+
+
+def check_shell(windows: bool | None = None) -> str | None:
+    """The bash the project's checks run in: the agents write them for bash (the team rules say so, and Claude Code runs
+    its own commands in bash). Elsewhere /bin/sh may be dash; on Windows, the bash that comes with Git. None: only the
+    system's own shell was found (cmd.exe on Windows)."""
+    if os.name == "nt" if windows is None else windows:
+        return git_bash()
+    return shutil.which("bash")
+
+
+def git_bash(git: str | None = "", env=None) -> str | None:
+    """Windows: the bash.exe of Git for Windows — the one Claude Code uses (CLAUDE_CODE_GIT_BASH_PATH), the one next to
+    git.exe, or where Git installs itself — never the bash.exe in System32, which starts Linux (WSL) rather than a
+    shell in the project's folder."""
+    env = os.environ if env is None else env
+    git = shutil.which("git") if git == "" else git
+    candidates = [Path(env["CLAUDE_CODE_GIT_BASH_PATH"])] if env.get("CLAUDE_CODE_GIT_BASH_PATH") else []
+    if git:  # …\Git\cmd\git.exe, …\Git\bin\git.exe or …\Git\mingw64\bin\git.exe
+        candidates += [folder / "bin" / "bash.exe" for folder in list(Path(git).parents)[:3]]
+    candidates += [Path(env[name]) / "Git" / "bin" / "bash.exe" for name in ("ProgramFiles", "ProgramW6432",
+                                                                              "ProgramFiles(x86)") if env.get(name)]
+    if env.get("LOCALAPPDATA"):
+        candidates.append(Path(env["LOCALAPPDATA"]) / "Programs" / "Git" / "bin" / "bash.exe")
+    for path in candidates:
+        if path.is_file() and not {p.lower() for p in path.parts} & {"system32", "sysnative"}:
+            return str(path)
+    return None
 
 
 def no_tests_yet(output: str, code: int) -> bool:

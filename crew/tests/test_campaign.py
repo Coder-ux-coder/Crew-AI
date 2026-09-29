@@ -2322,5 +2322,40 @@ class ToolServerTests(unittest.TestCase):
         self.assertEqual(app.got, [{"url": "example.com"}])
 
 
+class WindowsCheckShellTests(unittest.TestCase):
+    @staticmethod
+    def layout(*files: str) -> Path:
+        root = Path(tempfile.mkdtemp(prefix="crew-win-"))
+        for rel in files:
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b"")
+        return root
+
+    def test_c32_on_windows_the_checks_run_with_gits_bash(self):
+        """The agents are told the checks run with bash (Claude Code runs its own commands in the bash that comes with
+        Git), and the plan's own example is `test -s report.md`; on Windows the checks ran in cmd.exe instead, where
+        such a check can never pass, so every piece of work was sent back until the project stopped."""
+        root = self.layout("Program Files/Git/cmd/git.exe", "Program Files/Git/bin/bash.exe",
+                           "Program Files/Git/mingw64/bin/git.exe", "Windows/System32/bash.exe",
+                           "Users/Mohid Zeeshan/AppData/Local/Programs/Git/bin/bash.exe")
+        git_bash = str(root / "Program Files/Git/bin/bash.exe")
+        self.assertEqual(gitops.git_bash(str(root / "Program Files/Git/cmd/git.exe"), {}), git_bash)
+        self.assertEqual(gitops.git_bash(str(root / "Program Files/Git/mingw64/bin/git.exe"), {}), git_bash)
+        # Git not on PATH (the installer has not refreshed it): where Git for Windows installs itself
+        self.assertEqual(gitops.git_bash(None, {"ProgramFiles": str(root / "Program Files")}), git_bash)
+        per_user = str(root / "Users/Mohid Zeeshan/AppData/Local/Programs/Git/bin/bash.exe")
+        self.assertEqual(gitops.git_bash(None, {"LOCALAPPDATA": str(root / "Users/Mohid Zeeshan/AppData/Local")}),
+                         per_user)
+        # the path Claude Code itself is told to use comes first
+        self.assertEqual(gitops.git_bash(str(root / "Program Files/Git/cmd/git.exe"),
+                                         {"CLAUDE_CODE_GIT_BASH_PATH": per_user}), per_user)
+        # never System32's bash.exe: that one starts Linux (WSL), not the project's folder on Windows
+        self.assertIsNone(gitops.git_bash(None, {"CLAUDE_CODE_GIT_BASH_PATH": str(root / "Windows/System32/bash.exe")}))
+        self.assertIsNone(gitops.git_bash(None, {}))
+        with mock.patch.object(gitops, "git_bash", lambda *a, **k: git_bash):
+            self.assertEqual(gitops.check_shell(windows=True), git_bash)
+        self.assertEqual(gitops.check_shell(windows=False), shutil.which("bash"))
+
+
 if __name__ == "__main__":
     unittest.main()
