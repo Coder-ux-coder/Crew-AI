@@ -76,6 +76,18 @@ def listing() -> list[dict]:
     return out
 
 
+_ARG = re.compile(r"""(?:"[^"]*"?|'[^']*'?|[^\s"'])+""")
+_QUOTED = re.compile(r""""([^"]*)"?|'([^']*)'?""")
+
+
+def split_args(text: str) -> list[str]:
+    """A program's arguments typed on one line: separated by spaces, a part in quotes kept whole ("C:\\Users\\Mohid
+    Zeeshan\\Documents", as the guides show a folder with a space in it). Backslashes stay as they are: on Windows they
+    separate folders."""
+    return [_QUOTED.sub(lambda m: m.group(1) if m.group(1) is not None else m.group(2), part)
+            for part in _ARG.findall(text)]
+
+
 def add_mcp(name: str, kind: str, url: str = "", headers: dict | None = None, command: str = "",
             args: list[str] | None = None, env: dict | None = None, source: str = "you") -> dict:
     if not all(isinstance(x, str) for x in (name or "", kind or "", url or "", command or "")) \

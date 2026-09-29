@@ -2357,5 +2357,91 @@ class WindowsCheckShellTests(unittest.TestCase):
         self.assertEqual(gitops.check_shell(windows=False), shutil.which("bash"))
 
 
+class _GoneAway(io.RawIOBase):
+    """The answer's connection when the other side has already hung up (a closed tab, a phone that left the Wi-Fi)."""
+
+    def writable(self):
+        return True
+
+    def write(self, b):
+        raise ConnectionAbortedError(10053, "An established connection was aborted by the software in your host machine")
+
+
+class ServerRobustnessTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.update(ENV)
+        cls.s = AppServer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.s.stop()
+
+    def test_a60_a_pairing_link_or_cookie_with_an_odd_character_is_just_not_paired(self):
+        """A pairing link mangled on the way to the phone (a letter with an accent, as a keyboard may autocorrect),
+        or a cookie holding one, stopped Crew's answer with an error: the codes were compared in a way that cannot
+        handle such letters. It is simply a wrong code: the pairing help page, or "not paired"."""
+        s = self.s
+        status, _, body = s.request("GET", "/pair?t=%C3%A9t%C3%A9")
+        self.assertEqual(status, 200)
+        self.assertIn(b"Pair this device", body)
+        ips = s.app.lan_ips()
+        if not ips:
+            self.skipTest("no network address on this machine")
+        s.api("POST", "/api/phone-access", {"enabled": True})
+        self.addCleanup(s.api, "POST", "/api/phone-access", {"enabled": False})
+        status, _, _ = s.request("GET", "/api/overview", headers={"Cookie": "crew_token=\u00e9t\u00e9"}, host=ips[0])
+        self.assertEqual(status, 401)
+        status, _, body = s.request("GET", "/", headers={"Cookie": "crew_token=\u00e9t\u00e9"}, host=ips[0])
+        self.assertIn(b"Pair this device", body)
+
+    def test_a61_a_viewer_that_hangs_up_mid_answer_leaves_no_error_behind(self):
+        """Closing a tab or a phone's browser while Crew answers is normal. Each time, app.log got two error reports
+        (Crew even tried to send an error page down the closed connection), burying the ones that matter."""
+        handler = server.Handler.__new__(server.Handler)
+        handler.path, handler.command, handler.request_version = "/api/ping", "GET", "HTTP/1.1"
+        handler.requestline, handler.client_address = "GET /api/ping HTTP/1.1", ("127.0.0.1", 50000)
+        handler.headers = http.client.parse_headers(io.BytesIO(b"Host: localhost\r\n\r\n"))
+        handler.wfile, handler._head, handler.close_connection = _GoneAway(), False, False
+        err = io.StringIO()
+        with mock.patch.object(sys, "stderr", err):
+            handler.do_GET()  # nothing escapes
+        self.assertEqual(err.getvalue(), "")
+        self.assertTrue(handler.close_connection)
+        # the same when the viewer hangs up before asking anything (the server's own report of it)
+        for gone in (ConnectionResetError(104, "Connection reset by peer"), BrokenPipeError(32, "Broken pipe")):
+            try:
+                raise gone
+            except ConnectionError:
+                with mock.patch.object(sys, "stderr", err):
+                    self.s.httpd.handle_error(None, ("192.168.1.20", 50000))
+        self.assertEqual(err.getvalue(), "")
+        try:  # a real fault is still reported
+            raise RuntimeError("a real fault")
+        except RuntimeError:
+            with mock.patch.object(sys, "stderr", err):
+                self.s.httpd.handle_error(None, ("127.0.0.1", 50000))
+        self.assertIn("a real fault", err.getvalue())
+
+    def test_a63_a_quoted_argument_with_a_space_stays_whole(self):
+        """The owner's own folder has a space in it (C:\\Users\\Mohid Zeeshan). A connection given that folder,
+        typed on one line in quotes as the guides show, was cut in two at the space and could not start."""
+        from crewlib import connections as conn_mod
+
+        folder = r"C:\Users\Mohid Zeeshan\Documents"
+        s = self.s
+        s.api("POST", "/api/connections/mcp", {
+            "name": "files", "type": "stdio", "command": "npx",
+            "args": f'-y @modelcontextprotocol/server-filesystem "{folder}" --root=\'D:\\My Work\' plain'})
+        self.addCleanup(conn_mod.remove_mcp, "files")
+        self.assertEqual(conn_mod.load()["mcp"]["files"]["args"],
+                         ["-y", "@modelcontextprotocol/server-filesystem", folder, "--root=D:\\My Work", "plain"])
+        self.assertEqual(conn_mod.split_args(r"C:\tools\server.js  --port 8080 "),
+                         [r"C:\tools\server.js", "--port", "8080"])  # backslashes are folder separators
+        self.assertEqual(conn_mod.split_args('""'), [""])
+        self.assertEqual(conn_mod.split_args('"unclosed folder'), ["unclosed folder"])
+        self.assertEqual(conn_mod.split_args("  "), [])
+
+
 if __name__ == "__main__":
     unittest.main()

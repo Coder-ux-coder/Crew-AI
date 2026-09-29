@@ -389,7 +389,12 @@ class Handler(BaseHTTPRequestHandler):
             return True
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
         tok = cookie.get("crew_token")
-        return bool(tok and secrets.compare_digest(tok.value, self.app.pair_token))
+        return bool(tok and self._same_code(tok.value))
+
+    def _same_code(self, given: str) -> bool:
+        """Is this the pairing code? Compared as bytes: a code with an odd letter in it (a link autocorrected on
+        the way to the phone) is simply wrong, where comparing it as text stopped the answer with an error."""
+        return secrets.compare_digest(given.encode("utf-8", "replace"), self.app.pair_token.encode("utf-8", "replace"))
 
     def _json(self, obj, code: int = 200, headers: dict | None = None) -> None:
         # "replace": a broken character (half of a pair, read from a damaged file) must never cost the answer itself
@@ -502,6 +507,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self.static(path)
             return self._error(404, "Not found.")
+        except ConnectionError:  # the viewer hung up (a closed tab, a phone that left the Wi-Fi): no one to answer
+            self.close_connection = True
         except (ValueError, KeyError, phone_mod.PhoneError, browser_mod.BrowserUnavailable,
                 computer_mod.ComputerError) as exc:
             return self._error(400, str(exc))
@@ -577,7 +584,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def pair_landing(self) -> None:
         token = self.query.get("t", "")
-        if not secrets.compare_digest(token, self.app.pair_token):
+        if not self._same_code(token):
             return self._file(STATIC / "unpaired.html")
         self.send_response(302)
         self.send_header("Set-Cookie", f"crew_token={token}; Max-Age=31536000; Path=/; HttpOnly; SameSite=Strict")
@@ -1004,7 +1011,7 @@ class Handler(BaseHTTPRequestHandler):
             headers = dict(h.split(":", 1) for h in headers.splitlines() if ":" in h)
         args = b.get("args") or []
         if isinstance(args, str):
-            args = args.split()
+            args = conn_mod.split_args(args)
         conn_mod.add_mcp(b.get("name", ""), b.get("type", "http"), url=b.get("url", ""), headers=headers,
                          command=b.get("command", ""), args=args, env=b.get("env") or {})
         return self._json({"mcp": conn_mod.listing()})
@@ -1293,6 +1300,11 @@ class CrewServer(ThreadingHTTPServer):
         if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return  # the viewer hung up, which is normal: app.log keeps the faults that matter
+        super().handle_error(request, client_address)
 
 
 def _log_when_windowless() -> None:
