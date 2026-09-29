@@ -708,6 +708,14 @@ Round 6 (the team engine, line by line: orchestrator.py read in full):
   back to fix them again and again, with nothing to end it (no task was open, so the stall guard did not
   look) · no limit · after two rounds of fixes, an honest stop with the report (a resume gets fresh
   attempts) · test_c22_final_checks_that_keep_failing_end_with_an_honest_stop.
+- C23 · P2 · cli.cmd_resume · a project the owner limited to some subscriptions: once its Claude subscription
+  was removed in Settings, Continue failed ("choose at least one Claude subscription") and in the app seemed
+  to do nothing · the remaining choice was applied even when it could not work · the chosen subscriptions
+  still in the settings are used when they can run a team; otherwise all of the owner's, and it says so ·
+  test_c23_a_project_whose_chosen_subscriptions_were_removed_still_continues.
+- Read, no change needed: tools.py (roles are enforced where tools are registered; any tool failure is
+  answered to the agent, never crashes it), store.py, agents.py's seats (stop, interrupt, send to a dead
+  process, Windows process trees).
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 

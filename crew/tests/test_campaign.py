@@ -342,6 +342,28 @@ class StuckProjectTests(unittest.TestCase):
             self.assertIn(orch2.store.seat(member)["account"], ("claude-1", "claude-2"))
 
 
+class ResumeChoiceTests(unittest.TestCase):
+    def test_c23_a_project_whose_chosen_subscriptions_were_removed_still_continues(self):
+        """A project the owner limited to some subscriptions: when its Claude subscription was later removed in
+        Settings, Continue failed ("choose at least one Claude subscription") and, in the app, seemed to do
+        nothing."""
+        with TempHome() as home:
+            (home / "crew.toml").write_text('[[account]]\nname = "claude-1"\nvendor = "claude"\n\n'
+                                            '[[account]]\nname = "codex-1"\nvendor = "codex"\n', encoding="utf-8")
+            run_dir = cli.runs_dir() / "20260929-100000-page"
+            run_dir.mkdir()
+            st = Store(run_dir / "team.db")
+            st.set("accounts_chosen", ["claude-gone", "codex-1"])
+            st.set("phase", "stopped")
+            st.set("repo", str(home))
+            st.close()
+            ran = []
+            args = types.SimpleNamespace(run=run_dir.name, config=str(home / "crew.toml"), no_web=True, headless=True)
+            with mock.patch.object(cli, "_run", lambda cfg, *a, **k: ran.append(cfg) or 0):
+                self.assertEqual(cli.cmd_resume(args), 0)
+            self.assertEqual(sorted(a.name for a in ran[0].accounts), ["claude-1", "codex-1"])
+
+
 class SeatTests(unittest.TestCase):
     def test_c5_a_codex_turn_that_cannot_run_still_ends(self):
         with TempHome() as home:

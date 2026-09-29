@@ -186,8 +186,12 @@ def cmd_resume(args) -> int:
                  "continue. Follow it with: crew chat -f")
     store.set("stop_requested", None)
     cfg = config_mod.load(args.config)
-    if store.get("accounts_chosen"):  # the project keeps the subscriptions the owner chose for it
-        cfg.restrict([a for a in store.get("accounts_chosen") if any(x.name == a for x in cfg.accounts)])
+    chosen = [a for a in store.get("accounts_chosen") or [] if any(x.name == a for x in cfg.accounts)]
+    if chosen:  # the project keeps the subscriptions the owner chose for it, those still in the settings
+        try:
+            cfg.restrict(chosen)
+        except config_mod.ConfigError:  # the Claude one among them was removed since: all of them, rather than none
+            print("The subscriptions chosen for this project are no longer all there; it continues on all of yours.")
     repo = Path(store.get("repo"))
     return _run(cfg, run_dir, repo, store.get("goal", ""), run_dir.name, resume=True, open_web=not args.no_web,
                 headless=args.headless)
