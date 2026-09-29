@@ -108,6 +108,13 @@ class Orchestrator:
         names = {a.name for a in self.cfg.accounts}
         return [a for a in self.store.accounts() if a["name"] in names]
 
+    def modes(self) -> dict[str, str]:
+        """Each subscription's mode as of now. The recorded mode is only brought up to date once per pass of the main
+        loop, so a limit reached a moment ago (a reviewer's, the CEO's) would not count yet, and the next reviewer
+        would be sent straight back to the subscription that just ran out."""
+        t = now()
+        return {a["name"]: scheduler.mode_of(a, t) for a in self.accounts()}
+
     @property
     def lead_name(self) -> str:
         return self.store.get("lead") or self.cfg.lead.name
@@ -400,7 +407,7 @@ class Orchestrator:
 
     def workhorse_seats(self, modes: dict[str, str] | None = None) -> list[SeatRT]:
         """GPT-6 Sol seats that can take work now (not down, not benched, account not at its limit)."""
-        modes = modes if modes is not None else {a["name"]: a.get("mode") for a in self.accounts()}
+        modes = modes if modes is not None else self.modes()
         return [rt for rt in self.seats.values() if rt.spec.vendor == "codex" and not rt.down and not rt.benched
                 and modes.get(rt.account.name) != "parked"]
 
@@ -471,7 +478,7 @@ class Orchestrator:
     def _solo_rival(self, builder: SeatRT) -> SeatRT | None:
         """The other tier's builder for a one-builder head-to-head (never the lead, who verifies the result)."""
         accounts = {a["name"]: a for a in self.accounts()}
-        modes = {a["name"]: a.get("mode") for a in self.accounts()}
+        modes = self.modes()
         pool = [rt for rt in self.seats.values() if not rt.down and rt.name != self.lead_name
                 and rt.spec.vendor != builder.spec.vendor and modes.get(rt.account.name) != "parked"]
         return min(pool, key=lambda r: scheduler._burn(accounts.get(r.account.name, {}))) if pool else None
@@ -836,7 +843,7 @@ class Orchestrator:
                 self.failover(rt, reason="account at its limit")
 
     def failover(self, rt: SeatRT, reason: str) -> None:
-        modes = {a["name"]: a.get("mode") for a in self.accounts()}
+        modes = self.modes()
         same_vendor = [a for a in self.cfg.accounts_for(rt.spec.vendor)
                        if a.name != rt.account.name and modes.get(a.name) != "parked"]
         session = (self.store.seat(rt.name) or {}).get("session_id")
@@ -950,7 +957,7 @@ class Orchestrator:
         to, raw, text = m.get("recipient"), m["text"], m["text"]
         name = f"writer-{m['id']}"
         try:
-            modes = {a["name"]: a.get("mode") for a in self.accounts()}
+            modes = self.modes()
             row = scheduler.pick_account([a for a in self.accounts() if a["vendor"] == "claude"], modes)
             if row is not None:
                 account = self.cfg.account(row["name"])
@@ -990,7 +997,7 @@ class Orchestrator:
 
     def deliver_pending(self) -> None:
         """Send idle seats their instructions plus the chat they missed (only when there is a reason)."""
-        modes = {a["name"]: a.get("mode") for a in self.accounts()}
+        modes = self.modes()
         for rt in self.seats.values():
             if rt.runner is None and not rt.down and rt.cooldown_until <= now() and \
                     modes.get(rt.account.name) != "parked" and self.phase() not in ("done", "stopped", "failed"):
@@ -1393,7 +1400,7 @@ class Orchestrator:
 
     def run_reviewer(self, task: dict, check_log: str, scan_notes: str = "") -> RunResult:
         """A fresh manager (Opus 5.5) checks the task, on another subscription than its author's when possible."""
-        modes = {a["name"]: a.get("mode") for a in self.accounts()}
+        modes = self.modes()
         owner_acc = self.seats[task["owner"]].account.name if task["owner"] in self.seats else None
         managers = [a for a in self.accounts() if a["vendor"] == "claude"]
         acc_row = scheduler.pick_account(managers, modes, avoid=owner_acc)
@@ -1530,7 +1537,7 @@ class Orchestrator:
 
     def run_judge(self, orig: dict, twin: dict, prompt: str, workdir: Path) -> RunResult:
         """A fresh manager (Opus 5.5) judges the two versions blind, on another subscription than their authors'."""
-        modes = {a["name"]: a.get("mode") for a in self.accounts()}
+        modes = self.modes()
         authors = {self.seats[t["owner"]].account.name for t in (orig, twin) if t.get("owner") in self.seats}
         managers = [a for a in self.accounts() if a["vendor"] == "claude"]
         avoid = next((a for a in authors if any(m["name"] == a for m in managers)), None)
@@ -1926,7 +1933,7 @@ class Orchestrator:
         """A CEO call (GPT-6 Astra by default) at the CEO's effort. If that model cannot run — no ChatGPT
         subscription, a usage limit, an error, or no usable answer — the backup (Fable 5.1) and then the
         manager (Opus 5.5) take over at the same effort."""
-        modes = {a["name"]: a.get("mode") for a in self.accounts()}
+        modes = self.modes()
         effort = effort or (self.cfg.models.effort_ceo if self.cfg.models.effort_ceo != "auto" else "max")
         res = RunResult(is_error=True, text="no subscription available for the CEO")
         for model in self.ceo_chain():

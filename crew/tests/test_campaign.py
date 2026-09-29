@@ -242,6 +242,22 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("final checks still fail", said[-1])
             st.close()
 
+    def test_c24_a_subscription_that_just_reached_its_limit_is_not_chosen_again(self):
+        """A reviewer ran out on claude-1 a moment ago: its recorded mode still says "normal" until the main loop's
+        next pass, but the next reviewer must go to claude-2 (even though the author works there)."""
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            st.upsert_account("claude-1", vendor="claude", mode="normal", parked_until=int(time.time()) + 600)
+            st.upsert_account("claude-2", vendor="claude", mode="normal")
+            fake = types.SimpleNamespace(store=st, cfg=types.SimpleNamespace(
+                accounts=[Account("claude-1", "claude"), Account("claude-2", "claude")]))
+            fake.accounts = lambda: orchestrator.Orchestrator.accounts(fake)
+            modes = orchestrator.Orchestrator.modes(fake)
+            self.assertEqual(modes, {"claude-1": "parked", "claude-2": "normal"})
+            pick = orchestrator.scheduler.pick_account(fake.accounts(), modes, avoid="claude-2")
+            self.assertEqual(pick["name"], "claude-2")
+            st.close()
+
     def test_a4_the_heartbeat_says_whether_a_project_runs(self):
         with TempHome() as home:
             st = Store(home / "team.db")
