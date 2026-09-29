@@ -1,5 +1,34 @@
 # Handoff to Codex: the Crew debugging campaign
 
+## Update, 2026-09-29 (read this first)
+
+This file was written at the end of the third continuation. Since then (fourth continuation, Claude):
+
+- **Branch:** everything is on `claude/jolly-wright-lz430a`, which carries all of `claude/exciting-heisenberg-6w6gge`
+  and `claude/funny-turing-8ra205` (fast-forward) plus the work below. The cloud checks
+  (`.github/workflows/campaign.yml`) now also run on pushes to this branch.
+- **The owner's model change:** Sonnet 5.5 (`claude-sonnet-5-5`) replaces GPT-6 Sol as the team's **workhorse**.
+  Opus 5.5 stays the manager, GPT-6 Astra the CEO (Fable 5.1 its backup). Seats now carry their tier
+  (`SeatSpec.tier`, seats table column `tier`, `tiers.seat_tier(seat)`); workhorse seats are Claude seats running
+  `models.workhorse`, spread over the Claude subscriptions; ChatGPT subscriptions get no seats (they run the CEO and
+  ChatGPT chats). `models.codex` is gone (an old file still loads); settings version 4 moves the owner's file once
+  (Sonnet unbanned and allowed, `gpt-6-sol` banned, ChatGPT chats' default now GPT-6 Astra, Sol chats and
+  workflows moved to Astra). See DEBUG-CAMPAIGN.md section 12, "Fourth continuation".
+- **Fixed since (each with a test that fails before the fix):** C24–C30 (team engine: a reviewer sent back to a
+  subscription that just ran out; a task held for a free seat that cannot take it; the project's own commit hooks
+  refusing Crew's merges; a file held open on Windows; Notepad's byte-order mark; the CEO's effort record mixing
+  models; crew.cmd's encoding) and F10–F19 (front end: **F10 was a P1 script-injection hole in the Markdown
+  renderer**; F12 a double submission that started one team per key press; forms that lost what was typed; …).
+- **Rounds:** 6 (team engine), 8 (front end) and 10 (Windows, by reading) are done. Next: a full clean round,
+  then the release — **only with the owner's go-ahead** (2.3.1, merge into `Crew-AI`, rehearse the updater).
+- **Tests:** the last complete run was 216 OK (after C29); every later fix's own test and the related browser tests
+  pass. A full run after F10–F19 was started and interrupted: run it first. The browser tests need the Python
+  `playwright` package (`pip install playwright`; Chromium is at /opt/pw-browsers).
+- **Open question:** a subscription at a model's own weekly limit (an Opus-only cap, if a plan has one) is parked
+  whole, which now also pauses the Sonnet workhorse seats on it. Needs a real limit event to decide.
+
+---
+
 This file hands over an unfinished job. It tells you what the owner asked for, what has been done and verified,
 how I reasoned, and exactly what to do next. Read it once end to end, then read `DEBUG-CAMPAIGN.md`
 (same folder). That file is the owner's brief, the campaign state and the bug ledger. It is the source of

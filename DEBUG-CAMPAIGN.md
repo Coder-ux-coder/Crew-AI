@@ -36,8 +36,14 @@ never copy it onto the owner's computer.)
   code; the clicking sweep finished clean.
 - Round 6 (the team engine, line by line) done: every crewlib file read; C24–C29 fixed, each with a test that
   fails on the code before it (section 12). Round 10 begun: C30 (crew.cmd, by reading).
-- Next: round 8 (front end line by line), the rest of round 10 (Windows by reading), the rest of the checklists
-  in sections 7–9, then a clean round. Keep this section, the ledger and section 11 current after every step.
+- Round 8 (front end, line by line) done: every script in crewapp/static read; F10–F19 fixed, each with a Chromium
+  test that fails on the code before it; the scorecard labels a replaced model as the earlier one. Round 10
+  (Windows, by reading) done: launcher.py, the installer and uninstaller, server.main, __main__.py, crew.cmd (C30).
+- Last full suite: 216 tests OK (after C25–C29). After F10–F19 each fix's own test and the related browser tests
+  passed; a full run was started and interrupted before it finished — run it first (section 8 of CODEX-HANDOFF).
+  The cloud checks run on every push to this branch (run 16, the model change and round 6: success).
+- Next: a full clean round (rounds 11+); the open question on per-model weekly limits (section 12); release 2.3.1
+  only with the owner's go-ahead. Keep this section, the ledger and section 11 current after every step.
 - Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
   taskkill, a file held open during a conversation copy or a database set-aside, the message boxes.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
@@ -424,6 +430,16 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   just run out), C25 (a task held for a free seat that could not take it), C26 (the project's own commit hooks
   refusing Crew's merges), C27 (a file held open on Windows), C28 (Notepad's byte-order mark), C29 (the CEO's
   effort record mixing models). Left: the open question on per-model weekly limits.
+- Round 8 (the front end, line by line) — done 2026-09-29. Checked: ui.js, app.js, chat.js, projects.js,
+  settings.js, workflows.js, live.js, voice.js, library.js, skills.js, connections.js, usage.js, scorecard.js,
+  devices.js, misc.js, against section 6's front-end classes. Found and fixed: F10 (script injection through
+  formatted text, P1), F11 (a browser that keeps no site data), F12 (double submission: three teams from one
+  request), F13 (two polling loops), F14 and F19 (a refused form lost what was typed), F15 (silent refusals), F16
+  (a dictated message coming back), F17 (four clicks for a double-click on the computer), F18 (the Library's
+  tabs). Left: nothing from this round.
+- Round 10 (Windows, by reading) — done 2026-09-29. Read: launcher.py, install-windows.ps1, uninstall-windows.ps1,
+  server.main and its Windows helpers, __main__.py, crew.cmd. Found and fixed: C30. Everything in it is verified
+  by reading only (no Windows here).
 
 ---------------------------------------------------------------------------------------------------------------
 
@@ -820,6 +836,49 @@ Round 6, continued:
   by reading only (no Windows here).
 - Open question (needs a real limit event): a subscription at a model's own weekly limit (an Opus-only cap, if a
   plan has one) is parked whole, which now also pauses the Sonnet workhorse seats on it.
+
+Round 8, the front end (each test drives the real app in Chromium and fails on the code before its fix):
+
+- F10 · P1 · ui.markdown (every answer, report, plan, skill and Markdown file shown in Crew) · a link written
+  inside a link, or inside an image's description — "[x](https://a.com/?(https://b.com/onmouseover=…//)" — broke
+  out of its attribute and the rest became an event handler: script ran in Crew's own page when the owner pointed
+  at it or it took focus, with all of Crew's powers (chats, settings, the computer and the phone). An answer can be
+  steered by a web page the assistant reads · the address-to-link step ran over the tags made just before it ·
+  every tag made is set aside until the end, so the later steps only ever see text ·
+  test_f10_formatted_text_cannot_run_script_in_crew.
+- F11 · P2 · app.js · a browser set not to let sites keep data (Chrome and Edge have the setting) throws on every
+  use of its storage: one unguarded read stopped the whole app, and the page stayed blank · guarded like the
+  others · test_f11_crew_opens_in_a_browser_that_keeps_no_site_data.
+- F12 · P1 · chat.js Composer.submit · Enter pressed twice (or the send button clicked too) before Crew answered:
+  one team started per press on the same request (three teams from Enter, Enter, click), one chat made per press;
+  with automatic prompt writing, the second press sent the raw words · the composer stayed usable while its send
+  was on its way · one send at a time; "one moment" while the prompt writer works ·
+  test_f12_a_message_or_a_project_is_sent_once.
+- F13 · P3 · projects.js · a message sent (or Continue pressed) while the page was checking on the team started a
+  second round of checks beside the first, for as long as the page was open (10 checks in 7.6 s instead of 5) ·
+  each round has a number; a newer one retires the older · test_f13_a_project_page_checks_on_the_team_once_at_a_time.
+- F14 · P2 · workflows.js · a refused workflow (a schedule Crew cannot use, a subscription removed, Crew not
+  answering): the form had closed before saving, so everything typed was gone · the same form opens again with
+  everything in it · test_f14_a_refused_workflow_keeps_what_the_owner_wrote.
+- F15 · P3 · settings.js · a number out of range (500 hours) was dropped without a word; a failed "Check now" left
+  its button off until a reload · it says which numbers are allowed; the button can be pressed again ·
+  test_f15_settings_say_when_a_number_is_refused_and_a_failed_check_can_be_retried.
+- F16 · P2 · voice.dictate · sending stops the dictation, whose end arrived a moment later and wrote the heard
+  words back into the box the message had just left · the end writes only if the box still holds what dictation
+  last put there · test_f16_a_dictated_message_does_not_come_back_after_it_is_sent.
+- F17 · P2 · live.js LiveComputer · a double-click on the live screen of the owner's computer was sent as two
+  clicks (which Windows already makes a double-click) and then a double-click: four clicks, a file opened twice ·
+  the extra double-click is gone · test_f17_a_double_click_on_the_computer_is_one_double_click (the page, in
+  Chromium; Windows composing the double-click, by reading).
+- F18 · P3 · library.js · switching tabs while the other was loading drew whichever list came last (the files list
+  under Captures) · each list is drawn only if its tab is still chosen · test_f18_the_library_shows_the_tab_that_is_chosen.
+- F19 · P2 · connections.js, skills.js · as F14: a refused connected service (a name with a space) lost the address
+  and the pasted key; a skill that could not be saved lost its whole procedure; a refused key had to be pasted
+  again · the forms open again with everything in them · test_f19_a_refused_connection_or_skill_keeps_what_the_owner_wrote.
+- With the model change: the scorecard (180 days of record) showed GPT-6 Sol and Sonnet 5.5 both as "Workhorse";
+  Sol's tile now says "Earlier workhorse" (its record is kept) · test_a_model_no_longer_in_its_tier_is_labelled_as_earlier.
+- Read, no change needed: devices.js, misc.js, usage.js; index.html's look script (guarded). The nested-dialog
+  Escape question: no dialog opens another (the capture viewer checks for one).
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
