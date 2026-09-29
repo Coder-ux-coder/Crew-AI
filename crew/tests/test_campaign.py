@@ -303,6 +303,22 @@ class StuckProjectTests(unittest.TestCase):
             self.assertTrue(st.events("escalation"), chat)  # the CEO was asked to rule before the stop
             self.assertTrue((run_dir / "REPORT.md").is_file())
 
+    def test_c21_a_project_resumes_after_a_subscription_it_used_was_removed(self):
+        """A seat moved to another subscription at a limit; the owner later removed that subscription in Settings.
+        Continuing the project failed at once ("unknown account")."""
+        with mock.patch.dict(os.environ):
+            cfg, run_dir, repo, rid = make_run({"tasks": 2}, [("claude-1", "claude"), ("claude-2", "claude")])
+            orch = run_orch(cfg, run_dir, repo, rid,
+                            stop_after=lambda st: any(t["status"] == "merged" for t in st.tasks()))
+            self.assertEqual(orch.store.get("phase"), "stopped")
+            member = next(s["name"] for s in orch.store.seats() if s["role"] != "lead")
+            orch.store.update_seat(member, account="claude-gone", session_id="0000-gone")  # since removed
+            orch.store.upsert_account("claude-gone", vendor="claude", util_5h=0.0, util_7d=0.0)  # the freest one
+            orch.store.close()
+            orch2 = run_orch(cfg, run_dir, repo, rid, resume=True)
+            self.assertEqual(orch2.store.get("phase"), "done", dump_chat(orch2.store))
+            self.assertIn(orch2.store.seat(member)["account"], ("claude-1", "claude-2"))
+
 
 class SeatTests(unittest.TestCase):
     def test_c5_a_codex_turn_that_cannot_run_still_ends(self):
