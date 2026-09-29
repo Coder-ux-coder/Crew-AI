@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - claude/exciting-heisenberg-6w6gge
+      - claude/jolly-wright-lz430a
 
 permissions:
   contents: read

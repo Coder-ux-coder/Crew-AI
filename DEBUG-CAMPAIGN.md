@@ -34,13 +34,10 @@ never copy it onto the owner's computer.)
 - The clicking sweep finished: 120 screens, 786 clicks, nothing new (every flag explained, section 12).
 - Rounds 3, 4, 5, 7, 9 partly done (section 11): A55–A58, F8, F9, each with a test that fails on the old
   code; the clicking sweep finished clean.
-- Round 6 in progress: orchestrator.py, tools.py, store.py, agents.py's seats (third continuation);
-  scheduler.py, gitops.py, hook.py, quality.py, mcp_server.py (fourth). Candidates being proved: C25
-  (scheduler: a task suggested to an idle seat that cannot take it waits for ever), C26 (gitops: merges run
-  the project's own commit hooks).
-- Next: finish round 6 (lessons, scorecard, usage, util, connections, claude_cli, web, cli, prompts), round 8
-  (front end line by line), round 10 (Windows by reading), the rest of the checklists in sections 7–9, then a
-  clean round. Keep this section, the ledger and section 11 current after every step.
+- Round 6 (the team engine, line by line) done: every crewlib file read; C24–C29 fixed, each with a test that
+  fails on the code before it (section 12). Round 10 begun: C30 (crew.cmd, by reading).
+- Next: round 8 (front end line by line), the rest of round 10 (Windows by reading), the rest of the checklists
+  in sections 7–9, then a clean round. Keep this section, the ledger and section 11 current after every step.
 - Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
   taskkill, a file held open during a conversation copy or a database set-aside, the message boxes.
 - Release remains unapproved: do not modify `crew/VERSION.json`, merge into `Crew-AI`, or release.
@@ -420,6 +417,13 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   captures in 26 ms. Round 9: A52–A54, lessons at 20,000 (47 ms), a 3,000-message chat (33 ms from the
   server; F9 for the page). Left: round 6 (the team engine line by line), round 8 (the front end line by
   line), round 10 (Windows paths by reading), and the rest of rounds 3–9's checklists; then a clean round.
+- Round 6 (the team engine, line by line) — done 2026-09-29 (third and fourth continuations). Checked: every
+  file in crewlib, against sections 6 and 7.2/7.5; the engine end to end with the fakes after the owner's model
+  change (every team scenario now runs with Sonnet 5.5 workhorse seats). Found and fixed: C20–C23 (limits,
+  removed subscriptions, final checks that keep failing), C24 (a reviewer sent back to a subscription that had
+  just run out), C25 (a task held for a free seat that could not take it), C26 (the project's own commit hooks
+  refusing Crew's merges), C27 (a file held open on Windows), C28 (Notepad's byte-order mark), C29 (the CEO's
+  effort record mixing models). Left: the open question on per-model weekly limits.
 
 ---------------------------------------------------------------------------------------------------------------
 
@@ -768,6 +772,54 @@ Round 6, continued:
   Orchestrator.modes() works the mode out as of now (scheduler.mode_of, from parked_until and usage) for every
   choice · test_c24_a_subscription_that_just_reached_its_limit_is_not_chosen_again, and
   test_a_review_at_a_usage_limit_moves_on_or_waits (end to end; fails with the old choice patched back in).
+
+- C25 · P2 · scheduler.choose_task, orchestrator.assign_work · the lead suggested a seat for a task, but that seat's
+  subscription was nearly used up (weekly 92% or more, or almost none of the 5-hour window left), so it takes
+  only small or light work for now: it never took the task, and every other seat left the task to it because it
+  was free. The task waited until that subscription recovered (days, for a weekly limit) or the stall guard
+  stopped the project, while other seats sat idle · "the suggested seat is free, so it will take it" was assumed
+  without asking whether it could · a free suggested seat that cannot take its task now (its tier, or no room on
+  its subscription: scheduler.can_take) no longer holds it; anyone who can takes it ·
+  test_c25_a_task_its_suggested_seat_cannot_take_goes_to_another.
+- C26 · P2 · gitops.merge_into, gitops.revert_last_merge, orchestrator._sync_lead_to_integration · a project with
+  its own commit hooks (commitlint accepts only "feat: …", "fix: …"; a pre-commit linter): Crew's merge message
+  "crew: task #3 …" was refused on every attempt, so the task could never be merged; and a merge that broke the
+  checks could not be undone (git revert ran the hook too), leaving the broken work in the team's result · Crew's
+  own commits skipped the hooks, its merges and reverts did not · merges skip the project's hooks (--no-verify;
+  the team's checks run after the merge anyway); the revert is made without committing and committed separately
+  with --no-verify. The delivery into the owner's own branch still honours the owner's hooks (it is the owner's
+  branch; if they refuse, the result stays on its branch and the report says where) ·
+  test_c26_the_projects_own_commit_hooks_do_not_stop_crews_merges.
+- C27 · P3 · util.atomic_write (every settings, keys, connections and state file) · Windows cannot replace a file
+  another program has open for a moment (an antivirus scan of the file just written, another Crew window reading
+  it): the save failed at once, and its half-step file (.crew.toml.xxxx) stayed in the Crew folder · one attempt,
+  no clean-up · tried again for about a second; the half-step file is always removed ·
+  test_c27_a_file_held_open_for_a_moment_is_still_saved (simulated; Windows itself by reading).
+- C28 · P2 · config.load, settings._raw, util.load_env_file, settings.save_secret · crew.toml or secrets.env edited
+  by hand in Notepad (Windows 10 before 1903 saves UTF-8 with a byte-order mark): the settings file was set aside
+  as damaged and the defaults used (the owner's choices seemed lost), and the first key in secrets.env was silently
+  ignored · the mark was read as part of the text · read with utf-8-sig (the mark is skipped); a character that is
+  not UTF-8 in secrets.env no longer stops the rest being read · test_c28_a_settings_or_keys_file_saved_by_
+  windows_notepad_is_read.
+- C29 · P2 · lessons.effort_stats, render_for_ceo, derive_ceo_lessons; server /api/lessons · found by the model
+  change: the CEO's effort record (which teaches it how hard each tier should think) was kept per tier, so GPT-6
+  Sol's results were shown to the CEO as the workhorse's, now Sonnet 5.5, and lessons worked out from them named
+  Sonnet 5.5 · grouped by tier alone, although every record names its model · the record counts each tier's model
+  now (the manager's also includes the records from before models were written down); nothing is deleted, and a
+  model that comes back finds its record again; Settings → Lessons learned shows the same · test_c29_the_effort_
+  record_is_each_models_own.
+- Read, no change needed: scheduler.py (apart from C25), gitops.py (apart from C26), hook.py, quality.py (notes:
+  a file whose name git quotes, such as an Urdu name, is checked for secrets but not for risky lines; a very large
+  change is read whole before its first 50,000 added lines are scanned), mcp_server.py, usage.py, claude_cli.py,
+  connections.py, scorecard.py (per model already), web.py, cli.py, prompts.py (its tier guide names the models as
+  the owner set them; it does not follow a later change of model in Settings).
+- C30 · P3 · crew.cmd (round 10, Windows) · started from a terminal, Crew printed with the Windows code page:
+  `crew chat` or `crew report` sending "✔" or Urdu into a file or a pipe (not the console window, which Python
+  writes to directly) stopped with an encoding error on a Windows set to an ANSI code page · no UTF-8 mode · the
+  launcher starts Python with -X utf8, as the app's own runs already do; its CRLF line endings kept · verified
+  by reading only (no Windows here).
+- Open question (needs a real limit event): a subscription at a model's own weekly limit (an Opus-only cap, if a
+  plan has one) is parked whole, which now also pauses the Sonnet workhorse seats on it.
 
 ### Proof that the earlier tests catch their bugs (run in this container, 2026-09-28)
 
