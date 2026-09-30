@@ -89,10 +89,13 @@ class App:
                 if info.get("available"):
                     hub.publish("app", "update", info)
 
+        def devices():
+            launcher.allow_devices(settings.load()["app"].get("allow_devices") is not False, self.port)
+
         def work():
             for name, step in (("claude update", claude_cli.update_if_stale), ("icons", launcher.heal_shortcuts),
-                               ("icon cache", refresh_windows_icons), ("Anthropic's skills", skills_once),
-                               ("update check", check_for_update)):
+                               ("icon cache", refresh_windows_icons), ("microphone", devices),
+                               ("Anthropic's skills", skills_once), ("update check", check_for_update)):
                 try:
                     step()
                 except Exception as exc:  # noqa: BLE001 — upkeep must never stop Crew, nor the steps after it
@@ -1098,6 +1101,21 @@ class Handler(BaseHTTPRequestHandler):
         enabled = bool(self._body().get("enabled"))
         message = set_start_with_windows(enabled)
         settings.save({"app": {"start_with_windows": enabled}})
+        return self._json({"ok": True, "message": message})
+
+    @route("POST", "/api/devices")
+    def api_devices(self):
+        """The owner's choice: the microphone and pasting work in Crew's window without the browser asking."""
+        if not self._loopback():
+            return self._error(403, "Change this on the computer running Crew.")
+        enabled = bool(self._body().get("enabled"))
+        settings.save({"app": {"allow_devices": enabled}})
+        if os.name != "nt":
+            message = "Your browser asks once; choose Allow and it remembers."
+        else:
+            launcher.allow_devices(enabled, self.app.port)
+            message = ("The microphone and pasting work without asking once Edge or Chrome is restarted." if enabled
+                       else "Edge and Chrome will ask again before Crew uses the microphone or pastes.")
         return self._json({"ok": True, "message": message})
 
     @route("GET", "/api/lessons")

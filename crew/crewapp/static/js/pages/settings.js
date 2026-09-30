@@ -142,6 +142,9 @@ const RENDER = {
         row('Start Crew with Windows', 'Keeps Crew ready — and scheduled workflows running — without opening it yourself', toggle(!!app.start_with_windows, async (v) => {
           try { const r = await api('/api/startup', { method: 'POST', body: { enabled: v } }); toast(r.message); app.start_with_windows = v; } catch (e) { fail(e); }
         })),
+        row('Microphone and paste without asking', 'Edge and Chrome allow them for Crew’s own window only; pages the team builds still have to ask. The browser’s settings then say it is “managed”.', toggle(app.allow_devices !== false, async (v) => {
+          try { const r = await api('/api/devices', { method: 'POST', body: { enabled: v } }); toast(r.message); app.allow_devices = v; } catch (e) { fail(e); }
+        })),
         row('Crew’s folder', 'Your chats, projects, captures, settings and keys live here', btn('Open', () => api('/api/open-home', { method: 'POST', body: {} }).catch(fail), { ic: 'folder', cls: 'sm' }))) : null,
     ].filter(Boolean);
   },

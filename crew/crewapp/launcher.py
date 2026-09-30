@@ -10,6 +10,7 @@ written to ~/.crew/app.log, so a problem can always be traced.
   open_window()      Crew's own window (Edge or Chrome app mode), else the default browser, else a message
   start_detached()   from a terminal on Windows: Crew runs on its own, so closing the terminal never stops it
   heal_shortcuts()   on Windows: every Crew icon starts this copy of Crew with this Python
+  allow_devices()    on Windows: Edge and Chrome let Crew's own window use the microphone and paste without asking
 """
 
 from __future__ import annotations
@@ -351,3 +352,68 @@ def heal_shortcuts() -> list[str]:
     for f in fixed:
         log(f"icons: {f} now starts {ROOT} with {target}")
     return fixed
+
+
+BROWSER_POLICIES = (r"Software\Policies\Microsoft\Edge", r"Software\Policies\Google\Chrome")
+DEVICE_LISTS = ("AudioCaptureAllowedUrls", "ClipboardAllowedForUrls")  # the microphone; pasting into a live view
+
+
+def crew_addresses(port: int = 8765) -> list[str]:
+    """Crew's own addresses on this computer: every port it may run on, by name and by number."""
+    return [f"http://{host}:{p}" for p in sorted({port, *range(8765, 8775)}) for host in ("localhost", "127.0.0.1")]
+
+
+def device_list(current: list[str], ours: list[str], enabled: bool) -> list[str]:
+    """A browser's allow-list with Crew's addresses added (enabled) or taken out; the owner's own entries stay."""
+    if enabled:
+        return current + [url for url in ours if url not in current]
+    return [url for url in current if url not in ours]
+
+
+def allow_devices(enabled: bool = True, port: int = 8765) -> list[str]:
+    """Windows: Edge and Chrome let Crew's own window use the microphone (voice typing, spoken conversations) and
+    paste from the clipboard without asking each time, through the browsers' own allow-lists for this Windows user.
+    Only Crew's addresses on this computer are listed: pages the team builds open sandboxed, without an address of
+    their own, so they never share it. Off: Crew's addresses are taken out again. Returns what changed."""
+    if os.name != "nt":
+        return []
+    import winreg
+
+    ours, changed = crew_addresses(port), []
+    for base in BROWSER_POLICIES:
+        for name in DEVICE_LISTS:
+            path = f"{base}\\{name}"
+            opener = winreg.CreateKeyEx if enabled else winreg.OpenKeyEx
+            try:
+                key = opener(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_READ | winreg.KEY_WRITE)
+            except FileNotFoundError:
+                continue  # never listed there: nothing to take out
+            except OSError as exc:
+                log(f"microphone: {path}: {exc}")
+                continue
+            with key:
+                values, i = {}, 0
+                while True:
+                    try:
+                        value_name, data, _kind = winreg.EnumValue(key, i)
+                    except OSError:
+                        break
+                    values[value_name] = data
+                    i += 1
+                numbered = sorted((n for n in values if n.isdigit()), key=int)
+                current = [str(values[n]) for n in numbered]
+                wanted = device_list(current, ours, enabled)
+                if wanted == current:
+                    continue
+                for n in numbered:  # the browsers read a list as 1, 2, 3 … up to the first gap: it is written anew
+                    winreg.DeleteValue(key, n)
+                for n, url in enumerate(wanted, 1):
+                    winreg.SetValueEx(key, str(n), 0, winreg.REG_SZ, url)
+            if not wanted:
+                try:
+                    winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+                except OSError:
+                    pass
+            changed.append(path)
+            log(f"microphone: {path} {'allows' if enabled else 'no longer lists'} Crew's own addresses")
+    return changed

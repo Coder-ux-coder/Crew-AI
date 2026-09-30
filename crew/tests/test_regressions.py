@@ -2207,6 +2207,21 @@ class AppRegressionTests(unittest.TestCase):
             s.app.runs.procs.pop(rid, None)
             shutil.rmtree(run_dir, ignore_errors=True)
 
+    def test_a73_the_microphone_without_the_browser_asking(self):
+        """The owner asked that Crew's window use the microphone (and paste) without the browser asking each time:
+        on unless the owner switches it off, and only the computer itself can change it."""
+        s = self.s
+        self.assertIs(s.api("GET", "/api/settings")["app"]["allow_devices"], True)
+        self.assertTrue(s.api("POST", "/api/devices", {"enabled": False})["message"])
+        self.assertIs(s.api("GET", "/api/settings")["app"]["allow_devices"], False)
+        s.api("POST", "/api/devices", {"enabled": True})
+        self.assertIs(s.api("GET", "/api/settings")["app"]["allow_devices"], True)
+        with mock.patch.object(server.Handler, "_loopback", return_value=False), \
+                mock.patch.object(server.Handler, "_authorized", return_value=True):  # a paired phone
+            err = s.api("POST", "/api/devices", {"enabled": False}, expect=403)
+        self.assertIn("computer running Crew", err["error"])
+        self.assertIs(s.api("GET", "/api/settings")["app"]["allow_devices"], True)  # unchanged
+
     def test_a41_a_model_name_with_a_stray_character_breaks_nothing(self):
         """A NUL in the model's name passed the checks: the owner's message was kept unanswered, and the name was
         saved as the chat's model, so every later message in that chat failed with "embedded null byte"."""

@@ -41,6 +41,7 @@ APP_DEFAULTS = {
     "codex_model": "gpt-6-astra",
     "codex_effort": "auto",
     "start_with_windows": False,
+    "allow_devices": True,  # Windows: Crew's window uses the microphone and pastes without the browser asking
     "voice_name": "",
     "voice_rate": 1.0,
     "auto_read": False,

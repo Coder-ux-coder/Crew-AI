@@ -120,6 +120,13 @@ To remove Crew, run **Uninstall Crew.cmd**.
 2. With the phone on the same Wi-Fi, point its camera at the code and tap the link.
 3. In Chrome tap **⋮ → Add to Home screen** for a Crew icon.
 
+On the computer, Crew tells Edge and Chrome to let its own window use the
+microphone and paste without asking each time (for Crew's own address only;
+pages the team builds still have to ask). The browsers' settings then say they
+are "managed". Switch it off in **Settings → General → Microphone and paste
+without asking**. Sharing your screen always asks: the browser lets you choose
+what to share, every time.
+
 Crew keeps running on the computer; the phone is a remote screen for it. The
 phone's browser only allows the microphone on secure connections: at your desk,
 connect the phone on the **Phone** page and Crew also opens on the phone at a

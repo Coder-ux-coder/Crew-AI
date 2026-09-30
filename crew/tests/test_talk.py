@@ -13,9 +13,11 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 warnings.simplefilter("ignore", ResourceWarning)
 ROOT = Path(__file__).resolve().parent.parent
@@ -356,6 +358,81 @@ class Launcher(unittest.TestCase):
 
     def test_the_icons_are_only_touched_on_windows(self):
         self.assertEqual(self.launcher.heal_shortcuts(), [] if os.name != "nt" else self.launcher.heal_shortcuts())
+
+    def test_the_microphone_is_allowed_for_crew_only(self):
+        """The owner asked that Crew's window use the microphone without the browser asking each time: Edge's and
+        Chrome's allow-lists name Crew's own addresses and nothing else, the owner's own entries stay, and switching
+        it off takes Crew's out again."""
+        launcher = self.launcher
+        ours = launcher.crew_addresses(8765)
+        self.assertIn("http://127.0.0.1:8765", ours)
+        self.assertIn("http://localhost:8774", ours)
+        self.assertNotIn("http://localhost:8775", ours)
+        self.assertFalse(any("*" in url for url in ours))  # never another program on this computer
+        self.assertIn("http://localhost:9000", launcher.crew_addresses(9000))  # Crew started on another port
+        if os.name != "nt":
+            self.assertEqual(launcher.allow_devices(), [])
+        reg = _Registry()
+        edge_mic = r"Software\Policies\Microsoft\Edge\AudioCaptureAllowedUrls"
+        chrome_mic = r"Software\Policies\Google\Chrome\AudioCaptureAllowedUrls"
+        reg.keys[edge_mic] = {"1": "https://meet.example.org", "3": "https://after-a-gap.example.org"}  # the owner's
+        with mock.patch.dict(sys.modules, {"winreg": reg}), \
+                mock.patch.object(launcher, "os", types.SimpleNamespace(name="nt")):
+            self.assertEqual(len(launcher.allow_devices(True, 8765)), 4)  # microphone and paste, in Edge and Chrome
+            listed = reg.keys[edge_mic]
+            self.assertEqual(sorted(listed, key=int), [str(n) for n in range(1, len(listed) + 1)])  # 1, 2, 3 …
+            self.assertEqual([listed["1"], listed["2"]], ["https://meet.example.org", "https://after-a-gap.example.org"])
+            self.assertEqual(list(listed.values())[2:], ours)
+            self.assertEqual(list(reg.keys[chrome_mic].values()), ours)
+            self.assertEqual(launcher.allow_devices(True, 8765), [])  # already there: nothing is written again
+            self.assertEqual(len(launcher.allow_devices(False, 8765)), 4)
+            self.assertEqual(reg.keys[edge_mic], {"1": "https://meet.example.org",
+                                                  "2": "https://after-a-gap.example.org"})
+            self.assertNotIn(chrome_mic, reg.keys)  # nothing left in it: the list is gone
+            self.assertEqual(launcher.allow_devices(False, 8765), [])
+            self.assertNotIn(chrome_mic, reg.keys)  # and switching off never makes an empty one
+
+
+class _Registry:
+    """Just enough of Windows' winreg for the browsers' allow-lists: each key a path, holding named values."""
+    HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_SZ = "HKCU", 1, 2, 1
+
+    def __init__(self):
+        self.keys: dict[str, dict[str, str]] = {}
+
+    def CreateKeyEx(self, root, path, reserved=0, access=0):  # noqa: N802 — winreg's own names
+        return _RegKey(self.keys.setdefault(path, {}))
+
+    def OpenKeyEx(self, root, path, reserved=0, access=0):  # noqa: N802
+        if path not in self.keys:
+            raise FileNotFoundError(path)
+        return _RegKey(self.keys[path])
+
+    def EnumValue(self, key, index):  # noqa: N802
+        items = list(key.values.items())
+        if index >= len(items):
+            raise OSError("No more data is available")
+        return items[index][0], items[index][1], self.REG_SZ
+
+    def SetValueEx(self, key, name, reserved, kind, data):  # noqa: N802
+        key.values[name] = data
+
+    def DeleteValue(self, key, name):  # noqa: N802
+        del key.values[name]
+
+    def DeleteKey(self, root, path):  # noqa: N802
+        del self.keys[path]
+
+
+class _RegKey:
+    def __init__(self, values: dict[str, str]):
+        self.values = values
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 if __name__ == "__main__":
