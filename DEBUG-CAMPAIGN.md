@@ -19,7 +19,7 @@ never copy it onto the owner's computer.)
 - Fifth continuation: every branch read. The parallel branch `claude/funny-turing-8ra205` had real bugs this line
   lacked; they are brought over (C31, A59, F21). Found and fixed besides: C32 (on Windows the checks ran in cmd.exe
   and could never pass: P1), A71 (the corner did not stop the assistant until it had used the mouse: P1), A60,
-  A61, A63, A65, A66, A67, A68, A69, A70, A72, C33, F20, F22 — each with a test that
+  A61, A63, A65, A66, A67, A68, A69, A70, A72, C33, F20, F22, F23 — each with a test that
   fails without its fix (section 12, "Fifth continuation"). Questions for the owner: the parallel session recorded "no
   Urdu", later briefs include Urdu (not applied; ask); the earlier request to run the campaign three times.
 - The owner's request (2026-09-29): Sonnet 5.5 replaces GPT-6 Sol as the team's workhorse; GPT-6 Sol leaves
@@ -451,7 +451,7 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   on a Windows code page and behind a proxy; how the checks run on Windows; the server's answers to odd codes and
   to viewers that hang up; connections, the phone's screen list, the keys file, file names in other alphabets;
   the chat page and the update screen when the connection drops and comes back (Chromium). Found and fixed: C31,
-  A59, C32 (P1 on Windows), A60, A61, A63, A65, A66, A67, A68, A69, A70, A71 (P1), A72, C33, F20, F21, F22. Left:
+  A59, C32 (P1 on Windows), A60, A61, A63, A65, A66, A67, A68, A69, A70, A71 (P1), A72, C33, F20, F21, F22, F23. Left:
   the rest of the
   clean round.
 
@@ -1014,6 +1014,11 @@ fix (checked by running each against the code without the fix) and passes with i
   at a time for many seconds, and the corner was looked at only before it began: pushing the pointer there while it
   typed did not stop it · typed 40 characters at a time, the corner looked at in between; the owner's own typing
   from the live view is unchanged · test_a72_a_long_text_stops_half_way_when_the_owner_says_so.
+- F23 · P3 · ui.dialog (every form: a workflow, a connection, a key, a skill, a rename, a confirmation) · on the
+  owner's phone the back gesture changes the page, but an open form stayed on top of the page it was not for,
+  covering it (found through the cloud run 29, where a form left open covered the next page's button); saving it
+  then acted on the page left behind · the form lived on the page body and nothing closed it on a change of page ·
+  another page closes it, as cancelling does · test_f23_going_back_closes_an_open_form (Chromium at phone size).
 - Two faults in the tests themselves, found by full runs: (1) the cloud checks failed on runs 25–27 (Python 3.12):
   the F22 test read every entry of the sidebar's recent list, which in a full run also holds other tests' chats
   (English titles); run alone it passed. It now reads its own chat's entry (4b585bb; the failure reproduced

@@ -1256,6 +1256,46 @@ with sync_playwright() as p:
         self.assertIn("Morning briefing", res["names"])
 
 
+class DialogNavigationTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 390, "height": 844})  # the owner's phone
+    page.goto(sys.argv[1] + "#/chats")
+    page.wait_for_selector(".page")
+    page.goto(sys.argv[1] + "#/workflows")
+    page.click("text=New workflow")
+    page.wait_for_function("document.activeElement && document.activeElement.closest('.dialog')")
+    page.fill(".dialog input[type=text]", "Morning briefing")
+    page.go_back()  # the phone's back gesture
+    page.wait_for_timeout(600)
+    out = {"page": page.evaluate("location.hash"), "form_open": page.evaluate("!!document.querySelector('.dialog')"),
+           "page_covered": page.evaluate("!!document.elementFromPoint(195, 422).closest('.dialog')")}
+    print(json.dumps(out))
+    b.close()
+"""
+
+    def test_f23_going_back_closes_an_open_form(self):
+        """On the owner's phone the back gesture changes the page, but an open form (a new workflow, a connection, a
+        skill) stayed on top of the page it was not for, covering it; saving it then acted on the page left behind.
+        Going to another page now closes the form, as cancelling does."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        s = AppServer()
+        try:
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
+                         {"page": "#/chats", "form_open": False, "page_covered": False})
+
+
 class SettingsFeedbackTests(unittest.TestCase):
     PROBE = r"""
 import json, sys

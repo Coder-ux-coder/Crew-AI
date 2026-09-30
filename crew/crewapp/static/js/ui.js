@@ -143,10 +143,15 @@ export function dialog({ title, body, actions = [{ label: 'Close', value: null }
       if (done) return;
       done = true;
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('hashchange', onPage);
       wrap.remove();
       resolve(v);
     };
     const onKey = (e) => { if (e.key === 'Escape') close(null); };
+    // Another page (the phone's back gesture, a link): the box belonged to the one left behind, so it closes as
+    // cancelling does rather than stay on top of a page it is not for.
+    const onPage = () => close(null);
+    window.addEventListener('hashchange', onPage);
     const bar = h('div', { class: 'row', style: { justifyContent: 'flex-end', flexWrap: 'wrap' } },
       actions.map((a) => h('button', {
         class: 'btn' + (a.primary ? ' primary' : '') + (a.danger ? ' danger' : ''), type: a.primary ? 'submit' : 'button',
