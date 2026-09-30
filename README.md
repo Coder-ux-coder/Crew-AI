@@ -26,13 +26,16 @@ owner's go-ahead to release as 2.3.1.
    in an answer run code inside Crew, a double press of Enter starting the team twice, forms that lost what was
    typed (including a pasted API key), a double-click on the computer screen arriving as four clicks.
 4. **Round 10 (Windows paths, by reading):** launcher, installer, start-up; one fix (C30).
-5. **Fifth continuation (every branch read; a clean round begun):** 14 bugs fixed, e.g. on Windows the team's
-   checks ran in the wrong shell and could never pass (C32); Urdu answers, messages and titles read left to right
+5. **Fifth continuation (every branch read; a clean round begun):** 18 bugs fixed, e.g. on Windows the team's
+   checks ran in the wrong shell and could never pass (C32); pushing the mouse into the screen's corner did not
+   stop the assistant's control of the computer until it had used the mouse, nor stop a long text half-way
+   (A71, A72); Urdu answers, messages and titles read left to right
    with English words out of order (F22); the phone tool could tap where a button *used* to be (A65); after an
    update the app could send the owner to another program on a neighbouring port (F21); a chat could keep
-   "working…" for ever after a restart or a Wi-Fi drop (F20); file names in Urdu escaped the safety scan (C33);
-   behind an office proxy the browser, computer and phone tools failed (A59). Fixes from a parallel session that
-   never reached this line are brought over.
+   "working…" for ever after a restart or a Wi-Fi drop (F20); a website's sign-in pop-up closing itself wiped the
+   page in Crew's browser (A69); file names in Urdu escaped the safety scan (C33); behind an office proxy the
+   browser, computer and phone tools failed (A59). Fixes from a parallel session that never reached this line are
+   brought over.
 6. Every fix has a test that fails without it; the full suite passes (240 tests); GitHub runs the checks on every
    push to this branch.
 

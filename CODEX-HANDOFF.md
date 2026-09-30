@@ -16,7 +16,11 @@
   never pass; they now run in Git for Windows' bash)**, A60 (odd pairing codes), A61 (viewers that hang up), A63
   (quoted connection arguments with spaces), A65 (the phone's screen list from an earlier screen: taps in the wrong
   place), A66 (saving a key beside Notepad's older encoding), A67 (dot-only project ids), A68 (a broken character
-  cut a live view for everyone), C33 (Urdu file names escaped the scan; clashes in names with spaces), F20 (the
+  cut a live view for everyone), A69 (a sign-in pop-up that closes itself stopped the shared browser and lost the
+  page), A70 (a step sent while the browser closed itself waited 90 s), **A71 (P1, safety: pushing the pointer
+  into the corner did not stop the assistant until it had used the mouse)**, A72 (a long text kept typing after
+  the owner pushed the pointer into the corner), C33 (Urdu file names escaped the scan;
+  clashes in names with spaces), F20 (the
   chat catches up when its connection comes back, and draws each answer once), F21
   (after an update only Crew is taken for Crew; a rolled-back Crew is recognised), F22 (Urdu reads right to left:
   answers, messages, the team conversation, titles, the message boxes).

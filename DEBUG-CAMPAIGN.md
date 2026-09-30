@@ -18,8 +18,9 @@ never copy it onto the owner's computer.)
   continuation stopped; that one carried `claude/exciting-heisenberg-6w6gge`). All work and execution in the cloud.
 - Fifth continuation: every branch read. The parallel branch `claude/funny-turing-8ra205` had real bugs this line
   lacked; they are brought over (C31, A59, F21). Found and fixed besides: C32 (on Windows the checks ran in cmd.exe
-  and could never pass: P1), A60, A61, A63, A65, A66, A67, A68, C33, F20, F22 — each with a test that fails
-  without its fix (section 12, "Fifth continuation"). Questions for the owner: the parallel session recorded "no
+  and could never pass: P1), A71 (the corner did not stop the assistant until it had used the mouse: P1), A60,
+  A61, A63, A65, A66, A67, A68, A69, A70, A72, C33, F20, F22 — each with a test that
+  fails without its fix (section 12, "Fifth continuation"). Questions for the owner: the parallel session recorded "no
   Urdu", later briefs include Urdu (not applied; ask); the earlier request to run the campaign three times.
 - The owner's request (2026-09-29): Sonnet 5.5 replaces GPT-6 Sol as the team's workhorse; GPT-6 Sol leaves
   Crew. Done (section 12, "Fourth continuation"); full suite 211 tests OK with Playwright present (0 skipped);
@@ -452,7 +453,8 @@ install: install-windows.ps1, uninstall-windows.ps1, the .cmd launchers, crew.cm
   on a Windows code page and behind a proxy; how the checks run on Windows; the server's answers to odd codes and
   to viewers that hang up; connections, the phone's screen list, the keys file, file names in other alphabets;
   the chat page and the update screen when the connection drops and comes back (Chromium). Found and fixed: C31,
-  A59, C32 (P1 on Windows), A60, A61, A63, A65, A66, A67, A68, C33, F20, F21, F22. Left: the rest of the
+  A59, C32 (P1 on Windows), A60, A61, A63, A65, A66, A67, A68, A69, A70, A71 (P1), A72, C33, F20, F21, F22. Left:
+  the rest of the
   clean round.
 
 ---------------------------------------------------------------------------------------------------------------
@@ -988,6 +990,32 @@ fix (checked by running each against the code without the fix) and passes with i
   middle of the stream, and nothing more reached the screen until it reconnected · live events were encoded
   strictly, where every other answer already replaced such a half · written the same way as the answers ·
   test_a68_a_broken_character_does_not_cut_a_live_view (on the old code neither that event nor the next arrived).
+- A69 · P2 · browser.BrowserService (the shared browser the assistant and the owner use) · a site's "Sign in" opens
+  a small window that closes itself when done (Google and most shops do): the browser followed the new window,
+  and when it closed, the browser stopped ("The browser stopped: … closed"); the next step started a fresh, empty
+  browser and the page being worked on was gone · nothing followed a closing page, and the idle wait on it failed ·
+  when the page shown closes, the browser carries on in the newest page still open, as any browser does; while
+  the whole browser closes, nothing is followed · test_a69_a_sign_in_window_that_closes_itself_leaves_the_browser_
+  where_it_was (Chromium, a local site; seen first by hand: the next read showed "Crew browser" at about:blank).
+- A70 · P3 · browser.BrowserService.running/start/call · the browser closes itself after 30 minutes unused; a step
+  sent while it was closing went to the closing browser, which never took it: the owner or the assistant waited a
+  minute and a half for "The browser is still busy with the last step" (found when a browser test ran right after
+  another: 90 s, then that message) · "running" was true until the thread had ended, and every browser shared one
+  queue · a closing browser is not running; a new one waits for the old to finish (one profile, one browser);
+  each has its own steps; a step whose browser closed says so within a second ·
+  test_a70_a_step_sent_while_the_browser_closes_opens_it_again. The two older browser tests now wait for their
+  browser to close (a browser left running at the end of a test run could crash Python as it exited).
+- A71 · P1 (safety) · computer.ComputerService._guard · the owner stops the assistant's control of the computer by
+  pushing the pointer into the screen's top-left corner. Where the assistant last put the pointer starts as
+  "nowhere" (-1, -1), which the corner test (x ≤ 2 and y ≤ 2) also counted as the corner: until the assistant had
+  clicked or moved somewhere, a pointer in the corner was taken for its own doing and ignored, so an assistant that
+  only opened an app and typed could not be stopped. A second screen to the left of or above the main one (its
+  positions are below zero) could also read as the corner · the corner is the main screen's own (0 to 2) ·
+  test_a71_the_corner_stops_the_assistant_before_it_has_used_the_mouse (the stand-in desktop; Windows by reading).
+- A72 · P2 (safety) · computer.ComputerService.act("type") · a long text (a letter, a report) is typed a character
+  at a time for many seconds, and the corner was looked at only before it began: pushing the pointer there while it
+  typed did not stop it · typed 40 characters at a time, the corner looked at in between; the owner's own typing
+  from the live view is unchanged · test_a72_a_long_text_stops_half_way_when_the_owner_says_so.
 - The API fuzzer again (quick: 3,233 requests over every route, 532 s): no 500, no traceback, no hang. Its three
   flags, explained: "data changed" twice was the test fake writing a conversation file for `claude auth status`
   (the real program writes none; the fake now answers as it does, and those routes fuzz clean); "no answer" once
