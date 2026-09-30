@@ -1,12 +1,13 @@
 {
-  "version": "2.3.0",
-  "date": "2026-09-28",
+  "version": "2.3.1",
+  "date": "2026-09-30",
   "notes": [
-    "Talk to any agent privately in a team project (grouped by subscription), ask the CEO, or reach a helper through its agent",
-    "Prompt writer: your words become a clear instruction before the team reads them (your own words stay attached)",
-    "The desktop icon always opens Crew again, and updates come back by themselves; Crew can update itself when idle",
-    "Stronger team rules: agents name each other, pass on what you tell one of them, plan briefly, share files and lessons",
-    "Automatic quality gate: tests for every backend route, a security check, and Crew's own scan for leaked keys and risky code",
-    "Head-to-head can now combine the best of both versions into one joint result"
+    "Sonnet 5.5 is now the team's workhorse, in place of GPT-6 Sol; Opus 5.5 manages and checks, GPT-6 Astra is the CEO. Your settings, chats and workflows move over by themselves",
+    "A limit on Opus alone no longer pauses the Sonnet workers or Sonnet chats; Usage shows which model is at its limit",
+    "A chat that reaches a subscription's limit carries on on your next subscription, with the whole conversation",
+    "On Windows the team's checks now run in Git's bash, so they can pass",
+    "Safer and steadier: a formatted answer can never run code inside Crew, a message or a project is sent once, forms keep what you typed, and a damaged file is set aside while Crew still opens",
+    "Updates explain any problem in plain words, wait for work in progress, and the window reconnects by itself",
+    "Pushing the pointer into the screen's top-left corner stops the assistant at once, even mid-text; the browser, phone and computer tools also work behind an office proxy"
   ]
 }
