@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 from crewlib import claude_cli, config as cfgmod, connections, usage as usage_log
 from crewlib.usage import limit_resets_at, limited_until
-from crewlib.tiers import RETIRED, vendor_of
+from crewlib.tiers import RETIRED, model_label, vendor_of
 from crewlib.agents import (AUTH_RE, CREW_ROOT, LIMIT_RE, UTF8_ENV, _kill_tree, _popen, _toml_str, child_env,
                             codex_effort, copy_claude_session, default_claude_home, default_codex_home, drain, which)
 from crewlib.util import atomic_write, clip, crew_home, load_env_file, now, open_db
@@ -400,8 +400,8 @@ class Session:
             return
         if name not in self.tried:
             self.tried.append(name)
-        if limited_until(usage_log.snapshot(1)["limits"].get(name)):
-            return
+        if limited_until(usage_log.snapshot(1)["limits"].get(name), model=self.model):
+            return  # already recorded (the subscription's limit, or this chat's model's own)
         ends = limit_resets_at(raw)
         if ends:
             kind = "seven_day" if ends - time.time() > 6 * 3600 else "five_hour"
@@ -501,7 +501,7 @@ class ClaudeSession(Session):
         cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
         cfg.models.check(self.model)
         before = self.account.name if self.account else self.holder
-        self.account = account or self.m.pick_account(cfg, "claude", prefer=self.chosen)
+        self.account = account or self.m.pick_account(cfg, "claude", prefer=self.chosen, model=self.model)
         if not self._bring_conversation(cfg):
             self._forget_conversation("Claude Code no longer has its own copy of this conversation (it removes old "
                                       "ones after a while).")
@@ -623,7 +623,7 @@ class ClaudeSession(Session):
                 raise RuntimeError("Still answering the last message.")
             self.tried = []
             switched = bool(self.chosen and self.account and self.chosen != self.account.name
-                            and self.m.has_room(self.chosen))  # back to the chosen one once it has room again
+                            and self.m.has_room(self.chosen, model))  # back to the chosen one once it has room again
             if self.alive() and (model != self.model or effort != self.effort or switched or
                                  (account is not None and self.account and account.name != self.account.name)):
                 self.stop_process()  # a new model, effort or subscription: resume the conversation in a fresh process
@@ -855,7 +855,7 @@ class ClaudeSession(Session):
                     self._moved(old, new.name)
                     self._carry_on(new, f"{old} reached its usage limit, so this conversation moved to {new.name}.")
                     return
-                note = self.m.limit_text("claude")
+                note = self.m.limit_text("claude", self.model)
                 text, error = ((t.text.strip() + f"\n\n*{note}*", False) if t.text.strip() else (note, True))
             elif not t.text.strip():
                 text = self.m.explain_error(raw)
@@ -1159,10 +1159,12 @@ class ChatManager:
 
     # ------------------------------------------------------------ accounts
 
-    def pick_account(self, cfg, vendor: str, avoid=None, prefer: str | None = None, with_room: bool = False):
+    def pick_account(self, cfg, vendor: str, avoid=None, prefer: str | None = None, with_room: bool = False,
+                     model: str | None = None):
         """The subscription for a chat: the one the owner chose for it (unless it is at its limit), else the
         default chosen in Settings, else the one with the most room (from the limits Claude and Codex report).
-        `avoid`: a name or names to leave out; `with_room`: None rather than one at its limit."""
+        `avoid`: a name or names to leave out; `with_room`: None rather than one at its limit. `model`: the chat's,
+        so that a limit on another model alone (Opus's, for a Sonnet chat) does not count."""
         skip = {avoid} if isinstance(avoid, str) else set(avoid or ())
         accounts = [a for a in cfg.accounts_for(vendor) if a.name not in skip]
         preferred = settings_mod.load()["app"].get("chat_account") if vendor == "claude" else ""
@@ -1170,8 +1172,8 @@ class ChatManager:
 
         def load(a):
             lim = limits.get(a.name) or {}
-            if limited_until(lim):
-                return 2.0  # at its limit (the 5-hour or the weekly one)
+            if limited_until(lim, model=model):
+                return 2.0  # at its limit (the 5-hour or the weekly one, or this model's own)
             return max(float(lim.get("five_util") or 0), float(lim.get("week_util") or 0) * 0.8)
 
         if with_room:
@@ -1186,9 +1188,9 @@ class ChatManager:
         return chosen or min(accounts, key=load)
 
     @staticmethod
-    def has_room(name: str) -> bool:
-        """Is this subscription free of its usage limits (as last reported)?"""
-        return not limited_until(usage_log.snapshot(1)["limits"].get(name))
+    def has_room(name: str, model: str | None = None) -> bool:
+        """Is this subscription free of its usage limits (as last reported), for work on `model`?"""
+        return not limited_until(usage_log.snapshot(1)["limits"].get(name), model=model)
 
     def next_account(self, session: Session, vendor: str):
         """Where a conversation goes when its subscription reaches its usage limit: another of the owner's
@@ -1196,23 +1198,29 @@ class ChatManager:
         message (so two subscriptions at their limit never hand it back and forth). None when there is none."""
         cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
         mine = [session.account.name] if session.account else []
-        return self.pick_account(cfg, vendor, avoid=[*mine, *session.tried], with_room=True)
+        return self.pick_account(cfg, vendor, avoid=[*mine, *session.tried], with_room=True, model=session.model)
 
-    def limit_text(self, vendor: str) -> str:
-        """Every subscription for this product has reached its limit: say so plainly, and when the first one has
-        room again."""
+    def limit_text(self, vendor: str, model: str | None = None) -> str:
+        """Every subscription for this product has reached its limit (for this chat's model): say so plainly, and
+        when the first one has room again. When only this model is at a limit of its own (a weekly cap on Opus),
+        say so: the other models still work."""
         cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
         names = [a.name for a in cfg.accounts_for(vendor)] or ["This subscription"]
         limits = usage_log.snapshot(1)["limits"]
-        frees = sorted((limited_until(limits.get(n)), n) for n in names if limited_until(limits.get(n)))
+        frees = sorted((limited_until(limits.get(n), model=model), n) for n in names
+                       if limited_until(limits.get(n), model=model))
+        own = bool(model and frees) and not any(limited_until(limits.get(n)) for n in names)
+        what = f"{model_label(model)} limit" if own else "usage limit"
         if len(names) == 1:
-            text = f"{names[0]} has reached its usage limit."
+            text = f"{names[0]} has reached its {what}."
             text += f" It frees up {plain_when(frees[0][0])}." if frees else " Usage shows when it frees up."
         else:
-            text = f"All your {ENGINES.get(vendor, vendor)} subscriptions have reached their usage limits " \
+            text = f"All your {ENGINES.get(vendor, vendor)} subscriptions have reached their {what}s " \
                    f"({', '.join(names)})."
             text += f" {frees[0][1]} frees up first, {plain_when(frees[0][0])}." if frees else \
                 " Usage shows when each one frees up."
+        if own:
+            return text + " Other models still work: choose another model to carry on now. Nothing is lost."
         return text + " Nothing is lost: send your message again then, and the conversation carries on where it stopped."
 
     def fix_outdated(self, session: Session) -> None:

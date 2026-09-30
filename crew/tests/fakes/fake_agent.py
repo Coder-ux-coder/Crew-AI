@@ -18,6 +18,7 @@ injected through CREW_FAKE_SCENARIO (JSON):
   codex_ceo_fails: true      the CEO on Codex (GPT-6 Astra) errors, so its Claude backup must take over
   review_limit_task: [ids]   the reviewer of these tasks hits its usage limit once on every Claude account
   limit_seconds: N           how long a usage limit lasts (default 3600)
+  limit_kind: kind           which limit it is (default five_hour; seven_day_opus is a limit on Opus alone)
   reject_twice: [ids]        the reviewer requests changes the first two times (a workhorse task moves up)
   contest_winner: tier       the head-to-head judge prefers this tier's version (default "workhorse")
   contest_fail: tier         the judge finds problems in this tier's version
@@ -717,10 +718,11 @@ def claude_main(argv: list[str]) -> int:
         result = brain.turn(text)
         if result == "LIMIT":
             resets = int(time.time()) + int(SCEN.get("limit_seconds", 3600))
-            out({"type": "rate_limit_event", "rate_limit_info": {
-                "status": "rejected", "resetsAt": resets, "rateLimitType": "five_hour",
-                "utilization": 1.0, "unifiedWindows": {"five_hour": {"utilization": 1.0, "resetsAt": resets}}},
-                "session_id": sid})
+            kind = SCEN.get("limit_kind", "five_hour")  # seven_day_opus: a limit on Opus alone
+            info = {"status": "rejected", "resetsAt": resets, "rateLimitType": kind, "utilization": 1.0}
+            if kind == "five_hour":
+                info["unifiedWindows"] = {"five_hour": {"utilization": 1.0, "resetsAt": resets}}
+            out({"type": "rate_limit_event", "rate_limit_info": info, "session_id": sid})
             out({"type": "result", "subtype": "error_during_execution", "is_error": True,
                  "result": "Claude AI usage limit reached|" + str(resets), "session_id": sid})
             return

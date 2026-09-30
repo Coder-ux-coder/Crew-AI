@@ -5,7 +5,10 @@ would otherwise be lost at the next reset.
 
 from __future__ import annotations
 
+import json
+
 from .tiers import seat_tier
+from .usage import MODEL_LIMITS, model_family, model_limits
 from .util import now
 
 FIVE_H = 5 * 3600
@@ -26,14 +29,40 @@ def apply_rate(store, account: str, info: dict) -> dict:
     util = info.get("utilization")
     if util is not None and not five and kind in (None, "five_hour"):
         fields.update(util_5h=float(util), reset_5h=int(info.get("resetsAt") or 0))
-    if util is not None and not week and kind in ("seven_day", "seven_day_opus", "seven_day_sonnet"):
+    if util is not None and not week and kind == "seven_day":  # one model's own week is not the subscription's
         fields.update(util_7d=float(util), reset_7d=int(info.get("resetsAt") or 0))
     status = info.get("status") or "allowed"
-    fields["status"] = status
-    if status == "rejected":
-        fields["parked_until"] = int(info.get("resetsAt") or (now() + 3600))
+    family = MODEL_LIMITS.get(kind)
+    if family:  # that model's own limit: reached (it waits until then) or lifted
+        parks = model_parks(store.account(account) or {})
+        if status == "rejected":
+            parks[family] = int(info.get("resetsAt") or (now() + 3600))
+        else:
+            parks.pop(family, None)
+        fields["parked_models"] = json.dumps(parks)
+    else:
+        fields["status"] = status
+        if status == "rejected":
+            fields["parked_until"] = int(info.get("resetsAt") or (now() + 3600))
     store.upsert_account(account, **fields)
     return fields
+
+
+def model_parks(acc: dict) -> dict[str, int]:
+    """The models of a subscription at a limit of their own: {family: when it lifts}."""
+    return model_limits(acc.get("parked_models"))
+
+
+def model_parked_until(acc: dict, model: str | None, t: float | None = None) -> int:
+    """When this model's own limit on the subscription lifts; 0 while it has none."""
+    until = model_parks(acc).get(model_family(model), 0) if model_family(model) else 0
+    return until if until > (t or now()) else 0
+
+
+def mode_for(acc: dict, model: str | None, t: float | None = None) -> str:
+    """The subscription's mode for work on one model: parked while that model is at its own limit (the other models
+    carry on), else the subscription's own."""
+    return "parked" if model and model_parked_until(acc, model, t) else mode_of(acc, t)
 
 
 def mode_of(acc: dict, t: float | None = None) -> str:

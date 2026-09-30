@@ -6,11 +6,32 @@ SQLite at ~/.crew/usage.db (safe with several writers).
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import time
 
 from .util import crew_home, open_db
+
+# A limit on one model only (a plan's weekly cap on Opus, say): only the work on that model waits; the other models on
+# the same subscription (the Sonnet workhorses, a Sonnet chat) carry on. Every other limit is the whole subscription's.
+MODEL_LIMITS = {"seven_day_opus": "opus", "seven_day_sonnet": "sonnet"}
+
+
+def model_family(model: str | None) -> str:
+    low = (model or "").lower()
+    return next((f for f in ("opus", "sonnet", "fable", "haiku") if f in low), "")
+
+
+def model_limits(raw) -> dict[str, int]:
+    """{family: when its own limit lifts} from its stored form (anything else reads as none)."""
+    try:
+        data = json.loads(raw or "{}") if isinstance(raw, str) else raw
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): int(v) for k, v in data.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
 
 
 def _prepare(db: sqlite3.Connection) -> None:
@@ -24,6 +45,19 @@ def _prepare(db: sqlite3.Connection) -> None:
             cache_read INTEGER DEFAULT 0, cache_write INTEGER DEFAULT 0, turns INTEGER DEFAULT 0,
             PRIMARY KEY (account, day));
     """)
+    if "models" not in {row[1] for row in db.execute("PRAGMA table_info(limits)")}:
+        try:
+            db.execute("ALTER TABLE limits ADD COLUMN models TEXT")
+        except sqlite3.OperationalError:  # another Crew process added it at the same moment
+            return
+        # Crew 2.3.0 stored a limit on one model as the whole subscription's: it becomes that model's own, and the
+        # weekly figure it wrote (that model's) goes, until Claude Code reports the subscription's again.
+        for row in db.execute("SELECT account, status, kind, week_reset FROM limits").fetchall():
+            family = MODEL_LIMITS.get(row["kind"])
+            if family:
+                models = {family: int(row["week_reset"])} if row["status"] == "rejected" and row["week_reset"] else {}
+                db.execute("UPDATE limits SET status='allowed', kind=NULL, week_util=NULL, week_reset=NULL, models=? "
+                           "WHERE account=?", (json.dumps(models), row["account"]))
 
 
 def _db() -> sqlite3.Connection:
@@ -35,11 +69,15 @@ def record_rate(account: str, info: dict) -> None:
     """Store a Claude Code rate_limit_event (utilization is 0–1)."""
     if not account or not isinstance(info, dict):
         return
+    family = MODEL_LIMITS.get(info.get("rateLimitType"))
+    if family:  # that model's own limit, reached or lifted: not the subscription's
+        _record_model_limit(account, family, info)
+        return
     windows = info.get("unifiedWindows") or {}
     five, week = windows.get("five_hour") or {}, windows.get("seven_day") or {}
     if not five and info.get("rateLimitType") == "five_hour":
         five = {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}
-    if not week and info.get("rateLimitType") in ("seven_day", "seven_day_opus", "seven_day_sonnet"):
+    if not week and info.get("rateLimitType") == "seven_day":
         week = {"utilization": info.get("utilization"), "resetsAt": info.get("resetsAt")}
     try:
         db = _db()
@@ -53,6 +91,25 @@ def record_rate(account: str, info: dict) -> None:
                 "week_reset=COALESCE(excluded.week_reset, limits.week_reset), updated=excluded.updated",
                 (account, info.get("status"), info.get("rateLimitType"), five.get("utilization"), five.get("resetsAt"),
                  week.get("utilization"), week.get("resetsAt"), time.time()))
+        finally:
+            db.close()
+    except sqlite3.Error:
+        pass
+
+
+def _record_model_limit(account: str, family: str, info: dict) -> None:
+    try:
+        db = _db()
+        try:
+            row = db.execute("SELECT models FROM limits WHERE account=?", (account,)).fetchone()
+            limits = model_limits(row["models"] if row else None)
+            if info.get("status") == "rejected":
+                limits[family] = int(info.get("resetsAt") or time.time() + 3600)
+            else:
+                limits.pop(family, None)
+            db.execute("INSERT INTO limits(account, models, updated) VALUES(?,?,?) ON CONFLICT(account) DO UPDATE "
+                       "SET models=excluded.models, updated=excluded.updated",
+                       (account, json.dumps(limits), time.time()))
         finally:
             db.close()
     except sqlite3.Error:
@@ -116,10 +173,11 @@ def limit_resets_at(text: str, at: float | None = None) -> float | None:
     return None
 
 
-def limited_until(lim: dict | None, at: float | None = None) -> float:
+def limited_until(lim: dict | None, at: float | None = None, model: str | None = None) -> float:
     """When a subscription at its usage limit has room again (0: it is not at its limit), from its recorded
     limits (as snapshot() gives them: a window already past its reset counts as empty). Both windows count: the
-    5-hour one and the weekly one."""
+    5-hour one and the weekly one. For work on `model`, that model's own limit counts too (a model not named: any
+    model's); without a model, only the subscription's own limits do."""
     if not lim:
         return 0.0
     at = time.time() if at is None else at
@@ -130,6 +188,9 @@ def limited_until(lim: dict | None, at: float | None = None) -> float:
         hit = week if str(lim.get("kind") or "").startswith("seven_day") else five
         if hit > at:
             ends.append(hit)
+    if model is not None:
+        family = model_family(model)
+        ends += [end for fam, end in model_limits(lim.get("models")).items() if (not family or fam == family) and end > at]
     return max(ends, default=0.0)
 
 
@@ -153,6 +214,7 @@ def snapshot(days: int = 7) -> dict:
         if lim.get("week_reset") and lim["week_reset"] < now:
             lim["week_util"], lim["week_reset"] = 0.0, None
         lim["limited_until"] = limited_until(lim, now) or None
+        lim["model_limits"] = {fam: end for fam, end in model_limits(lim.get("models")).items() if end > now}
         if lim.get("status") == "rejected" and not lim["limited_until"]:
             lim["status"] = "allowed"  # the limit it reached has lifted since it was reported
     today = time.strftime("%Y-%m-%d")

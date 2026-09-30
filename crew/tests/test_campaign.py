@@ -231,9 +231,10 @@ class OrchestratorTests(unittest.TestCase):
             fake = types.SimpleNamespace(store=st, say=lambda text, **k: said.append(text),
                                          failover=lambda rt, reason: moved.append(reason),
                                          answer_owner=lambda *a, **k: None, log=lambda *a: None)
-            fake.park = lambda *a: orchestrator.Orchestrator.park(fake, *a)
+            fake.park = lambda *a, **k: orchestrator.Orchestrator.park(fake, *a, **k)
             rt = types.SimpleNamespace(name="sol-1", busy=True, owner_interrupt=0.0, pending=[],
-                                       account=Account("chatgpt-1", "codex"))
+                                       account=Account("chatgpt-1", "codex"),
+                                       spec=types.SimpleNamespace(vendor="codex", tier="workhorse"))
             orchestrator.Orchestrator.on_result(fake, rt, {"limit_hit": True, "is_error": True, "text":
                 "You've hit your usage limit. Upgrade to Pro, or try again in 2 hours 5 minutes."})
             until = st.account("chatgpt-1")["parked_until"]
@@ -298,7 +299,8 @@ class OrchestratorTests(unittest.TestCase):
             tid = st.create_task("Checkout page", "Build the checkout page.", "it works", ["checkout.py"], [],
                                  size="M", kind="build", suggested_owner="boole", created_by="ada", tier="manager")
             seats = {name: types.SimpleNamespace(name=name, down=False, busy=name == "ada", runner=object(),
-                                                 pending=[], account=types.SimpleNamespace(name=account))
+                                                 pending=[], account=types.SimpleNamespace(name=account),
+                                                 spec=types.SimpleNamespace(vendor="claude", tier="manager"))
                      for name, account in places.items()}
             given: list[tuple[str, int]] = []
             fake = types.SimpleNamespace(store=st, seats=seats, lead_name="ada", grace_until={},
@@ -307,6 +309,8 @@ class OrchestratorTests(unittest.TestCase):
                                          workhorse_seats=lambda modes=None: [], manager_may_help=lambda ready: set(),
                                          give_task=lambda rt, task, mode: given.append((rt.name, task["id"])) or True)
             fake.accounts = lambda: orchestrator.Orchestrator.accounts(fake)
+            fake.seat_model = lambda spec: "claude-opus-5-5"
+            fake.seat_mode = lambda rt, modes: orchestrator.Orchestrator.seat_mode(fake, rt, modes)
             modes = orchestrator.Orchestrator.modes(fake)
             self.assertEqual(modes["claude-2"], "conserve")
             orchestrator.Orchestrator.assign_work(fake, modes)
@@ -1254,6 +1258,110 @@ with sync_playwright() as p:
                                        "Summarise the morning news on Punjab's industry, with sources."])
         self.assertFalse(res["open"])
         self.assertIn("Morning briefing", res["names"])
+
+
+class ModelLimitTests(unittest.TestCase):
+    def test_an_opus_only_limit_parks_only_opus(self):
+        """The owner's decision: a limit on one model only (a plan's weekly cap on Opus) pauses the work on that model,
+        not the subscription. It used to park the whole subscription, and with it the Sonnet workhorses on it."""
+        from crewlib import scheduler
+
+        with TempHome() as home:
+            st = Store(home / "team.db")
+            st.upsert_account("claude-1", vendor="claude")
+            reset = int(time.time()) + 3600
+            scheduler.apply_rate(st, "claude-1", {"status": "rejected", "rateLimitType": "seven_day_opus",
+                                                  "utilization": 1.0, "resetsAt": reset})
+            acc = st.account("claude-1")
+            self.assertEqual(scheduler.mode_of(acc), "normal")  # the subscription itself works
+            self.assertEqual(scheduler.mode_for(acc, "claude-opus-5-5"), "parked")
+            self.assertEqual(scheduler.mode_for(acc, "claude-sonnet-5-5"), "normal")
+            self.assertEqual(scheduler.model_parked_until(acc, "claude-opus-5-5"), reset)
+            self.assertIsNone(acc["util_7d"])  # Opus's own week is not the subscription's (no "conserve" for Sonnet)
+            scheduler.apply_rate(st, "claude-1", {"status": "allowed", "rateLimitType": "seven_day_opus",
+                                                  "utilization": 0.4})  # Opus is allowed again
+            self.assertEqual(scheduler.mode_for(st.account("claude-1"), "claude-opus-5-5"), "normal")
+            scheduler.apply_rate(st, "claude-1", {"status": "rejected", "rateLimitType": "five_hour",
+                                                  "resetsAt": reset})  # the whole subscription's limit, as before
+            acc = st.account("claude-1")
+            self.assertEqual((scheduler.mode_of(acc), scheduler.mode_for(acc, "claude-sonnet-5-5")), ("parked", "parked"))
+            st.upsert_account("claude-1", parked_models="not json")  # a damaged record reads as no model limits
+            self.assertEqual(scheduler.model_parks(st.account("claude-1")), {})
+            st.close()
+
+    def test_a_sonnet_chat_carries_on_at_an_opus_only_limit(self):
+        """The same for chats: an Opus-only limit was recorded as the subscription's weekly limit, so a Sonnet chat
+        was moved to another subscription (or told every subscription was full) although Sonnet had room."""
+        with TempHome():
+            reset = int(time.time()) + 3600
+            usage_mod.record_rate("claude-1", {"status": "rejected", "rateLimitType": "seven_day_opus",
+                                               "utilization": 1.0, "resetsAt": reset})
+            lim = usage_mod.snapshot(1)["limits"]["claude-1"]
+            self.assertIsNone(lim["limited_until"])  # the subscription is not at its limit
+            self.assertEqual(lim["model_limits"], {"opus": reset})  # the Usage page says Opus is
+            self.assertEqual(usage_mod.limited_until(lim, model="claude-sonnet-5-5"), 0)
+            self.assertEqual(usage_mod.limited_until(lim, model="claude-opus-5-5"), reset)
+            self.assertEqual(usage_mod.limited_until(lim, model=""), reset)  # a model not named: any model's limit
+            self.assertTrue(chat_mod.ChatManager.has_room("claude-1", "claude-sonnet-5-5"))
+            self.assertFalse(chat_mod.ChatManager.has_room("claude-1", "claude-opus-5-5"))
+            cfg = types.SimpleNamespace(accounts_for=lambda vendor: [Account("claude-1", "claude")])
+            pick = chat_mod.ChatManager.pick_account
+            self.assertEqual(pick(None, cfg, "claude", with_room=True, model="claude-sonnet-5-5").name, "claude-1")
+            self.assertIsNone(pick(None, cfg, "claude", with_room=True, model="claude-opus-5-5"))
+            note = chat_mod.ChatManager.limit_text(None, "claude", "claude-opus-5-5")  # what an Opus chat is told
+            self.assertIn("claude-1 has reached its Opus 5.5 limit.", note)  # not "its usage limit": Sonnet has room
+            self.assertIn("Other models still work", note)
+            usage_mod.record_rate("claude-1", {"status": "allowed", "rateLimitType": "seven_day_opus"})  # it lifts
+            self.assertTrue(chat_mod.ChatManager.has_room("claude-1", "claude-opus-5-5"))
+            usage_mod.record_rate("claude-1", {"status": "rejected", "rateLimitType": "five_hour", "resetsAt": reset})
+            note = chat_mod.ChatManager.limit_text(None, "claude", "claude-opus-5-5")  # the whole subscription's
+            self.assertIn("claude-1 has reached its usage limit.", note)
+            self.assertNotIn("Other models", note)
+
+    def test_a_pause_saved_by_the_old_version_for_an_opus_limit_lifts_at_the_update(self):
+        """A project Crew 2.3.0 paused for an Opus-only limit stayed paused after the update until that limit lifted
+        (up to a week): the old records say "the subscription is at its limit". They are read again once: the
+        pause stays only while the subscription itself is known to be at its limit."""
+        import sqlite3
+
+        from crewlib import scheduler
+
+        with TempHome() as home:
+            reset, soon = int(time.time()) + 3 * 86400, int(time.time()) + 3600
+            db = sqlite3.connect(home / "usage.db")  # usage records as 2.3.0 left them
+            db.execute("CREATE TABLE limits (account TEXT PRIMARY KEY, status TEXT, kind TEXT, five_util REAL, "
+                       "five_reset INTEGER, week_util REAL, week_reset INTEGER, updated REAL)")
+            db.executemany("INSERT INTO limits VALUES (?,?,?,?,?,?,?,?)", [
+                ("claude-1", "rejected", "seven_day_opus", 0.2, soon, 1.0, reset, time.time()),
+                ("claude-2", "rejected", "five_hour", 1.0, soon, 0.3, reset, time.time())])
+            db.commit()
+            db.close()
+            db = sqlite3.connect(home / "team.db")  # and a project as 2.3.0 left it: both subscriptions paused
+            db.execute("CREATE TABLE accounts (name TEXT PRIMARY KEY, vendor TEXT, profile TEXT, status TEXT DEFAULT "
+                       "'unknown', mode TEXT DEFAULT 'normal', util_5h REAL, reset_5h INTEGER, util_7d REAL, "
+                       "reset_7d INTEGER, parked_until INTEGER DEFAULT 0, tokens INTEGER DEFAULT 0, cost_usd REAL "
+                       "DEFAULT 0, updated_at REAL)")
+            db.executemany("INSERT INTO accounts(name, vendor, status, util_7d, reset_7d, parked_until) "
+                           "VALUES (?,?,?,?,?,?)", [("claude-1", "claude", "rejected", 1.0, reset, reset),
+                                                   ("claude-2", "claude", "rejected", 0.3, reset, soon)])
+            db.commit()
+            db.close()
+            st = Store(home / "team.db")
+            one, two = st.account("claude-1"), st.account("claude-2")
+            self.assertEqual(scheduler.mode_for(one, "claude-sonnet-5-5"), "normal")  # the workhorses carry on
+            self.assertIsNone(one["util_7d"])  # Opus's week, not the subscription's: no "conserve" either
+            self.assertEqual((scheduler.mode_of(two), two["parked_until"]), ("parked", soon))  # a real limit stays
+            st.upsert_account("claude-1", status="rejected", parked_until=soon)  # a new pause, after the update
+            st.close()
+            st = Store(home / "team.db")
+            self.assertEqual(st.account("claude-1")["parked_until"], soon)  # read again only once, at the update
+            st.close()
+            lim = usage_mod.snapshot(1)["limits"]
+            self.assertEqual(lim["claude-1"]["model_limits"], {"opus": reset})  # Opus waits, as it should
+            self.assertIsNone(lim["claude-1"]["limited_until"])
+            self.assertTrue(chat_mod.ChatManager.has_room("claude-1", "claude-sonnet-5-5"))
+            self.assertFalse(chat_mod.ChatManager.has_room("claude-1", "claude-opus-5-5"))
+            self.assertEqual(lim["claude-2"]["limited_until"], soon)
 
 
 class NoUrduTests(unittest.TestCase):

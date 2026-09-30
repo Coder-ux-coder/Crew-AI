@@ -13,6 +13,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import usage as usage_log
 from .tiers import TIERS, default_tier
 from .util import dumps, loads, now
 
@@ -106,13 +107,30 @@ class Store:
             for table, column, decl in (("tasks", "effort", "TEXT"), ("seats", "effort", "TEXT"), ("seats", "tier", "TEXT"),
                                         ("tasks", "tier", "TEXT"), ("tasks", "twin", "INTEGER"),
                                         ("messages", "recipient", "TEXT"), ("messages", "ref", "INTEGER"),
-                                        ("messages", "original", "TEXT")):
+                                        ("messages", "original", "TEXT"), ("accounts", "parked_models", "TEXT")):
                 have = {row[1] for row in self.db.execute(f"PRAGMA table_info({table})")}
                 if column not in have:
                     try:
                         self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
                     except sqlite3.OperationalError:  # another process added it at the same moment
-                        pass
+                        continue
+                    if column == "parked_models":
+                        self._recheck_old_parks()
+
+    def _recheck_old_parks(self) -> None:
+        """Crew 2.3.0 paused a whole Claude subscription for a limit on one model (a weekly cap on Opus). Such a
+        pause is kept only while the subscription itself is known to be at its limit; any other is lifted, so the
+        next turn tells again (a limit still there pauses again, now only the model it concerns). Its weekly
+        figure goes too: it may have been that one model's."""
+        rows = self.db.execute("SELECT name FROM accounts WHERE vendor='claude' AND parked_until > ?",
+                               (now(),)).fetchall()
+        if not rows:
+            return
+        limits = usage_log.snapshot(1)["limits"]
+        for row in rows:
+            if not usage_log.limited_until(limits.get(row["name"])):
+                self.db.execute("UPDATE accounts SET parked_until=0, status='allowed', util_7d=NULL, reset_7d=NULL "
+                                "WHERE name=?", (row["name"],))
 
     def close(self) -> None:
         self.db.close()

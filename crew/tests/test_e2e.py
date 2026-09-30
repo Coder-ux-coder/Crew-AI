@@ -245,6 +245,22 @@ class E2E(unittest.TestCase):
         self.assertNotIn("needs changes", chat)
         self.assertEqual(len([r for r in self.oneoffs(st) if r["seat"] == "reviewer-2"]), 3)  # both limits, then the check
 
+    def test_an_opus_only_limit_leaves_the_sonnet_workhorses_working(self):
+        """The owner's decision: a limit on Opus alone (a plan's weekly Opus cap) pauses only the Opus work. With one
+        Claude subscription, the reviewer's Opus limit parked the whole subscription, so the Sonnet workhorses on it
+        stopped too until it lifted. Now they carry on, and the checks resume when Opus is back."""
+        cfg, run_dir, repo, rid = make_run({"tasks": 2, "review_limit_task": [2], "limit_seconds": 25,
+                                            "limit_kind": "seven_day_opus"}, [("claude-1", "claude")])
+        orch = run_orch(cfg, run_dir, repo, rid, timeout=300)
+        self.assert_finished(orch, repo, 2)
+        st = orch.store
+        acc = st.account("claude-1")
+        self.assertFalse(acc.get("parked_until"))  # the subscription itself never stopped
+        self.assertIn("opus", acc.get("parked_models") or "")
+        chat = dump_chat(st)
+        self.assertNotIn("Every Claude subscription is at its limit", chat)
+        self.assertIn("The workhorse carries on", chat)
+
     def test_head_to_head_keeps_the_better_version(self):
         """Both features are built twice (Sonnet 5.5 and Opus 5.5); the judge compares each pair blind and the better
         version is merged under the original task's number. The scorecard records every result."""

@@ -28,7 +28,7 @@ def improve(chats, text: str, reader: str = "claude", recent: str = "") -> dict:
     if len(text) > 12000:
         raise ValueError("That message is too long for the prompt writer (12,000 characters at most).")
     cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
-    account = chats.pick_account(cfg, "claude")
+    account = chats.pick_account(cfg, "claude", model=cfg.models.work)
     if account is None:
         raise ValueError("The prompt writer needs a Claude subscription (Settings → Subscriptions).")
     work = crew_home() / "writer"

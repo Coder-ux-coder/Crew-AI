@@ -108,12 +108,22 @@ class Orchestrator:
         names = {a.name for a in self.cfg.accounts}
         return [a for a in self.store.accounts() if a["name"] in names]
 
-    def modes(self) -> dict[str, str]:
+    def modes(self, model: str | None = None) -> dict[str, str]:
         """Each subscription's mode as of now. The recorded mode is only brought up to date once per pass of the main
         loop, so a limit reached a moment ago (a reviewer's, the CEO's) would not count yet, and the next reviewer
-        would be sent straight back to the subscription that just ran out."""
+        would be sent straight back to the subscription that just ran out. For work on one model, a subscription
+        where that model is at a limit of its own (an Opus-only weekly cap) is parked too."""
         t = now()
-        return {a["name"]: scheduler.mode_of(a, t) for a in self.accounts()}
+        return {a["name"]: scheduler.mode_for(a, model, t) for a in self.accounts()}
+
+    def seat_mode(self, rt: SeatRT, modes: dict[str, str]) -> str:
+        """A seat's subscription as that seat sees it: parked also while the seat's own model is at a limit of its
+        own. An Opus-only limit leaves the Sonnet workhorses on the same subscription working."""
+        mode = modes.get(rt.account.name, "normal")
+        if mode != "parked" and rt.spec.vendor == "claude" and \
+                scheduler.model_parked_until(self.store.account(rt.account.name) or {}, self.seat_model(rt.spec)):
+            return "parked"
+        return mode
 
     @property
     def lead_name(self) -> str:
@@ -421,7 +431,7 @@ class Orchestrator:
         """Workhorse seats that can take work now (not down, not benched, account not at its limit)."""
         modes = modes if modes is not None else self.modes()
         return [rt for rt in self.seats.values() if rt.spec.tier == "workhorse" and not rt.down and not rt.benched
-                and modes.get(rt.account.name) != "parked"]
+                and self.seat_mode(rt, modes) != "parked"]
 
     def kickoff_solo(self) -> None:
         """One builder, others check: single-agent speed with independent review kept. Routine jobs are built by
@@ -492,7 +502,7 @@ class Orchestrator:
         accounts = {a["name"]: a for a in self.accounts()}
         modes = self.modes()
         pool = [rt for rt in self.seats.values() if not rt.down and rt.name != self.lead_name
-                and rt.spec.tier != builder.spec.tier and modes.get(rt.account.name) != "parked"]
+                and rt.spec.tier != builder.spec.tier and self.seat_mode(rt, modes) != "parked"]
         return min(pool, key=lambda r: scheduler._burn(accounts.get(r.account.name, {}))) if pool else None
 
     def _make_twin(self, task: dict) -> int:
@@ -692,10 +702,17 @@ class Orchestrator:
                 self.promote_lead(rt, "not signed in")
             return
         if data.get("limit_hit"):
-            until = self.park(rt.account.name, data.get("text") or "")
-            self.store.event("limit_hit", seat=rt.name, account=rt.account.name)
-            self.say(f"{rt.account.name} reached its usage limit (resets {hhmm(until)}). Moving {rt.name} to another account.")
-            self.failover(rt, reason="usage limit")
+            model = self.seat_model(rt.spec) if rt.spec.vendor == "claude" else None
+            own = scheduler.model_parked_until(self.store.account(rt.account.name) or {}, model) if model else 0
+            until = self.park(rt.account.name, data.get("text") or "", model=model)
+            self.store.event("limit_hit", seat=rt.name, account=rt.account.name, model=model if own else None)
+            if own:  # that model's own limit: the subscription's other models carry on
+                self.say(f"{rt.account.name} reached its {model_label(model)} limit (resets {hhmm(until)}); its other "
+                         f"models carry on. Moving {rt.name} to another account, or it waits until then.")
+            else:
+                self.say(f"{rt.account.name} reached its usage limit (resets {hhmm(until)}). Moving {rt.name} to "
+                         "another account.")
+            self.failover(rt, reason=f"{model_label(model)} limit" if own else "usage limit")
             return
         if data.get("is_error"):
             rt.errors_in_row += 1
@@ -818,10 +835,14 @@ class Orchestrator:
 
     # =============================================================== failover
 
-    def park(self, account: str, text: str, reported: int | None = None) -> int:
+    def park(self, account: str, text: str, reported: int | None = None, model: str | None = None) -> int:
         """A subscription reached its usage limit: park it until the limit really lifts. That is the time reported
         with it (Claude Code's rate report), or, when none is still ahead (ChatGPT reports its limit only in
-        words), the time in its message ("try again in 2 hours 5 minutes"), else an hour. Returns that time."""
+        words), the time in its message ("try again in 2 hours 5 minutes"), else an hour. Returns that time.
+        A limit on `model` alone (its rate report said so a moment before) parks only that model there."""
+        own = scheduler.model_parked_until(self.store.account(account) or {}, model) if model else 0
+        if own:
+            return own
         until = int(reported or 0) or int((self.store.account(account) or {}).get("parked_until") or 0)
         if until <= now():
             until = int(limit_resets_at(text or "") or now() + 3600)
@@ -845,23 +866,25 @@ class Orchestrator:
                          "Nothing is lost.")
             return
         managers = [a for a in self.accounts() if a["vendor"] == "claude"]
-        if managers and all(modes.get(a["name"]) == "parked" for a in managers) and self.workhorse_seats(modes) and \
-                now() - self.all_parked_notice > 1800 and self.phase() in ("plan", "build"):
+        manager_modes = self.modes(self.cfg.models.work)
+        if managers and all(manager_modes.get(a["name"]) == "parked" for a in managers) and self.workhorse_seats(modes) \
+                and now() - self.all_parked_notice > 1800 and self.phase() in ("plan", "build"):
             self.all_parked_notice = now()
-            earliest = min((a.get("parked_until") or 0) for a in managers)
+            earliest = min(max(int(a.get("parked_until") or 0), scheduler.model_parked_until(a, self.cfg.models.work))
+                           for a in managers)
             self.say(f"The manager's subscriptions ({model_label(self.cfg.models.work)}) are at their limit until "
                      f"{hhmm(earliest)}. The workhorse carries on with routine work; checks and harder work resume "
                      "then. Nothing is lost.")
         work_waiting = bool(self.store.ready_tasks()) or bool(self.store.tasks(("changes",)))
         for rt in self.seats.values():
-            if rt.down or rt.busy or rt.runner is None or modes.get(rt.account.name) != "parked":
+            if rt.down or rt.busy or rt.runner is None or self.seat_mode(rt, modes) != "parked":
                 continue
             row = self.store.seat(rt.name) or {}
             if row.get("current_task") or rt.pending or work_waiting:
                 self.failover(rt, reason="account at its limit")
 
     def failover(self, rt: SeatRT, reason: str) -> None:
-        modes = self.modes()
+        modes = self.modes(self.seat_model(rt.spec) if rt.spec.vendor == "claude" else None)
         same_vendor = [a for a in self.cfg.accounts_for(rt.spec.vendor)
                        if a.name != rt.account.name and modes.get(a.name) != "parked"]
         session = (self.store.seat(rt.name) or {}).get("session_id")
@@ -909,7 +932,7 @@ class Orchestrator:
 
     def wake_waiting(self, modes: dict[str, str]) -> None:
         for rt in self.seats.values():
-            if rt.runner is None and not rt.down and not rt.benched and modes.get(rt.account.name) != "parked" \
+            if rt.runner is None and not rt.down and not rt.benched and self.seat_mode(rt, modes) != "parked" \
                     and rt.cooldown_until <= now() and self.phase() in ("plan", "build", "deliver"):
                 session = (self.store.seat(rt.name) or {}).get("session_id")
                 self.start_seat(rt, None, resume_session=session)
@@ -975,7 +998,7 @@ class Orchestrator:
         to, raw, text = m.get("recipient"), m["text"], m["text"]
         name = f"writer-{m['id']}"
         try:
-            modes = self.modes()
+            modes = self.modes(self.cfg.models.work)
             row = scheduler.pick_account([a for a in self.accounts() if a["vendor"] == "claude"], modes)
             if row is not None:
                 account = self.cfg.account(row["name"])
@@ -1018,7 +1041,7 @@ class Orchestrator:
         modes = self.modes()
         for rt in self.seats.values():
             if rt.runner is None and not rt.down and rt.cooldown_until <= now() and \
-                    modes.get(rt.account.name) != "parked" and self.phase() not in ("done", "stopped", "failed"):
+                    self.seat_mode(rt, modes) != "parked" and self.phase() not in ("done", "stopped", "failed"):
                 direct, _ = self._owner_directs(self.store.unread(rt.name), rt.name)
                 if direct:  # a standing-by agent is started just to answer the owner
                     session = (self.store.seat(rt.name) or {}).get("session_id")
@@ -1118,7 +1141,7 @@ class Orchestrator:
         if self.phase() != "build":
             return
         managers = [a for a in self.accounts() if a["vendor"] == "claude"]
-        if managers and all(scheduler.mode_of(a) == "parked" for a in managers):
+        if managers and all(scheduler.mode_for(a, self.cfg.models.work) == "parked" for a in managers):
             self.last_progress = now()  # waiting for the managers' usage to come back is a pause, not a stall
             return
         open_tasks = self.store.tasks(("todo", "in_progress", "review", "approved", "changes", "blocked"))
@@ -1269,19 +1292,20 @@ class Orchestrator:
             if row is None:
                 continue
             place = self.seats[row["name"]].account.name
-            if not scheduler.can_take(row, task, accounts.get(place, {}), modes.get(place, "normal"), cost_model,
+            if not scheduler.can_take(row, task, accounts.get(place, {}), self.seat_mode(self.seats[row["name"]], modes),
+                                      cost_model,
                                       row.get("model") or "", workhorse_usable, task["id"] in may_help):
                 owner_cannot.add(task["id"])
         for row in scheduler.order_idle_seats(idle_rows, accounts):
             rt = self.seats[row["name"]]
             acc = accounts.get(rt.account.name, {})
-            task = scheduler.choose_task(row, ready, acc, modes.get(rt.account.name, "normal"), cost_model,
+            task = scheduler.choose_task(row, ready, acc, self.seat_mode(rt, modes), cost_model,
                                          row.get("model") or "", idle_names, self.grace_until,
                                          workhorse_usable=workhorse_usable, may_help=may_help,
                                          owner_cannot=owner_cannot)
             if task is None:
                 continue
-            if self.give_task(rt, task, modes.get(rt.account.name, "normal")):
+            if self.give_task(rt, task, self.seat_mode(rt, modes)):
                 ready = [t for t in ready if t["id"] != task["id"]]
                 ready = [t for t in ready if not self.store.lease_conflicts(t)]
                 idle_names.discard(rt.name)
@@ -1426,12 +1450,21 @@ class Orchestrator:
         finally:
             gitops.remove_worktree(self.repo, wt)
 
+    def manager_back_at(self) -> int:
+        """When the manager's model can run again on a Claude subscription: the earliest end of what holds it there
+        (the subscription's own limit, or that model's own). Ten minutes when none is known."""
+        model = self.cfg.models.work
+        times = [max(int(a.get("parked_until") or 0), scheduler.model_parked_until(a, model))
+                 for a in self.accounts() if a["vendor"] == "claude"]
+        return min(times) if times and min(times) > now() else int(now() + 600)
+
     def manager_usable(self) -> bool:
-        return any(scheduler.mode_of(a) != "parked" for a in self.accounts() if a["vendor"] == "claude")
+        return any(scheduler.mode_for(a, self.cfg.models.work) != "parked" for a in self.accounts()
+                   if a["vendor"] == "claude")
 
     def run_reviewer(self, task: dict, check_log: str, scan_notes: str = "") -> RunResult:
         """A fresh manager (Opus 5.5) checks the task, on another subscription than its author's when possible."""
-        modes = self.modes()
+        modes = self.modes(self.cfg.models.work)
         owner_acc = self.seats[task["owner"]].account.name if task["owner"] in self.seats else None
         managers = [a for a in self.accounts() if a["vendor"] == "claude"]
         acc_row = scheduler.pick_account(managers, modes, avoid=owner_acc)
@@ -1461,7 +1494,7 @@ class Orchestrator:
                                   task_id=task["id"], read_only=True)
         self._account_usage(account.name, res)
         if res.limit_hit:
-            self.park(account.name, res.text, res.resets_at)
+            self.park(account.name, res.text, res.resets_at, model=self.cfg.models.work)
         self.store.event("oneoff", seat=name, task_id=task["id"], state="error" if res.is_error else "done",
                          tokens=res.tokens, seconds=round(res.duration_s or 0))
         return res
@@ -1568,7 +1601,7 @@ class Orchestrator:
 
     def run_judge(self, orig: dict, twin: dict, prompt: str, workdir: Path) -> RunResult:
         """A fresh manager (Opus 5.5) judges the two versions blind, on another subscription than their authors'."""
-        modes = self.modes()
+        modes = self.modes(self.cfg.models.work)
         authors = {self.seats[t["owner"]].account.name for t in (orig, twin) if t.get("owner") in self.seats}
         managers = [a for a in self.accounts() if a["vendor"] == "claude"]
         avoid = next((a for a in authors if any(m["name"] == a for m in managers)), None)
@@ -1597,8 +1630,7 @@ class Orchestrator:
         if orig is None or twin is None:
             return
         if kind == "wait":
-            resets = [int(a.get("parked_until") or 0) for a in self.accounts() if a["vendor"] == "claude"]
-            self.store.set(f"review_wait:{orig_id}", min(resets) if resets and min(resets) > now() else int(now() + 600))
+            self.store.set(f"review_wait:{orig_id}", self.manager_back_at())
             return
         if kind != "judged":
             self._end_contest(survivor=orig, dropped=twin, why="the judge could not compare the two versions.")
@@ -1696,8 +1728,7 @@ class Orchestrator:
         if task is None or task["status"] != "review":
             return
         if verdict == "wait":
-            resets = [int(a.get("parked_until") or 0) for a in self.accounts() if a["vendor"] == "claude"]
-            until = min(resets) if resets and min(resets) > now() else int(now() + 600)
+            until = self.manager_back_at()
             self.store.set(f"review_wait:{task_id}", until)
             if not self.store.get(f"review_wait_said:{task_id}"):
                 self.store.set(f"review_wait_said:{task_id}", True)
@@ -1964,11 +1995,11 @@ class Orchestrator:
         """A CEO call (GPT-6 Astra by default) at the CEO's effort. If that model cannot run — no ChatGPT
         subscription, a usage limit, an error, or no usable answer — the backup (Fable 5.1) and then the
         manager (Opus 5.5) take over at the same effort."""
-        modes = self.modes()
         effort = effort or (self.cfg.models.effort_ceo if self.cfg.models.effort_ceo != "auto" else "max")
         res = RunResult(is_error=True, text="no subscription available for the CEO")
         for model in self.ceo_chain():
             vendor = vendor_of(model)
+            modes = self.modes(model)
             acc_row = scheduler.pick_account([a for a in self.accounts() if a["vendor"] == vendor], modes)
             if acc_row is None:
                 self.log(f"CEO: no usable {vendor} subscription for {model}; trying the next model")
