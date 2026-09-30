@@ -10,10 +10,12 @@ Layout of a run (all branches live in the user's repository):
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import signal
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,15 +26,76 @@ class GitError(RuntimeError):
     pass
 
 
+class GitLocked(GitError):
+    """Another git program holds one of the repository's lock files (its message is one plain line)."""
+
+
+LOCK_WAIT = 10.0  # seconds a command waits for another git program (an editor's, a git window's) to finish
+STALE_LOCK = 120.0  # a lock file untouched this long was left by a git program that stopped part-way
+_LOCK_FILE = re.compile(r"'([^'\n]+\.lock)'")  # "Unable to create '…/.git/index.lock': File exists."
+_LOCK_CONFIG = re.compile(r"could not lock config file (.+?): ")
+
+
 def git(cwd: Path, *args: str, check: bool = True, timeout: float = 300) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
-    # core.quotepath=false: a file named in another alphabet (Arabic, Chinese) is written as its name, not as escapes
-    proc = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=str(cwd), env=env, capture_output=True,
-                          text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    deadline = None
+    for _ in range(20):
+        # core.quotepath=false: a file named in another alphabet (Arabic, Chinese) is written as its name, not as escapes
+        proc = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=str(cwd), env=env,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        lock = _lock_in_the_way(cwd, proc)
+        if lock is None:
+            break
+        deadline = deadline or time.monotonic() + LOCK_WAIT
+        if not _free_lock(lock, deadline):
+            break
     if check and proc.returncode != 0:
+        if lock is not None:
+            raise GitLocked(f"Another program is using git in the project's folder (an editor or a git window, for "
+                            f"example), or one stopped part-way and left {lock} behind. Close it and try again; if "
+                            f"this keeps happening, delete that file.")
         raise GitError(f"git {' '.join(args)} failed: {clip(proc.stderr or proc.stdout, 1500)}")
     return proc
+
+
+def _lock_in_the_way(cwd: Path, proc: subprocess.CompletedProcess) -> Path | None:
+    """The lock file that made git refuse (another git program holds it, or one left it behind), if that was why."""
+    if proc.returncode == 0:
+        return None
+    text = proc.stderr or ""
+    if found := _LOCK_FILE.search(text):
+        lock = Path(found.group(1))
+    elif found := _LOCK_CONFIG.search(text):
+        lock = Path(found.group(1) + ".lock")
+    else:
+        return None
+    lock = lock if lock.is_absolute() else Path(cwd) / lock
+    return lock if "File exists" in text or lock.exists() else None
+
+
+def _free_lock(lock: Path, deadline: float) -> bool:
+    """Wait until the git program holding `lock` lets go of it. A lock nobody has touched for STALE_LOCK seconds is
+    left over from a git program that stopped part-way (a crash, a computer switched off): it holds no work, and git
+    itself says to delete it, so it is. False: the lock is still held when the wait is over."""
+    while True:
+        try:
+            age = time.time() - lock.stat().st_mtime
+        except FileNotFoundError:
+            return True  # the other program has finished
+        except OSError:
+            return False
+        if age >= STALE_LOCK:
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:  # still open in a running program (Windows): it is not left over
+                return False
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.2)
 
 
 def out(cwd: Path, *args: str) -> str:

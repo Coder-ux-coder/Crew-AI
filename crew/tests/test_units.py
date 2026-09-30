@@ -7,10 +7,12 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 warnings.simplefilter("ignore", ResourceWarning)
 ROOT = Path(__file__).resolve().parent.parent
@@ -285,6 +287,51 @@ class GitTests(unittest.TestCase):
         self.assertFalse(gitops.is_dirty(wt))
         files = gitops.changed_files(repo, "crew/y/main", "crew/y/task-1")
         self.assertEqual(sorted(files), ["committed.txt", "uncommitted.txt"])
+
+    def test_a_lock_file_left_behind_or_in_use(self):
+        """A project folder with no commits yet and a .git/index.lock in it: the project could not start ("Another
+        git process seems to be running in this repository, or the lock file may be stale"), again and again."""
+        repo = Path(tempfile.mkdtemp(prefix="crew-repo-"))
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        lock = repo / ".git" / "index.lock"
+        lock.touch()
+        old = time.time() - gitops.STALE_LOCK - 60
+        os.utime(lock, (old, old))  # left by a git program that stopped part-way, long ago
+        top = gitops.ensure_repo(repo)
+        self.assertFalse(lock.exists())
+        self.assertTrue(gitops.head(top))
+        config_lock = top / ".git" / "config.lock"
+        config_lock.touch()
+        os.utime(config_lock, (old, old))
+        gitops.git(top, "config", "crew.test", "yes")
+        self.assertEqual(gitops.out(top, "config", "crew.test"), "yes")
+
+        lock.touch()  # in use by another git program, which lets go of it a moment later
+        threading.Timer(0.5, lock.unlink).start()
+        (top / "a.txt").write_text("a\n")
+        self.assertTrue(gitops.commit_all(top, "while another program was busy"))
+
+        lock.touch()  # held all along: said in one plain line, and the lock is left alone
+        (top / "b.txt").write_text("b\n")
+        with mock.patch.object(gitops, "LOCK_WAIT", 0.3):
+            with self.assertRaises(gitops.GitLocked) as caught:
+                gitops.commit_all(top, "never")
+            self.assertNotEqual(gitops.git(top, "add", "-A", check=False).returncode, 0)  # no error when not asked
+        self.assertIn("index.lock", str(caught.exception))
+        self.assertNotIn("\n", str(caught.exception))
+        self.assertTrue(lock.exists())
+
+        fresh = Path(tempfile.mkdtemp(prefix="crew-repo-"))  # the app starting a project there says why, in full
+        subprocess.run(["git", "init", "-q"], cwd=fresh, check=True)
+        (fresh / ".git" / "index.lock").touch()
+        from crewlib import cli
+
+        with mock.patch.object(gitops, "LOCK_WAIT", 0.3), self.assertRaises(SystemExit) as stopped:
+            cli.main(["start", "a page", "--repo", str(fresh), "--headless", "--run-id", "20260930-000000-locked"])
+        reason = stopped.exception.code
+        self.assertIsInstance(reason, str)
+        self.assertTrue(reason.startswith("Another program is using git in the project's folder"))
+        self.assertLessEqual(len(reason) - len(str(fresh)), 230)  # the app shows 300 characters: the advice fits
 
 
 if __name__ == "__main__":

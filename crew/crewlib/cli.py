@@ -117,11 +117,14 @@ def cmd_start(args) -> int:
         run_dir.mkdir(parents=True, exist_ok=True)
     else:
         run_id, run_dir = claim_run_dir(runs_dir(), request)
-    if args.repo and re.match(r"^(https?://|git@|ssh://)", args.repo):
-        repo = gitops.clone(args.repo, run_dir / "repo")
-    else:
-        target = Path(args.repo).expanduser() if args.repo else crew_home() / "projects" / run_id
-        repo = gitops.ensure_repo(target.resolve())
+    try:
+        if args.repo and re.match(r"^(https?://|git@|ssh://)", args.repo):
+            repo = gitops.clone(args.repo, run_dir / "repo")
+        else:
+            target = Path(args.repo).expanduser() if args.repo else crew_home() / "projects" / run_id
+            repo = gitops.ensure_repo(target.resolve())
+    except gitops.GitLocked as exc:
+        sys.exit(str(exc))  # one plain line, the last in the log: the app shows it to the owner as the reason
     (runs_dir() / "LATEST").write_text(run_id, encoding="utf-8")
     return _run(cfg, run_dir, repo, request, run_id, resume=False, open_web=not args.no_web,
                 headless=args.headless, max_hours=args.max_hours, head_to_head=args.head_to_head,
