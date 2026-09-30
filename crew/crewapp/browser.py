@@ -120,13 +120,16 @@ class BrowserService:
         self.ctx = None
         self.cdp = None
         self._stop = False
+        self._closing = False
         self._default_ua = ""
         self._start_lock = threading.Lock()
 
     # ------------------------------------------------------------ lifecycle
 
     def running(self) -> bool:
-        return self.thread is not None and self.thread.is_alive() and self.ready.is_set()
+        """Open and taking steps: a browser that is closing (stopped, or unused for 30 minutes) is not."""
+        return (self.thread is not None and self.thread.is_alive() and self.ready.is_set() and not self._stop
+                and not self._closing)
 
     def start(self) -> None:
         ok, why = availability()
@@ -135,10 +138,13 @@ class BrowserService:
         with self._start_lock:  # the panel and an agent may both start it at once: only one browser
             if self.running():
                 return
+            if self.thread is not None and self.thread.is_alive():
+                self.thread.join(30)  # still closing: one browser at a time, on the same profile
             self.ready.clear()
             self.error = ""
-            self._stop = False
-            self.thread = threading.Thread(target=self._main, daemon=True, name="crew-browser")
+            self._stop = self._closing = False
+            self.q = queue.Queue()  # each browser its own steps: none left for the last one is taken up later
+            self.thread = threading.Thread(target=self._main, args=(self.q,), daemon=True, name="crew-browser")
             self.thread.start()
             if not self.ready.wait(45) or self.error:
                 raise BrowserUnavailable(self.error or "The browser took too long to start.")
@@ -153,15 +159,22 @@ class BrowserService:
         if driver != "you":
             self.driver, self.driver_at = driver, time.time()
         fut: Future = Future()
+        worker = self.thread
         self.q.put((fn, args, fut))
-        try:
-            return fut.result(timeout=timeout)
-        except FutureTimeout:
-            raise BrowserUnavailable("The browser is still busy with the last step. Try again in a moment.") from None
-        except Exception as exc:
-            if type(exc).__module__.startswith("playwright"):  # its errors carry a long call log: say it plainly
-                raise ValueError(plain(exc)) from None
-            raise
+        deadline = time.time() + timeout
+        while True:
+            try:
+                return fut.result(timeout=min(1.0, max(0.01, deadline - time.time())))
+            except FutureTimeout:
+                if time.time() >= deadline:
+                    raise BrowserUnavailable("The browser is still busy with the last step. Try again in a moment.") \
+                        from None
+                if worker is None or not worker.is_alive():  # it closed before it took this step
+                    raise BrowserUnavailable("The browser had just closed. Try again: it opens by itself.") from None
+            except Exception as exc:
+                if type(exc).__module__.startswith("playwright"):  # its errors carry a long call log: say it plainly
+                    raise ValueError(plain(exc)) from None
+                raise
 
     def status(self) -> dict:
         ok, why = availability()
@@ -171,7 +184,7 @@ class BrowserService:
 
     # ---------------------------------------------------------- worker side
 
-    def _main(self) -> None:
+    def _main(self, steps: "queue.Queue[tuple]") -> None:
         try:
             from playwright.sync_api import sync_playwright
         except ImportError as exc:
@@ -195,10 +208,18 @@ class BrowserService:
                 idle_since = time.time()
                 while not self._stop:
                     try:
-                        fn, args, fut = self.q.get_nowait()
+                        fn, args, fut = steps.get_nowait()
                     except queue.Empty:
-                        self.page.wait_for_timeout(40)  # lets Playwright deliver screencast frames
+                        page = self.page
+                        try:
+                            page.wait_for_timeout(40)  # lets Playwright deliver screencast frames
+                        except Exception:
+                            if not page.is_closed():
+                                raise
+                            if self.page is page:  # it closed during the wait (a pop-up that closed itself)
+                                self._follow_open_page()
                         if hub.count("browser") == 0 and time.time() - self.last_used > 1800:
+                            self._closing = True  # from now on a new step opens a new browser
                             break  # nobody watching or using it for 30 minutes
                         continue
                     idle_since = time.time()
@@ -208,6 +229,7 @@ class BrowserService:
                         fut.set_exception(exc)
                     self._publish_meta()
                 del idle_since
+                self._closing = True  # its pages close with it: nothing to follow
                 self.ctx.close()
         except Exception as exc:
             self.error = f"The browser stopped: {exc}"
@@ -217,6 +239,20 @@ class BrowserService:
 
     def _on_new_page(self, page) -> None:
         self._attach(page)  # follow new tabs and pop-ups
+
+    def _follow_open_page(self) -> None:
+        """The page shown was closed (a sign-in pop-up closes itself when done, a site closes its tab): carry on in
+        the newest page still open, as a browser does, rather than on one that is gone."""
+        others = [p for p in self.ctx.pages if not p.is_closed()]
+        self._attach(others[-1] if others else self.ctx.new_page())
+        self._publish_meta()
+
+    def _on_close(self, page) -> None:
+        if page is self.page and self.ctx is not None and not self._closing:
+            try:
+                self._follow_open_page()
+            except Exception:  # the whole browser is closing: the worker finds out on its own
+                pass
 
     def _attach(self, page) -> None:
         if self.cdp is not None:
@@ -239,6 +275,7 @@ class BrowserService:
         self.cdp.send("Page.startScreencast", {"format": "jpeg", "quality": 62, "maxWidth": size["width"],
                                                "maxHeight": size["height"], "everyNthFrame": 1})
         page.on("framenavigated", lambda frame: self._publish_meta() if frame == page.main_frame else None)
+        page.on("close", self._on_close)
 
     def _on_frame(self, params: dict) -> None:
         try:

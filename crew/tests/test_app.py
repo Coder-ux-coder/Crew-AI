@@ -558,6 +558,8 @@ class BrowserTests(unittest.TestCase):
             self.assertEqual(b.status()["device"], "phone")
         finally:
             browser.service.stop()
+            if browser.service.thread:
+                browser.service.thread.join(15)
             web.terminate()
 
 

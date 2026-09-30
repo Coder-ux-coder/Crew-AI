@@ -986,6 +986,8 @@ class BrowserCampaignTests(unittest.TestCase):
             self.assertLess(time.time() - started, 20)
         finally:
             b.stop()
+            if b.thread:
+                b.thread.join(15)  # closed before the next test (a browser left running can crash Python at exit)
 
 
 class MarkdownSafetyTests(unittest.TestCase):
@@ -2639,6 +2641,72 @@ with sync_playwright() as p:
         self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
                          {"blip_still_waiting": False, "blip_answer_shown": True, "blip_answer_shown_once": True,
                           "restart_still_waiting": False, "restart_told": True})
+
+
+@unittest.skipUnless(_chromium(), "no Chromium for the browser test")
+class BrowserPopupTests(unittest.TestCase):
+    def test_a69_a_sign_in_window_that_closes_itself_leaves_the_browser_where_it_was(self):
+        """A site's "Sign in" opens a small window that closes itself when done (Google and most shops do). Crew's
+        browser followed the new window, and when it closed, the browser stopped: the next step started a fresh,
+        empty browser, and the page the assistant (or the owner) was working on was gone."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        from crewapp import browser
+
+        os.environ.setdefault("CREW_CHROMIUM", _chromium())
+        site = Path(tempfile.mkdtemp(prefix="crew-site-"))
+        (site / "index.html").write_text("<title>Shop</title><h1>Shop</h1><button onclick=\"window.open('/popup.html',"
+                                         " 'signin', 'width=400,height=400')\">Sign in</button>", encoding="utf-8")
+        (site / "popup.html").write_text("<title>Sign in</title><p>Signing you in…</p>"
+                                         "<script>setTimeout(() => window.close(), 700)</script>", encoding="utf-8")
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        web = subprocess.Popen([sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"], cwd=site,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(web.wait)
+        self.addCleanup(web.kill)
+        b = browser.BrowserService()
+        try:
+            until(lambda: b.navigate(f"http://127.0.0.1:{port}/")["title"] == "Shop", timeout=30, step=0.5)
+            thread = b.thread
+            b.click_text("Sign in")
+            until(lambda: b.status()["title"] != "Sign in" and len(b.ctx.pages) == 1, timeout=20, step=0.3)
+            self.assertEqual(b.read()["title"], "Shop")  # back where it was, as in any browser
+            self.assertIs(b.thread, thread)  # the same browser: nothing was lost
+            self.assertEqual(b.status()["url"], f"http://127.0.0.1:{port}/")
+        finally:
+            b.stop()
+            if b.thread:
+                b.thread.join(15)
+
+    def test_a70_a_step_sent_while_the_browser_closes_opens_it_again(self):
+        """The browser closes itself when no one has used or watched it for 30 minutes. A step sent while it was
+        closing was handed to the closing browser, which never took it: the owner or the assistant waited a minute
+        and a half for "The browser is still busy with the last step"."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        from crewapp import browser
+
+        os.environ.setdefault("CREW_CHROMIUM", _chromium())
+        b = browser.BrowserService()
+        try:
+            b.read()
+            first = b.thread
+            b.stop()  # as when it closes after 30 minutes unused
+            started = time.time()
+            self.assertEqual(b.read()["url"], "about:blank")  # a new browser took the step
+            self.assertLess(time.time() - started, 45)
+            self.assertIsNot(b.thread, first)
+            self.assertFalse(first.is_alive())  # one browser at a time
+        finally:
+            b.stop()
+            if b.thread:
+                b.thread.join(15)
 
 
 class RightToLeftTests(unittest.TestCase):
