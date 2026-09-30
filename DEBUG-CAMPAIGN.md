@@ -45,11 +45,9 @@ never copy it onto the owner's computer.)
 - Round 8 (front end, line by line) done: every script in crewapp/static read; F10–F19 fixed, each with a Chromium
   test that fails on the code before it; the scorecard labels a replaced model as the earlier one. Round 10
   (Windows, by reading) done: launcher.py, the installer and uninstaller, server.main, __main__.py, crew.cmd (C30).
-- Last full suite (fifth continuation): 240 tests OK in 7 min 9 s on eea3625 (Python 3.11, Playwright + Chromium,
-  0 skipped); after it, F22, A67 and A68 with their own tests and the Markdown tests. The cloud checks (Python
-  3.12: full suite, compileall, ruff, eslint, node --check) passed on 4364d69 (run 24). Earlier: 216 tests OK. After F10–F19 each fix's own test and the related browser tests
-  passed; a full run was started and interrupted before it finished — run it first (section 8 of CODEX-HANDOFF).
-  The cloud checks run on every push to this branch (run 16, the model change and round 6: success).
+- Last full suite (fifth continuation): 247 tests OK in 7 min 21 s on 1a25edc (Python 3.11, Playwright + Chromium,
+  0 skipped). The cloud checks (Python 3.12) passed on 4364d69 (run 24); runs 25–28 failed on the F22 test's own
+  fault (fixed in 4b585bb; run 28 shows every other test, A69–A72 included, passing there). Earlier: 216 OK.
 - Next: carry on the clean round (rounds 11+); the open question on per-model weekly limits (section 12); release
   2.3.1 only with the owner's go-ahead. Keep this section, the ledger and section 11 current after every step.
 - Verified by reading only (Windows): crew.cmd, the launcher's Windows paths, set_start_with_windows,
@@ -1016,6 +1014,14 @@ fix (checked by running each against the code without the fix) and passes with i
   at a time for many seconds, and the corner was looked at only before it began: pushing the pointer there while it
   typed did not stop it · typed 40 characters at a time, the corner looked at in between; the owner's own typing
   from the live view is unchanged · test_a72_a_long_text_stops_half_way_when_the_owner_says_so.
+- Two faults in the tests themselves, found by full runs: (1) the cloud checks failed on runs 25–27 (Python 3.12):
+  the F22 test read every entry of the sidebar's recent list, which in a full run also holds other tests' chats
+  (English titles); run alone it passed. It now reads its own chat's entry (4b585bb; the failure reproduced
+  locally by running another chat test first). (2) A local full run failed the F14 test once: a form puts the
+  cursor in its first field 30 ms after it opens, and on a busy machine that landed in the middle of the test
+  filling the second field, so the instructions were appended to the workflow's name. F14 and F19 now wait for
+  the form's first focus before typing, as a person does (1a25edc). No product change: nobody types within
+  30 ms of a form opening, and nothing else in those forms moves the cursor (checked).
 - The API fuzzer again (quick: 3,233 requests over every route, 532 s): no 500, no traceback, no hang. Its three
   flags, explained: "data changed" twice was the test fake writing a conversation file for `claude auth status`
   (the real program writes none; the fake now answers as it does, and those routes fuzz clean); "no answer" once

@@ -36,7 +36,7 @@ owner's go-ahead to release as 2.3.1.
    page in Crew's browser (A69); file names in Urdu escaped the safety scan (C33); behind an office proxy the
    browser, computer and phone tools failed (A59). Fixes from a parallel session that never reached this line are
    brought over.
-6. Every fix has a test that fails without it; the full suite passes (240 tests); GitHub runs the checks on every
+6. Every fix has a test that fails without it; the full suite passes (247 tests); GitHub runs the checks on every
    push to this branch.
 
 ### What is left

@@ -24,10 +24,10 @@
   chat catches up when its connection comes back, and draws each answer once), F21
   (after an update only Crew is taken for Crew; a rolled-back Crew is recognised), F22 (Urdu reads right to left:
   answers, messages, the team conversation, titles, the message boxes).
-- **Tests:** full suite 240 OK in 7 min 9 s (Python 3.11, Playwright + Chromium, 0 skipped) before F22, A67 and
-  A68; their own tests and the Markdown tests after; the cloud checks (Python 3.12) passed on 4364d69. ruff (cloud
-  config), eslint and `node --check` clean. The browser sweep (120 screens, both sizes and themes) flags only the
-  404s of the two addresses it opens on purpose.
+- **Tests:** full suite 247 OK in 7 min 21 s on 1a25edc (Python 3.11, Playwright + Chromium, 0 skipped). ruff
+  (cloud config), eslint and `node --check` clean. Cloud checks: run 24 passed; runs 25–28 failed on a fault in
+  the F22 test itself (fixed in 4b585bb). The browser sweep (120 screens, both sizes and themes) flags only the
+  404s of the two addresses it opens on purpose; the quick API fuzzer (3,233 requests) finds nothing.
 - **What is left:** (1) the release, only with the owner's go-ahead; (2) on the owner's Windows PC: a small team
   project (its checks now run in Git's bash), the desktop icon, the Computer page's double-click, a message in
   Urdu; (3) the owner's answers on Urdu and on the per-model weekly limit; (4) carry on the clean round.
