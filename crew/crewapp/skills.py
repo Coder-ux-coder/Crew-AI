@@ -113,7 +113,7 @@ def create(name: str, when: str, steps: str) -> dict:
     if not name.strip():
         raise ValueError("Give the skill a name.")
     skill_id = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48]
-    if not skill_id:  # a name in Urdu (or any other script): the id is made from it, the title keeps it
+    if not skill_id:  # a name in any other script (Arabic, Chinese): the id is made from it, the title keeps it
         skill_id = "skill-" + hashlib.sha1(name.strip().encode("utf-8")).hexdigest()[:8]
     if skill_id == "anthropic":  # the app's address for Anthropic's own skills
         skill_id = "anthropic-skill"

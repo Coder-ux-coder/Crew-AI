@@ -27,7 +27,7 @@ class GitError(RuntimeError):
 def git(cwd: Path, *args: str, check: bool = True, timeout: float = 300) -> subprocess.CompletedProcess:
     env = dict(os.environ)
     env.setdefault("GIT_TERMINAL_PROMPT", "0")
-    # core.quotepath=false: a file named in another alphabet (Urdu) is written as its name, not as escapes in quotes
+    # core.quotepath=false: a file named in another alphabet (Arabic, Chinese) is written as its name, not as escapes
     proc = subprocess.run(["git", "-c", "core.quotepath=false", *args], cwd=str(cwd), env=env, capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
     if check and proc.returncode != 0:

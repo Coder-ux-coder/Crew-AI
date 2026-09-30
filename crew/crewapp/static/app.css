@@ -376,7 +376,7 @@ select { appearance: none; padding-right: 32px; cursor: pointer;
 .md p { margin: 0 0 .85em; } .md p:last-child { margin-bottom: 0; }
 .md h1, .md h2, .md h3, .md h4 { font-family: var(--sans); margin: 1.25em 0 .5em; font-weight: 650; letter-spacing: -.005em; }
 .md h2 { font-size: 1.12em; } .md h3 { font-size: 1.02em; } .md h4 { font-size: .98em; }
-/* Each item keeps its own side: an Urdu item's bullet and indent on the right, an English one's on the left. */
+/* Each item keeps its own side: a right-to-left item's bullet and indent on the right, an English one's on the left. */
 .md ul, .md ol { margin: 0 0 .85em; padding: 0; } .md li { margin: .25em 0; margin-inline-start: 1.4em; } .md li::marker { color: var(--muted); }
 .md code { font-family: var(--mono); font-size: .84em; background: var(--code); padding: .12em .38em; border-radius: 5px; border: 1px solid var(--line-2); }
 .md pre { background: var(--code); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; overflow-x: auto; font-size: 13.5px; line-height: 1.5; }

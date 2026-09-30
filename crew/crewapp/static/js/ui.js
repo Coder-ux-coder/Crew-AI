@@ -345,8 +345,8 @@ function cells(line) {
   return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
 }
 
-// Every paragraph, heading, list item and table cell takes its direction from its own text (dir="auto"): Urdu or
-// Arabic reads right to left, with its punctuation, bullets and any English words in their right places.
+// Every paragraph, heading, list item and table cell takes its direction from its own text (dir="auto"): Arabic or
+// Hebrew reads right to left, with its punctuation, bullets and any English words in their right places.
 export function markdown(src) {
   const lines = String(src || '').replace(/\r\n?/g, '\n').split('\n');
   const out = [];

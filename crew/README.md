@@ -110,7 +110,7 @@ To remove Crew, run **Uninstall Crew.cmd**.
 | **Connections** | Any API key (Hunter.io, Google, OpenAI, …) and connected services (MCP servers), with one-click import from the Claude desktop app. Keys stay on your computer and are hidden from every chat, log and report. |
 | **Usage & scorecard** | Each subscription's 5-hour and weekly limits with reset times, tokens per day, and the Claude Code version. The **Model scorecard** tab: each model's first-check pass rate overall and by kind of work, typical time and tokens, head-to-head results, and the routing rules Crew applies. |
 | **Browser · Phone · Computer** | A real browser you and Claude share, your Samsung, and your Windows screen — side by side with your work, in a panel you can widen by dragging. |
-| **Settings** | The few choices that matter, with technical ones under **Advanced**: subscriptions, models and effort, how the team works, instructions, voice (including Urdu), look (light/dark, colour, book or plain type), phone pairing, lessons learned (the team's, and the CEO's own record of which effort works for what), updates and check-up. |
+| **Settings** | The few choices that matter, with technical ones under **Advanced**: subscriptions, models and effort, how the team works, instructions, voice, look (light/dark, colour, book or plain type), phone pairing, lessons learned (the team's, and the CEO's own record of which effort works for what), updates and check-up. |
 
 ## Use it on your Samsung
 
@@ -151,7 +151,7 @@ both devices.
   secure"). Sign in to Google in your normal browser instead, or use sites
   that do not need it.
 - Typing on the phone through the connector supports English letters only; use
-  the phone's own keyboard for Urdu. iPhones cannot be controlled this way
+  the phone's own keyboard for other languages. iPhones cannot be controlled this way
   (Apple does not allow it); Android phones such as Samsung can.
 - Anthropic's Pro and Max plans assume ordinary, individual use. Use only your
   own subscriptions and never share sign-ins.

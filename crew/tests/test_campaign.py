@@ -849,10 +849,10 @@ class AppPieceTests(unittest.TestCase):
             text = (home / "skills" / "skills" / skill["id"] / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn(f'description: "Use when {when}"', text)
             self.assertEqual(skill["description"], f"Use when {when}")
-            urdu = skills_mod.create("رپورٹ لکھنا", "جب بورڈ کے لیے رپورٹ لکھنی ہو",
-                                     "سانچہ کھولیں، ہر حصہ بھریں، پھر اعداد دو بار جانچیں۔")
-            self.assertTrue(urdu["id"].startswith("skill-"))
-            self.assertIn("رپورٹ لکھنا", urdu["body"])
+            chinese = skills_mod.create("报告写作", "每当需要为董事会写一份正式报告时",
+                                     "打开模板，填写每一部分，然后把数字检查两遍。")
+            self.assertTrue(chinese["id"].startswith("skill-"))
+            self.assertIn("报告写作", chinese["body"])
 
     def test_a22_a_missing_or_silent_phone_program_is_explained(self):
         service = phone_mod.PhoneService()
@@ -922,8 +922,8 @@ class AppPieceTests(unittest.TestCase):
             chats = chat_mod.ChatManager()
             cid = chats.create()["id"]
             names = [chats.save_attachment(cid, n, b"x")["name"]
-                     for n in ("CON.txt", "nul", "com1.tar.gz", "رپورٹ.pdf", "report.pdf")]
-            self.assertEqual(names, ["file-CON.txt", "file-nul", "file-com1.tar.gz", "رپورٹ.pdf", "report.pdf"])
+                     for n in ("CON.txt", "nul", "com1.tar.gz", "报告.pdf", "report.pdf")]
+            self.assertEqual(names, ["file-CON.txt", "file-nul", "file-com1.tar.gz", "报告.pdf", "report.pdf"])
 
     def test_a19_a20_workflows(self):
         with TempHome():
@@ -1254,6 +1254,54 @@ with sync_playwright() as p:
                                        "Summarise the morning news on Punjab's industry, with sources."])
         self.assertFalse(res["open"])
         self.assertIn("Morning briefing", res["names"])
+
+
+class NoUrduTests(unittest.TestCase):
+    PROBE = r"""
+import json, sys
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.launch(executable_path=sys.argv[2])
+    page = b.new_page(viewport={"width": 1280, "height": 650})
+    page.goto(sys.argv[1] + "#/settings/voice")
+    page.wait_for_selector(".settings select")
+    langs = page.evaluate("[...document.querySelector('.settings select').options].map((o) => [o.value, o.text])")
+    chosen = page.evaluate("document.querySelector('.settings select').value")
+    print(json.dumps({"langs": langs, "chosen": chosen, "text": page.inner_text(".settings")}))
+    b.close()
+"""
+
+    def test_the_owner_asked_for_no_urdu(self):
+        """The owner's decision: Crew offers no Urdu (Settings → Voice, the automatic voice, the tools and the guide).
+        A language chosen earlier that is no longer listed still shows as chosen, so no setting changes by itself."""
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright is not installed")
+        from crewapp import devices_mcp
+
+        for folder in ("crewapp", "crewlib"):
+            for path in (ROOT / folder).rglob("*"):
+                if path.suffix in (".py", ".js", ".html", ".css") and "__pycache__" not in path.parts:
+                    self.assertNotIn("urdu", path.read_text(encoding="utf-8").lower(), path)
+        self.assertNotIn("urdu", (ROOT / "README.md").read_text(encoding="utf-8").lower())
+        self.assertNotIn("urdu", json.dumps(devices_mcp.TOOLS).lower())
+        os.environ.update(ENV)
+        s = AppServer()
+        try:
+            before = s.api("GET", "/api/settings")["app"]["dictation_lang"]
+            s.api("PUT", "/api/settings", {"app": {"dictation_lang": "ur-PK"}})  # chosen before this change
+            out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium()],
+                                 capture_output=True, text=True, timeout=120)
+            s.api("PUT", "/api/settings", {"app": {"dictation_lang": before}})
+        finally:
+            s.stop()
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        res = json.loads(out.stdout.strip().splitlines()[-1])
+        self.assertEqual(res["chosen"], "ur-PK")  # kept as it was, shown as chosen
+        self.assertNotIn("Urdu", json.dumps(res["langs"], ensure_ascii=False))
+        self.assertIn(["en-US", "English (United States)"], res["langs"])
+        self.assertNotIn("Urdu", res["text"])
 
 
 class DialogNavigationTests(unittest.TestCase):
@@ -2329,7 +2377,7 @@ class ToolServerTests(unittest.TestCase):
         UTF-8 holds the byte 0x81, which cp1252 cannot read), and what it could read arrived garbled."""
         app = _AppStandIn()
         try:
-            text = "Grüße aus Łódź → پنجاب ✔"
+            text = "Grüße aus Łódź → 你好 ✔"
             replies = _rpc_session("crewapp.devices_mcp", self.windows_like_env(CREW_APP_URL=app.url, CREW_APP_TOKEN="t"), [
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
@@ -2576,9 +2624,9 @@ class KeysFileTests(unittest.TestCase):
 
 
 class FileNameTests(unittest.TestCase):
-    def test_c33_files_named_in_urdu_or_with_spaces_are_named_plainly(self):
+    def test_c33_files_named_in_another_alphabet_or_with_spaces_are_named_plainly(self):
         """Git writes a name in another alphabet as escapes in quotes ("b/\\330\\261…py"). Crew's scan took that for
-        the name: its type ended in a quote, so the checks for Python never read an Urdu-named Python file, and the
+        the name: its type ended in a quote, so the checks for Python never read a Python file named in Chinese, and the
         reviewer, the report and the refiner saw escapes where the name should be. A clash in a file whose name has a
         space in it was reported as two files."""
         from crewlib import quality
@@ -2588,14 +2636,14 @@ class FileNameTests(unittest.TestCase):
         gitops.commit_all(repo, "base")
         base = gitops.head(repo)
         gitops.git(repo, "checkout", "-q", "-b", "task")
-        (repo / "رپورٹ.py").write_text("import subprocess\nsubprocess.run(cmd, shell=True)\n", encoding="utf-8")
+        (repo / "报告.py").write_text("import subprocess\nsubprocess.run(cmd, shell=True)\n", encoding="utf-8")
         (repo / "My Report.md").write_text("from the task\n", encoding="utf-8")
         gitops.commit_all(repo, "task")
         scan = quality.scan(repo, base)
         self.assertEqual([(f.file, f.line, f.what) for f in scan.findings],
-                         [("رپورٹ.py", 2, "runs a shell command with shell=True")])
-        self.assertEqual(sorted(gitops.changed_files(repo, base, "task")), ["My Report.md", "رپورٹ.py"])
-        self.assertIn("رپورٹ.py", gitops.diffstat(repo, base, "task"))
+                         [("报告.py", 2, "runs a shell command with shell=True")])
+        self.assertEqual(sorted(gitops.changed_files(repo, base, "task")), ["My Report.md", "报告.py"])
+        self.assertIn("报告.py", gitops.diffstat(repo, base, "task"))
         gitops.git(repo, "checkout", "-q", "--detach", base)
         (repo / "My Report.md").write_text("from newer work\n", encoding="utf-8")
         gitops.commit_all(repo, "newer")
@@ -2808,8 +2856,8 @@ class RightToLeftTests(unittest.TestCase):
 import json, sys
 from playwright.sync_api import sync_playwright
 base, chrome, cid = sys.argv[1], sys.argv[2], sys.argv[3]
-ANSWER = ("کریو ایک ٹیم ہے جو آپ کے لیے کام کرتی ہے۔\n\n- پہلا نکتہ: یہ تیز ہے!\n- دوسرا نکتہ: Crew 2.3 میں نیا کیا ہے؟\n\n"
-          "| نام | Value |\n|---|---|\n| رفتار | Fast |\n\nAn English line at the end.")
+ANSWER = ("كرو فريق يعمل من أجلك.\n\n- النقطة الأولى: إنه سريع!\n- النقطة الثانية: ما الجديد في Crew 2.3؟\n\n"
+          "| الاسم | Value |\n|---|---|\n| السرعة | Fast |\n\nAn English line at the end.")
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path=chrome)
     page = b.new_page(viewport={"width": 1280, "height": 650})
@@ -2817,7 +2865,7 @@ with sync_playwright() as p:
     page.wait_for_selector(".turn-user .bubble")
     page.evaluate("(md) => import('/js/ui.js').then((ui) => { const d = document.createElement('div'); d.className = 'md';"
                   " d.id = 'answer'; d.innerHTML = ui.markdown(md); document.querySelector('.thread').append(d); })", ANSWER)
-    page.fill(".composer textarea", "اگلا سوال")
+    page.fill(".composer textarea", "السؤال التالي")
     rtl = lambda sel: page.evaluate("(s) => [...document.querySelectorAll(s)].map((e) => e.matches(':dir(rtl)'))", sel)
     # the sidebar also lists chats and projects other tests made: this chat's own entry
     out = {"titles": rtl(".title-btn .ellipsis") + rtl("#recents a[href='#/chat/%s'] .t" % cid),
@@ -2826,12 +2874,12 @@ with sync_playwright() as p:
            "bullet_on_the_right": page.evaluate("(() => { const li = document.querySelector('#answer li');"
                " const r = li.getBoundingClientRect(), ul = li.parentElement.getBoundingClientRect();"
                " return ul.right - r.right > 10 && r.left - ul.left < 2; })()")}
-    # A project's conversation: the owner writes to the team in Urdu, and an agent answers in Urdu
+    # A project's conversation: the owner writes to the team in Arabic, and an agent answers in Arabic
     state = {"title": "Bakery site", "running": True, "starting": False, "raw_phase": "build", "phase": "Building",
              "agents": [], "tasks": [], "accounts": [], "messages": [
-                 {"id": 1, "t": 1, "who": "you", "kind": "chat", "text": "Use our brand colours: سبز اور سفید",
-                  "original": "ہمارے برانڈ کے رنگ استعمال کریں: سبز اور سفید"},
-                 {"id": 2, "t": 2, "who": "lead", "kind": "decision", "text": "ٹھیک ہے! Header سبز ہوگا۔"}]}
+                 {"id": 1, "t": 1, "who": "you", "kind": "chat", "text": "Use our brand colours: أخضر وأبيض",
+                  "original": "استخدموا ألوان علامتنا التجارية: أخضر وأبيض"},
+                 {"id": 2, "t": 2, "who": "lead", "kind": "decision", "text": "حسنًا! Header سيكون أخضر."}]}
     page.route("**/api/runs/t1?after=*", lambda route: route.fulfill(status=200, content_type="application/json",
                                                                       body=json.dumps(state)))
     page.goto(base + "#/projects/t1")
@@ -2843,9 +2891,9 @@ with sync_playwright() as p:
     b.close()
 """
 
-    def test_f22_urdu_reads_right_to_left_with_english_words_in_place(self):
-        """Urdu in a message or an answer was laid out as English is: left to right. A sentence with an English
-        word or a number in it came out in the wrong order ("دوسرا نکتہ: Crew 2.3 میں نیا کیا ہے؟" read back to
+    def test_f22_right_to_left_text_reads_right_to_left_with_english_words_in_place(self):
+        """Text in a right-to-left script (Arabic, Hebrew) in a message or an answer was laid out as English is: left
+        to right. A sentence with an English word or a number in it came out in the wrong order ("النقطة الثانية: ما الجديد في Crew 2.3؟" read back to
         front), its "!" and "?" stood at the start, and list bullets sat on the wrong side. Each paragraph, list item,
         table cell and message now takes its direction from its own text; English stays left to right."""
         try:
@@ -2856,7 +2904,7 @@ with sync_playwright() as p:
         s = AppServer()
         try:
             cid = s.api("POST", "/api/chats", {})["id"]
-            s.api("POST", f"/api/chats/{cid}/send", {"text": "کریو کیا ہے؟ مجھے Crew 2.3 کے بارے میں بتائیں۔"})
+            s.api("POST", f"/api/chats/{cid}/send", {"text": "ما هو كرو؟ أخبرني عن Crew 2.3."})
             until(lambda: not s.api("GET", f"/api/chats/{cid}")["busy"], timeout=30)
             out = subprocess.run([sys.executable, "-c", self.PROBE, f"http://127.0.0.1:{s.port}/", _chromium(), cid],
                                  capture_output=True, text=True, timeout=120)
