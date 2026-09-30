@@ -1215,6 +1215,8 @@ with sync_playwright() as p:
     page.route("**/api/workflows", save)
     page.goto(sys.argv[1] + "#/workflows")
     page.click("text=New workflow")
+    # the form puts the cursor in its first field a moment after it opens: typing before that can land there
+    page.wait_for_function("document.activeElement && document.activeElement.closest('.dialog')")
     page.fill(".dialog input[type=text]", "Morning briefing")
     page.fill(".dialog textarea", "Summarise the morning news on Punjab's industry, with sources.")
     page.click(".dialog .btn.primary")
@@ -1441,6 +1443,7 @@ with sync_playwright() as p:
     # A connected service whose name Crew refuses (a space): the address and the key must still be there.
     page.goto(sys.argv[1] + "#/connections")
     page.click("text=Add a service")
+    page.wait_for_function("document.activeElement && document.activeElement.closest('.dialog')")  # the form's own first focus comes first
     page.fill(".dialog label:has-text('Name') input", "My CRM")
     page.fill(".dialog input[type=url]", "https://crm.example.com/mcp")
     page.fill(".dialog textarea", "Authorization: Bearer sk-crm-1234567890")
@@ -1466,6 +1469,7 @@ with sync_playwright() as p:
     page.route("**/api/skills", skill)
     page.goto(sys.argv[1] + "#/skills")
     page.click("text=Create a skill")
+    page.wait_for_function("document.activeElement && document.activeElement.closest('.dialog')")
     fields = page.locator(".dialog input, .dialog textarea")
     fields.nth(0).fill("Formal letter format")
     fields.nth(1).fill("writing any official letter")
