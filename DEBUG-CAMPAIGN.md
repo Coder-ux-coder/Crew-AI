@@ -1017,9 +1017,10 @@ fix (checked by running each against the code without the fix) and passes with i
 - Two faults in the tests themselves, found by full runs: (1) the cloud checks failed on runs 25–27 (Python 3.12):
   the F22 test read every entry of the sidebar's recent list, which in a full run also holds other tests' chats
   (English titles); run alone it passed. It now reads its own chat's entry (4b585bb; the failure reproduced
-  locally by running another chat test first). (2) A local full run failed the F14 test once: a form puts the
-  cursor in its first field 30 ms after it opens, and on a busy machine that landed in the middle of the test
-  filling the second field, so the instructions were appended to the workflow's name. F14 and F19 now wait for
+  locally by running another chat test first). (2) A local full run failed the F14 test once, and the cloud run 29
+  the F19 test: a form puts the cursor in its first field 30 ms after it opens, and on a busy machine that landed
+  in the middle of the test filling the second field, so the instructions were appended to the workflow's name
+  (F19: the service's form then refused to save and stayed open over the next page). F14 and F19 now wait for
   the form's first focus before typing, as a person does (1a25edc). No product change: nobody types within
   30 ms of a form opening, and nothing else in those forms moves the cursor (checked).
 - The API fuzzer again (quick: 3,233 requests over every route, 532 s): no 500, no traceback, no hang. Its three
