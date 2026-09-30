@@ -18,6 +18,7 @@ import zlib
 from .sse import hub
 
 MAX_WIDTH = 1280  # pictures for the assistant and the live view
+TYPE_CHUNK = 40  # characters typed between two looks at the corner (about a sixth of a second)
 
 
 class ComputerError(RuntimeError):
@@ -362,7 +363,9 @@ class ComputerService:
             return
         d = self.desk()
         x, y = d.cursor()
-        corner = lambda p: p[0] <= 2 and p[1] <= 2  # noqa: E731
+        # The main screen's top-left corner: not "nowhere" (-1, -1, before the assistant has used the mouse), nor a
+        # second screen to the left of or above the main one (its positions are below zero)
+        corner = lambda p: 0 <= p[0] <= 2 and 0 <= p[1] <= 2  # noqa: E731
         if corner((x, y)) and not corner(self.ai_pointer):  # the owner pushed the pointer into the corner
             self.paused_until = time.time() + 30
         if time.time() < self.paused_until:
@@ -421,7 +424,11 @@ class ComputerService:
             text = str(body.get("text", ""))
             if not text:
                 raise ComputerError("Nothing to type.")
-            d.type(text)
+            # A few words at a time, the corner looked at in between: a long text stops when the owner says so
+            for start in range(0, len(text), TYPE_CHUNK):
+                if start:
+                    self._guard(driver)
+                d.type(text[start:start + TYPE_CHUNK])
             return {"ok": True}
         if action == "key":
             d.keys(parse_keys(str(body.get("keys") or body.get("key") or "")))

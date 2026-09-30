@@ -2643,6 +2643,56 @@ with sync_playwright() as p:
                           "restart_still_waiting": False, "restart_told": True})
 
 
+class ComputerStopTests(unittest.TestCase):
+    """The owner stops the assistant's control of the computer by pushing the mouse pointer into the top-left corner
+    of the screen (the tool descriptions and the app say so)."""
+
+    @staticmethod
+    def service():
+        from crewapp import computer as computer_mod
+
+        with mock.patch.dict(os.environ, {"CREW_FAKE_DESKTOP": "1"}):
+            svc = computer_mod.ComputerService()
+            return svc, svc.desk(), computer_mod.ComputerError
+
+    def test_a71_the_corner_stops_the_assistant_before_it_has_used_the_mouse(self):
+        """Where the assistant last put the pointer starts as "nowhere" (-1, -1), which the corner test also counted as
+        the corner: until the assistant had clicked or moved somewhere, a pointer in the corner was taken for its own
+        doing and ignored. An assistant that only opened an app and typed could not be stopped."""
+        svc, desk, stopped = self.service()
+        desk.pointer = (0, 0)  # the owner pushes the pointer into the corner
+        with self.assertRaises(stopped):
+            svc.act("type", {"text": "Dear team"}, driver="assistant")
+        self.assertEqual(desk.log, [])
+        svc.paused_until = 0
+        desk.pointer = (-600, 1)  # a second screen to the left of the main one is not the corner
+        svc.act("type", {"text": "Dear team"}, driver="assistant")
+        self.assertEqual(desk.log, ["type Dear team"])
+        svc.act("click", {"x": 0, "y": 0}, driver="assistant")  # the assistant itself clicks at the very corner
+        svc.act("type", {"text": "!"}, driver="assistant")  # that is not the owner stopping it
+        self.assertEqual(desk.log[-1], "type !")
+
+    def test_a72_a_long_text_stops_half_way_when_the_owner_says_so(self):
+        """A long text (a letter, a report) is typed one character at a time, for many seconds. The corner was looked at
+        only before it began: pushing the pointer there while it typed did not stop it."""
+        svc, desk, stopped = self.service()
+        typed: list[str] = []
+
+        def type_(text):
+            typed.append(text)
+            if len(typed) == 2:
+                desk.pointer = (1, 1)  # the owner pushes the pointer into the corner
+
+        desk.type = type_
+        with self.assertRaises(stopped):
+            svc.act("type", {"text": "word " * 400}, driver="assistant")
+        self.assertLess(len("".join(typed)), 200)  # stopped a moment after the owner asked
+        self.assertEqual("".join(typed), ("word " * 400)[:len("".join(typed))])  # what was typed is the text's start
+        svc.paused_until, desk.pointer, typed[:] = 0, (900, 500), []
+        svc.act("type", {"text": "word " * 400}, driver="you")  # the owner's own typing from the live view is theirs
+        self.assertEqual("".join(typed), "word " * 400)
+
+
 @unittest.skipUnless(_chromium(), "no Chromium for the browser test")
 class BrowserPopupTests(unittest.TestCase):
     def test_a69_a_sign_in_window_that_closes_itself_leaves_the_browser_where_it_was(self):
