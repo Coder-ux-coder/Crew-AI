@@ -144,6 +144,12 @@ each account in one of four modes:
 | **conserve** | little left, long until reset (or weekly nearly used) | small tasks and slow-but-cheap work: running suites, verification, docs |
 | **parked** | limit reached | nothing; its seats move to another account until reset |
 
+A limit on one model only (Claude Code reports a plan's weekly cap on Opus as
+its own kind of limit) parks only the work on that model: the Sonnet
+workhorses on the same account keep building, while Opus work (a manager seat,
+a review, the judge) moves to another account or waits until that model is
+back.
+
 Task size (S/M/L) is priced from past runs (learned tokens per task, per
 model). A large task is never started on an account unlikely to finish it.
 New work goes to the account with the lowest burn relative to its clock, so

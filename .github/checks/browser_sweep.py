@@ -1,4 +1,4 @@
-"""Browser sweep of the Crew app — the dynamic sweep of DEBUG-CAMPAIGN.md (section 3).
+"""Browser sweep of the Crew app: every screen, and every control on it, in a real browser.
 
 Every screen at 1280x650 (the owner's laptop at 150%) and 390x844 (the phone), in light and dark. On the light theme
 every visible control of each screen is clicked once, each time on a fresh copy of that screen. It records:
@@ -9,11 +9,11 @@ every visible control of each screen is clicked once, each time on a fresh copy 
 and saves a screenshot of every screen for review.
 
 The real server runs in this process (tests/test_app.AppServer) with the scripted fakes, in a Crew folder of its own,
-filled like the owner's: four subscriptions, chats (one in Urdu), a finished team project, a workflow, a skill, a
+filled like the owner's: four subscriptions, chats (one titled in Arabic), a finished team project, a workflow, a skill, a
 capture, a connection and a key. Nothing reaches the network or this computer (downloads, Claude Code updates and
 opening folders are replaced by stand-ins).
 
-    python .github/campaign/browser_sweep.py [--out folder] [--no-click] [--only route-substring]
+    python .github/checks/browser_sweep.py [--out folder] [--no-click] [--only route-substring]
 
 Exit code 0 when nothing was flagged.
 """
@@ -42,10 +42,10 @@ from crewlib import claude_cli  # noqa: E402
 SIZES = {"laptop": {"width": 1280, "height": 650}, "phone": {"width": 390, "height": 844}}
 THEMES = ("light", "dark")
 OWNER_ACCOUNTS = [{"name": "claude-1", "vendor": "claude", "profile": ""},
-                  {"name": "ceo-pbit.gop.pk", "vendor": "claude", "profile": ""},
-                  {"name": "zeeshandmg36-gmail.com", "vendor": "claude", "profile": ""},
-                  {"name": "mohidzeeshanrana-gmail.com", "vendor": "codex", "profile": ""}]
-URDU_TITLE = "پنجاب بورڈ آف انویسٹمنٹ — سرمایہ کاری کانفرنس کی تیاری اور مہمانوں کی فہرست"
+                  {"name": "ceo-office.example.pk", "vendor": "claude", "profile": ""},
+                  {"name": "samlee36-gmail.com", "vendor": "claude", "profile": ""},
+                  {"name": "alexmorgan-gmail.com", "vendor": "codex", "profile": ""}]
+RTL_TITLE = "تقرير مجلس الاستثمار — التحضير للمؤتمر وقائمة الضيوف"  # Arabic: a title that reads right to left
 CONTROLS = ("button, a[href], [role=button], [role=tab], [role=menuitem], input[type=checkbox], input[type=radio], "
             "select, summary, label.switch, .chip, [data-nav]")
 
@@ -108,7 +108,7 @@ class Sweep:
 
     def fill(self) -> dict:
         s = self.s
-        s.api("PUT", "/api/settings", {"accounts": OWNER_ACCOUNTS, "app": {"owner_name": "Zeeshan"}})
+        s.api("PUT", "/api/settings", {"accounts": OWNER_ACCOUNTS, "app": {"owner_name": "Sam"}})
         s.api("PUT", "/api/secrets", {"name": "HUNTER_API_KEY", "value": "hk_test_0123456789abcdef"})
         s.api("POST", "/api/connections/mcp", {"name": "notion", "type": "http", "url": "https://mcp.notion.com/mcp"})
         s.api("POST", "/api/skills", {"name": "Board report", "when": "writing a report for the board",
@@ -124,9 +124,9 @@ class Sweep:
             s.api("POST", f"/api/chats/{cid}/send", {"text": prompt})
             until(lambda cid=cid: not s.api("GET", f"/api/chats/{cid}")["busy"], timeout=90)
             chats[key] = cid
-        s.api("PUT", f"/api/chats/{chats['steps']}", {"title": URDU_TITLE})
+        s.api("PUT", f"/api/chats/{chats['steps']}", {"title": RTL_TITLE})
         s.api("PUT", f"/api/chats/{chats['claude']}", {"pinned": True})
-        ids["chat"], ids["chat_urdu"], ids["chat_gpt"], ids["chat_page"] = (chats["claude"], chats["steps"],
+        ids["chat"], ids["chat_rtl"], ids["chat_gpt"], ids["chat_page"] = (chats["claude"], chats["steps"],
                                                                              chats["gpt"], chats["page"])
         w = s.api("POST", "/api/workflows", {"name": "Morning briefing", "prompt": "Summarise the news briefly.",
                                              "engine": "claude", "schedule": {"kind": "daily", "time": "08:00",
@@ -143,7 +143,7 @@ class Sweep:
     # -------------------------------------------------------------- one screen
 
     def routes(self, ids: dict) -> list[str]:
-        out = ["/", "/new", f"/chat/{ids['chat']}", f"/chat/{ids['chat_urdu']}", f"/chat/{ids['chat_gpt']}",
+        out = ["/", "/new", f"/chat/{ids['chat']}", f"/chat/{ids['chat_rtl']}", f"/chat/{ids['chat_gpt']}",
                f"/chat/{ids['chat_page']}", "/chats", "/projects", f"/projects/{ids['run']}", "/workflows",
                "/library", "/skills", "/connections", "/usage", "/usage/scorecard", "/browser", "/phone", "/computer",
                "/no-such-screen", "/chat/no-such-chat", "/projects/no-such-project"]
@@ -290,7 +290,7 @@ class Sweep:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=str(REPO / ".github" / "campaign" / "sweep-out"))
+    ap.add_argument("--out", default=str(REPO / ".github" / "checks" / "sweep-out"))
     ap.add_argument("--no-click", action="store_true")
     ap.add_argument("--only")
     a = ap.parse_args()

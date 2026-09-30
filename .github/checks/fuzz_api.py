@@ -1,7 +1,7 @@
-"""API fuzzer for the Crew app — the dynamic sweep of DEBUG-CAMPAIGN.md (section 3).
+"""API fuzzer for the Crew app: every route of the server, with odd and hostile input.
 
 Generated from crewapp.server.ROUTES: every route is called with its path ids and body fields missing, empty, of the
-wrong type, huge, in Urdu, path-like and hostile. It flags:
+wrong type, huge, in Arabic, path-like and hostile. It flags:
   * any 500, and any request the server did not answer (a dropped connection);
   * any traceback written to stderr, and any exception that ended a thread;
   * any request slower than 30 seconds;
@@ -11,7 +11,7 @@ The real server runs in this process (tests/test_app.AppServer) with the scripte
 folder of its own. Nothing reaches the network or this computer: downloads, Claude Code updates, opening folders and
 starting team projects are replaced by stand-ins.
 
-    python .github/campaign/fuzz_api.py [--quick] [--only substring] [--report path.json]
+    python .github/checks/fuzz_api.py [--quick] [--only substring] [--report path.json]
 
 Exit code 0 when nothing was flagged.
 """
@@ -54,9 +54,9 @@ SLOW = 30.0
 # ------------------------------------------------------------------ values
 
 HUGE = "A" * 1_000_000
-URDU = "پنجاب بورڈ آف انویسٹمنٹ کی رپورٹ"
+RTL = "تقرير مجلس الاستثمار"  # Arabic: right to left
 TEXTS = [
-    "", " ", "\t\n", "0", "-1", "null", "true", URDU, "🙂" * 50, HUGE,
+    "", " ", "\t\n", "0", "-1", "null", "true", RTL, "🙂" * 50, HUGE,
     "../../../../etc/passwd", "..\\..\\..\\Windows\\win.ini", "C:\\Windows\\System32\\drivers\\etc\\hosts",
     "\\\\server\\share\\file", "/dev/zero", "CON", "nul.txt", "--help", "-rf /",
     "<script>alert(1)</script>", "\"><img src=x onerror=alert(1)>", "'; DROP TABLE chats; --",
@@ -65,7 +65,7 @@ TEXTS = [
 ]
 WRONG = [None, 0, -1, 1.5, 10 ** 30, 1e308, float("nan"), float("inf"), True, False, [], [1, "a"], {}, {"a": 1}]
 VALUES = WRONG + TEXTS
-QUICK_VALUES = [None, 0, True, [], {}, "", URDU, "../../x", "\ud800", "<b>x</b>", HUGE, float("nan")]
+QUICK_VALUES = [None, 0, True, [], {}, "", RTL, "../../x", "\ud800", "<b>x</b>", HUGE, float("nan")]
 
 # A valid body for each route (so a request reaches the code behind the first check), and the fields it reads that
 # the handler hands on as a whole (the rest are found in the handler's source).
@@ -370,7 +370,7 @@ class Fuzzer:
                 for key in keys:
                     for v in values:
                         yield f"{section}.{key}={v!r:.30}", {section: {key: v}}
-            for accounts in ([{"name": "a"}], [{"name": URDU, "vendor": "claude"}], [{"name": "x", "vendor": "gpt"}],
+            for accounts in ([{"name": "a"}], [{"name": RTL, "vendor": "claude"}], [{"name": "x", "vendor": "gpt"}],
                              [{"name": "claude-1", "vendor": "claude", "profile": "../../etc"}], "claude-1", [None],
                              [{"name": "claude-1", "vendor": "claude"}] * 2, []):
                 yield f"accounts={accounts!r:.40}", {"accounts": accounts}
@@ -404,7 +404,7 @@ class Fuzzer:
                 if method == "GET":
                     self.send("GET", path)
                     for q in queries:
-                        for v in ("", "abc", "-1", "99999999999999999999", "%00", URDU, "../../x", "1e999"):
+                        for v in ("", "abc", "-1", "99999999999999999999", "%00", RTL, "../../x", "1e999"):
                             self.send("GET", f"{path}?{q}={quote(v)}")
                     continue
                 if name in ("api_chat_upload", "api_capture_upload"):
@@ -448,7 +448,7 @@ class Fuzzer:
             tmp.unlink(missing_ok=True)
 
     def uploads(self, path: str) -> None:
-        for q in ("", "?name=CON.txt", "?name=" + quote("../../evil.py"), "?name=" + quote(URDU + ".pdf"),
+        for q in ("", "?name=CON.txt", "?name=" + quote("../../evil.py"), "?name=" + quote(RTL + ".pdf"),
                   "?ext=exe&label=x", "?ext=png&label=" + quote("../../x"), "?ext=&label="):
             self.send("POST", path + q, raw=b"hello")
         for length in ("-1", "abc", "0", str(10 ** 12)):

@@ -1,6 +1,6 @@
-"""Regression tests from the debugging campaign (DEBUG-CAMPAIGN.md at the repository root, section 12): one per
-bug fixed, each failing without its fix and passing with it. The ledger ids (C1, A8 …) name the bug each covers.
-Uses the scripted fakes in tests/fakes."""
+"""Regression tests: one per bug fixed, each failing without its fix and passing with it. The ids in their names
+(C1, A8, F10 …) are the bugs' numbers, as the commits that fixed them name them. Uses the scripted fakes in
+tests/fakes."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ class TempHome:
 
     def __enter__(self) -> Path:
         self.saved = os.environ.get("CREW_HOME")
-        self.path = Path(tempfile.mkdtemp(prefix="crew-campaign-"))
+        self.path = Path(tempfile.mkdtemp(prefix="crew-regressions-"))
         os.environ["CREW_HOME"] = str(self.path)
         return self.path
 
@@ -444,7 +444,7 @@ class SeatTests(unittest.TestCase):
         with TempHome() as home:
             events: queue.Queue = queue.Queue()
             setup = agents.CodexSetup(model="gpt-6-astra", effort="auto", run_dir=home, extra_env={})
-            seat = agents.CodexSeat("curie", "member", Account("mohidzeeshanrana-gmail.com", "codex"), home, setup,
+            seat = agents.CodexSeat("curie", "member", Account("alexmorgan-gmail.com", "codex"), home, setup,
                                     "system", events, Redactor({}))
             seat.busy = True
             with mock.patch.object(agents, "_drive_codex", side_effect=RuntimeError("the program vanished")):
@@ -459,7 +459,7 @@ class SeatTests(unittest.TestCase):
             events: queue.Queue = queue.Queue()
             setup = agents.ClaudeSetup(model="claude-opus-5-5", effort="auto", work_model="claude-opus-5-5",
                                        permission_mode="bypassPermissions", run_dir=home, extra_env={})
-            seat = agents.ClaudeSeat("ada", "lead", Account("ceo-pbit.gop.pk", "claude"), home, setup, "system", events,
+            seat = agents.ClaudeSeat("ada", "lead", Account("ceo-office.example.pk", "claude"), home, setup, "system", events,
                                      Redactor({}))
             lines = [json.dumps({"type": "assistant", "message": {"content": ["not a block"]}}) + "\n",
                      json.dumps({"type": "result", "subtype": "success", "result": "done", "usage": {}}) + "\n"]
@@ -675,13 +675,13 @@ class SettingsTests(unittest.TestCase):
     def test_a1_a_damaged_settings_file_is_set_aside_and_crew_opens(self):
         with TempHome() as home:
             settings_mod.save({"app": {"theme": "dark"},
-                               "accounts": [{"name": "ceo-pbit.gop.pk", "vendor": "claude", "profile": ""}]})
-            settings_mod.save({"app": {"owner_name": "Zeeshan"}})  # the first version is kept as crew.toml.bak
+                               "accounts": [{"name": "ceo-office.example.pk", "vendor": "claude", "profile": ""}]})
+            settings_mod.save({"app": {"owner_name": "Sam"}})  # the first version is kept as crew.toml.bak
             damaged = '[app]\ntheme = "dark\n[[account]\n'  # a typing slip in a hand edit
             (home / "crew.toml").write_text(damaged, encoding="utf-8")
             st = settings_mod.load()
             self.assertEqual(st["app"]["theme"], "dark")
-            self.assertEqual([a["name"] for a in st["accounts"]], ["ceo-pbit.gop.pk"])
+            self.assertEqual([a["name"] for a in st["accounts"]], ["ceo-office.example.pk"])
             problem = settings_mod.problem()
             self.assertEqual(problem["restored"], "the last good copy")
             self.assertEqual((home / problem["kept"]).read_text(encoding="utf-8"), damaged)
@@ -698,7 +698,7 @@ class SettingsTests(unittest.TestCase):
     def test_a34_a_hand_edited_setting_of_the_wrong_kind_is_set_aside(self):
         with TempHome() as home:
             settings_mod.save({"team": {"max_hours": 2.0}})
-            settings_mod.save({"app": {"owner_name": "Zeeshan"}})  # the version before is the last good copy
+            settings_mod.save({"app": {"owner_name": "Sam"}})  # the version before is the last good copy
             (home / "crew.toml").write_text('[team]\nmax_hours = "two"\n', encoding="utf-8")  # a typing slip
             st = settings_mod.load()
             self.assertEqual(st["team"]["max_hours"], 2.0)  # not "two", which stopped every project
@@ -709,7 +709,7 @@ class SettingsTests(unittest.TestCase):
     def test_a35_a_damaged_file_in_the_old_format_is_kept_as_it_was(self):
         with TempHome() as home:
             settings_mod.save({"team": {"max_hours": 2.0}})
-            settings_mod.save({"app": {"owner_name": "Zeeshan"}})
+            settings_mod.save({"app": {"owner_name": "Sam"}})
             # Written by hand from crew.toml.example (no settings_version), with a slip: Crew's upgrade of old
             # files rewrote it in its own layout before finding the slip, so the copy kept was not the owner's.
             mine = "# my settings\n[team]\nmode = \"sometimes\"  # I will fix this later\n"
@@ -720,7 +720,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_a36_two_settings_saved_at_the_same_moment_both_stay(self):
         with TempHome():
-            settings_mod.save({"app": {"owner_name": "Zeeshan"}})
+            settings_mod.save({"app": {"owner_name": "Sam"}})
             errors: list[Exception] = []
 
             def change(key, values):
@@ -738,7 +738,7 @@ class SettingsTests(unittest.TestCase):
             b.join()
             self.assertEqual(errors, [])
             app = settings_mod.load()["app"]
-            self.assertEqual((app["theme"], app["voice_rate"], app["owner_name"]), ("dark", 1.5, "Zeeshan"))
+            self.assertEqual((app["theme"], app["voice_rate"], app["owner_name"]), ("dark", 1.5, "Sam"))
 
     def test_a23_a_pasted_key_with_a_line_break(self):
         with TempHome() as home:
@@ -961,7 +961,7 @@ class AppPieceTests(unittest.TestCase):
 
 
 @unittest.skipUnless(_chromium(), "no Chromium for the browser test")
-class BrowserCampaignTests(unittest.TestCase):
+class BrowserRegressionTests(unittest.TestCase):
     def test_a31_a32_the_shared_browser_explains_itself_and_cannot_be_wedged(self):
         try:
             import playwright  # noqa: F401
@@ -1964,7 +1964,7 @@ class UpdaterSafetyTests(unittest.TestCase):
 # ====================================================================== the app, end to end
 
 
-class AppCampaignTests(unittest.TestCase):
+class AppRegressionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.update(ENV)
@@ -1990,7 +1990,7 @@ class AppCampaignTests(unittest.TestCase):
 
     def with_chatgpt(self):
         before = self.s.api("GET", "/api/settings")["accounts"]
-        self.s.api("PUT", "/api/settings", {"accounts": before + [{"name": "mohidzeeshanrana-gmail.com",
+        self.s.api("PUT", "/api/settings", {"accounts": before + [{"name": "alexmorgan-gmail.com",
                                                                      "vendor": "codex", "profile": ""}]})
         self.addCleanup(self.s.api, "PUT", "/api/settings", {"accounts": before})
 
@@ -2539,14 +2539,14 @@ class WindowsCheckShellTests(unittest.TestCase):
         such a check can never pass, so every piece of work was sent back until the project stopped."""
         root = self.layout("Program Files/Git/cmd/git.exe", "Program Files/Git/bin/bash.exe",
                            "Program Files/Git/mingw64/bin/git.exe", "Windows/System32/bash.exe",
-                           "Users/Mohid Zeeshan/AppData/Local/Programs/Git/bin/bash.exe")
+                           "Users/Sam Lee/AppData/Local/Programs/Git/bin/bash.exe")
         git_bash = str(root / "Program Files/Git/bin/bash.exe")
         self.assertEqual(gitops.git_bash(str(root / "Program Files/Git/cmd/git.exe"), {}), git_bash)
         self.assertEqual(gitops.git_bash(str(root / "Program Files/Git/mingw64/bin/git.exe"), {}), git_bash)
         # Git not on PATH (the installer has not refreshed it): where Git for Windows installs itself
         self.assertEqual(gitops.git_bash(None, {"ProgramFiles": str(root / "Program Files")}), git_bash)
-        per_user = str(root / "Users/Mohid Zeeshan/AppData/Local/Programs/Git/bin/bash.exe")
-        self.assertEqual(gitops.git_bash(None, {"LOCALAPPDATA": str(root / "Users/Mohid Zeeshan/AppData/Local")}),
+        per_user = str(root / "Users/Sam Lee/AppData/Local/Programs/Git/bin/bash.exe")
+        self.assertEqual(gitops.git_bash(None, {"LOCALAPPDATA": str(root / "Users/Sam Lee/AppData/Local")}),
                          per_user)
         # the path Claude Code itself is told to use comes first
         self.assertEqual(gitops.git_bash(str(root / "Program Files/Git/cmd/git.exe"),
@@ -2651,11 +2651,11 @@ class ServerRobustnessTests(unittest.TestCase):
         self.assertEqual(got, [("delta", {"text": "Great deals ?"}), ("delta", {"text": "and the next words"})])
 
     def test_a63_a_quoted_argument_with_a_space_stays_whole(self):
-        """The owner's own folder has a space in it (C:\\Users\\Mohid Zeeshan). A connection given that folder,
+        """The owner's own folder has a space in it (C:\\Users\\Sam Lee). A connection given that folder,
         typed on one line in quotes as the guides show, was cut in two at the space and could not start."""
         from crewlib import connections as conn_mod
 
-        folder = r"C:\Users\Mohid Zeeshan\Documents"
+        folder = r"C:\Users\Sam Lee\Documents"
         s = self.s
         s.api("POST", "/api/connections/mcp", {
             "name": "files", "type": "stdio", "command": "npx",
@@ -2723,12 +2723,12 @@ class KeysFileTests(unittest.TestCase):
         with TempHome():
             path = settings_mod.secrets_path()
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(b"# Cl\xe9s de Mohid \xa3\r\nOPENAI_API_KEY=sk-abc123456789\r\n")
+            path.write_bytes(b"# Cl\xe9s de Sam \xa3\r\nOPENAI_API_KEY=sk-abc123456789\r\n")
             settings_mod.save_secret("WEATHER_KEY", "w-123456789")
-            self.assertIn(b"# Cl\xe9s de Mohid \xa3\n", path.read_bytes())  # byte for byte
+            self.assertIn(b"# Cl\xe9s de Sam \xa3\n", path.read_bytes())  # byte for byte
             self.assertEqual(load_env_file(path), {"OPENAI_API_KEY": "sk-abc123456789", "WEATHER_KEY": "w-123456789"})
             settings_mod.save_secret("WEATHER_KEY", None)
-            self.assertEqual(path.read_bytes(), b"# Cl\xe9s de Mohid \xa3\nOPENAI_API_KEY=sk-abc123456789\n")
+            self.assertEqual(path.read_bytes(), b"# Cl\xe9s de Sam \xa3\nOPENAI_API_KEY=sk-abc123456789\n")
 
 
 class FileNameTests(unittest.TestCase):

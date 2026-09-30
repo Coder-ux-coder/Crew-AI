@@ -1,6 +1,6 @@
 import globals from 'globals';
 
-// Bug rules from DEBUG-CAMPAIGN.md section 4; intentional unused catch/argument names are ignored.
+// Rules that catch bugs, not style; intentional unused catch/argument names are ignored.
 const bugs = [
   'no-undef', 'no-unreachable', 'no-dupe-keys', 'no-dupe-else-if', 'no-duplicate-case',
   'no-fallthrough', 'no-self-assign', 'no-self-compare', 'no-cond-assign',

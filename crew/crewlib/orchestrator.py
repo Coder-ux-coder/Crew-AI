@@ -278,6 +278,7 @@ class Orchestrator:
     def head_to_head_style(self) -> str:
         """combine: the kept version takes in what the other did better; compete: the better one is kept as it is."""
         return self.store.get("head_to_head_style") or self.cfg.team.head_to_head_style
+
     def start_seat(self, rt: SeatRT, first: str | None, resume_session: str | None = None,
                    effort: str | None = None) -> None:
         system = self._system_prompt(rt)

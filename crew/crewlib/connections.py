@@ -81,8 +81,8 @@ _QUOTED = re.compile(r""""([^"]*)"?|'([^']*)'?""")
 
 
 def split_args(text: str) -> list[str]:
-    """A program's arguments typed on one line: separated by spaces, a part in quotes kept whole ("C:\\Users\\Mohid
-    Zeeshan\\Documents", as the guides show a folder with a space in it). Backslashes stay as they are: on Windows they
+    """A program's arguments typed on one line: separated by spaces, a part in quotes kept whole ("C:\\Users\\Sam
+    Lee\\Documents", as the guides show a folder with a space in it). Backslashes stay as they are: on Windows they
     separate folders."""
     return [_QUOTED.sub(lambda m: m.group(1) if m.group(1) is not None else m.group(2), part)
             for part in _ARG.findall(text)]

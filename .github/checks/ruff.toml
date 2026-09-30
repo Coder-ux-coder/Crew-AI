@@ -1,4 +1,5 @@
-# Existing noise is documented in CODEX-HANDOFF.md section 7.
+# Rules that catch bugs and risky calls, not style. The ignores are deliberate: the owner's words use typographic
+# quotes and dashes (RUF001-003), and the rest are patterns this code uses on purpose.
 [lint]
 select = ["F", "E9", "B", "PLE", "PLW", "RUF", "S602", "S604", "S605", "S307", "S301", "S506", "S108"]
 ignore = ["RUF001", "RUF002", "RUF003", "RUF100", "PLW1510", "RUF005", "RUF012", "RUF059", "PLW2901"]

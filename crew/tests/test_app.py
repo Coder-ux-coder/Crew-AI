@@ -548,7 +548,7 @@ class BrowserTests(unittest.TestCase):
                 t.join()
             self.assertEqual(sum(1 for t in threading.enumerate() if t.name == "crew-browser"), 1)
             self.assertEqual(b.navigate(f"http://127.0.0.1:{port}/")["title"], "Summit")
-            browser_action(b, "fill", {"field": "Name", "text": "Zeeshan"}, "assistant")
+            browser_action(b, "fill", {"field": "Name", "text": "Sam"}, "assistant")
             page = browser_action(b, "read", {}, "assistant")
             self.assertIn("Hello", page["text"])
             self.assertEqual(b.status()["driver"], "assistant")

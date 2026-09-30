@@ -28,6 +28,8 @@ DAMAGED = ("This project's record is damaged (the file team.db, in the project's
 
 class RecordDamaged(ValueError):
     """A project's record cannot be read (the app answers with DAMAGED, in plain words)."""
+
+
 PREVIEW_CANDIDATES = ("index.html", "dist/index.html", "build/index.html", "public/index.html", "site/index.html",
                       "docs/index.html", "web/index.html")
 
@@ -326,6 +328,8 @@ def agent_title(name: str, role: str, task=None) -> str:
     if n.startswith("writer"):
         return "Prompt writer"
     return (name or "").replace("-", " ").strip().capitalize()
+
+
 ROLES = {"lead": "Lead", "member": "Builder", "reviewer": "Reviewer", "ceo": "CEO", "refiner": "Brief writer",
          "writer": "Prompt writer"}
 SIZE_WEIGHT = {"S": 1, "M": 2, "L": 4}

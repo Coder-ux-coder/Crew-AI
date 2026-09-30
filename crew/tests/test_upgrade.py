@@ -623,9 +623,9 @@ class SettingsMigrationTests(unittest.TestCase):
                            "effort_light": "auto", "effort_ceo": "ultra"},
                 "app": {"codex_model": "gpt-6-sol", "codex_effort": "high", "theme": "dark", "settings_version": 3},
                 "account": [{"name": "claude-1", "vendor": "claude", "profile": "default"},
-                            {"name": "ceo-pbit.gop.pk", "vendor": "claude"},
-                            {"name": "zeeshandmg36-gmail.com", "vendor": "claude"},
-                            {"name": "mohidzeeshanrana-gmail.com", "vendor": "codex"}]})
+                            {"name": "ceo-office.example.pk", "vendor": "claude"},
+                            {"name": "samlee36-gmail.com", "vendor": "claude"},
+                            {"name": "alexmorgan-gmail.com", "vendor": "codex"}]})
             (home / "crew.toml").write_text(written, encoding="utf-8")
             st = settings_mod.load()
             m = st["models"]
@@ -637,9 +637,9 @@ class SettingsMigrationTests(unittest.TestCase):
                              ("gpt-6-astra", "high", "dark"))
             self.assertEqual((st["team"]["mode"], st["team"]["max_hours"]), ("team", 2.0))
             self.assertEqual([(s["account"], s["tier"]) for s in st["seats"]],
-                             [("claude-1", "manager"), ("ceo-pbit.gop.pk", "manager"),
-                              ("zeeshandmg36-gmail.com", "manager"), ("ceo-pbit.gop.pk", "workhorse"),
-                              ("zeeshandmg36-gmail.com", "workhorse")])
+                             [("claude-1", "manager"), ("ceo-office.example.pk", "manager"),
+                              ("samlee36-gmail.com", "manager"), ("ceo-office.example.pk", "workhorse"),
+                              ("samlee36-gmail.com", "workhorse")])
             self.assertTrue((home / "crew.toml.bak").read_text(encoding="utf-8").count("gpt-6-sol"))  # as it was
             text = (home / "crew.toml").read_text(encoding="utf-8")
             self.assertNotIn("codex = ", text)

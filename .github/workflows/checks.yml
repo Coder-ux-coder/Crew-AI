@@ -1,17 +1,21 @@
-name: Campaign cloud checks
+name: Checks
 
+# Every change to Crew is checked before the owner's updater can see it: the published branch, and work in progress.
 on:
   push:
     branches:
-      - claude/exciting-heisenberg-6w6gge
-      - claude/jolly-wright-lz430a
-      - claude/friendly-sagan-bj2ykb
+      - Crew-AI
+      - "claude/**"
+  pull_request:
+    branches:
+      - Crew-AI
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: crew-campaign-${{ github.ref }}
+  group: crew-checks-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -33,12 +37,12 @@ jobs:
           node-version: "24"
       - name: Isolate test data and browser files
         run: |
-          echo "CREW_HOME=$RUNNER_TEMP/crew-campaign-home" >> "$GITHUB_ENV"
+          echo "CREW_HOME=$RUNNER_TEMP/crew-test-home" >> "$GITHUB_ENV"
           echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/pw-browsers" >> "$GITHUB_ENV"
       - name: Install test tools
         run: |
           python -m pip install ruff -r crew/requirements-app.txt
-          npm install --prefix .github/campaign --no-save --package-lock=false eslint@10 globals
+          npm install --prefix .github/checks --no-save --package-lock=false eslint@10 globals
           python -m playwright install --with-deps chromium
           python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print('CREW_CHROMIUM=' + p.chromium.executable_path); p.stop()" >> "$GITHUB_ENV"
           git config --global user.name "Crew tests"
@@ -51,10 +55,10 @@ jobs:
         run: python -W error -m compileall -q crew/crewlib crew/crewapp crew/tests
       - name: Python lint
         if: ${{ !cancelled() }}
-        run: ruff check --config .github/campaign/ruff.toml crew/crewlib crew/crewapp
+        run: ruff check --config .github/checks/ruff.toml crew/crewlib crew/crewapp
       - name: JavaScript lint
         if: ${{ !cancelled() }}
-        run: .github/campaign/node_modules/.bin/eslint --config .github/campaign/eslint.config.mjs crew/crewapp/static
+        run: .github/checks/node_modules/.bin/eslint --config .github/checks/eslint.config.mjs crew/crewapp/static
       - name: JavaScript syntax
         if: ${{ !cancelled() }}
         run: find crew/crewapp/static -name '*.js' -print0 | xargs -0 -n 1 node --check

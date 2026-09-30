@@ -36,9 +36,9 @@ EFFORTS = {"claude": ("auto", "low", "medium", "high", "xhigh", "max"),
 LEGACY_EFFORTS = {"minimal": "low"}  # chats started before GPT-6 (it has no "minimal")
 MODES = ("auto", "plan")
 WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
-
-
 RECAP_CHARS = 240_000  # the most of Crew's record a new conversation is given (about 60,000 tokens)
+
+
 def plain_when(ts: float) -> str:
     """A moment in the owner's own time, as they would say it: "at 15:40", "tomorrow at 09:00",
     "on Friday 3 October at 09:00"."""
@@ -63,6 +63,7 @@ def other_product(engine: str, model: str | None) -> str:
     if engine == "codex" and (m.startswith("claude") or m in ("opus", "sonnet", "haiku", "fable")):
         return "claude"
     return ""
+
 
 DEFAULT_INSTRUCTIONS = """You are the owner's personal assistant inside the Crew app.
 

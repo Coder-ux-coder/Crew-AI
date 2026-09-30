@@ -62,6 +62,8 @@ screens unless you ask.
   if you want one.
 - **Usage spread out:** work goes to whichever subscription has the most room;
   if one reaches its limit, another carries on — also in the middle of a chat.
+  A limit on one model only (a plan's weekly cap on Opus) pauses only that
+  model's work: the Sonnet workhorses keep building.
 - **Keeps itself current:** Claude Code is updated automatically, and Crew
   updates itself — at a quiet moment by itself, or with one click — keeping all
   your data. The window reconnects by itself after an update.
@@ -139,10 +141,9 @@ both devices.
 - Scheduled workflows run while Crew is running (Settings → General → Start
   Crew with Windows keeps it available).
 - Private messages: helpers (sub-agents) cannot be written to directly — their
-  agent answers for them and passes your message on. Claude agents read a
-  message within a step or two; ChatGPT agents read it when their current step
-  ends (**Ask now** stops that step at once). A finished project's agents no
-  longer run, so they cannot answer. The CEO answers each question as a short,
+  agent answers for them and passes your message on. Agents read a message
+  within a step or two (**Ask now** makes one stop its current step at once).
+  A finished project's agents no longer run, so they cannot answer. The CEO answers each question as a short,
   separate review.
 - Crew's own security scan looks for well-known patterns; it is a safety net
   under the team's tests and the reviewer's judgement, not a full security
