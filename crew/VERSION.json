@@ -1,13 +1,8 @@
 {
-  "version": "2.3.1",
+  "version": "2.3.2",
   "date": "2026-09-30",
   "notes": [
-    "Sonnet 5.5 is now the team's workhorse, in place of GPT-6 Sol; Opus 5.5 manages and checks, GPT-6 Astra is the CEO. Your settings, chats and workflows move over by themselves",
-    "A limit on Opus alone no longer pauses the Sonnet workers or Sonnet chats; Usage shows which model is at its limit",
-    "A chat that reaches a subscription's limit carries on on your next subscription, with the whole conversation",
-    "On Windows the team's checks now run in Git's bash, so they can pass",
-    "Safer and steadier: a formatted answer can never run code inside Crew, a message or a project is sent once, forms keep what you typed, and a damaged file is set aside while Crew still opens",
-    "Updates explain any problem in plain words, wait for work in progress, and the window reconnects by itself",
-    "Pushing the pointer into the screen's top-left corner stops the assistant at once, even mid-text; the browser, phone and computer tools also work behind an office proxy"
+    "A project no longer fails to start because another program was using git in its folder, or because git stopped part-way there earlier: Crew waits for the other program, clears the file git left behind, and otherwise says in plain words what to close",
+    "The microphone and pasting work in Crew's window without Edge or Chrome asking each time, for Crew's own address only; switch it off in Settings, under General"
   ]
 }
