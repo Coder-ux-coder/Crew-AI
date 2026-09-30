@@ -2775,7 +2775,8 @@ with sync_playwright() as p:
                   " d.id = 'answer'; d.innerHTML = ui.markdown(md); document.querySelector('.thread').append(d); })", ANSWER)
     page.fill(".composer textarea", "اگلا سوال")
     rtl = lambda sel: page.evaluate("(s) => [...document.querySelectorAll(s)].map((e) => e.matches(':dir(rtl)'))", sel)
-    out = {"titles": rtl(".title-btn .ellipsis") + rtl("#recents a .t"),
+    # the sidebar also lists chats and projects other tests made: this chat's own entry
+    out = {"titles": rtl(".title-btn .ellipsis") + rtl("#recents a[href='#/chat/%s'] .t" % cid),
            "message": rtl(".turn-user .bubble"), "paragraphs": rtl("#answer p"), "items": rtl("#answer li"),
            "cells": rtl("#answer td"), "typing": rtl(".composer textarea"),
            "bullet_on_the_right": page.evaluate("(() => { const li = document.querySelector('#answer li');"
