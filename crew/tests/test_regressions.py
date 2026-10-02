@@ -2035,7 +2035,7 @@ class AppRegressionTests(unittest.TestCase):
         s = self.s
         cid, _ = self.new_chat()
         self.with_chatgpt()
-        s.api("POST", f"/api/chats/{cid}/send", {"text": "The code word is emerald."})
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "The code word is EMERALD."})
         until(lambda: not s.api("GET", f"/api/chats/{cid}")["busy"])
         for model, engine in (("gpt-6-astra", "codex"), ("claude-opus-5-5", "claude")):
             self.assertTrue(s.api("POST", f"/api/chats/{cid}/send",
