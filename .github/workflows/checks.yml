@@ -4,12 +4,12 @@ name: Checks
 on:
   push:
     branches:
-      - Crew-AI
+      - main
       - "claude/**"
       - "codex/**"
   pull_request:
     branches:
-      - Crew-AI
+      - main
   workflow_dispatch:
 
 permissions:

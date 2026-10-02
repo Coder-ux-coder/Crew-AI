@@ -13,7 +13,7 @@ explains how it works inside.
 The [autonomy upgrade](crew/AUTONOMY.md) adds CEO task controls, retained project
 context, configurable Claude Code/Codex agents, and task-driven usage without token quotas.
 
-Crew updates itself from this branch, `Crew-AI`: the version and what is new in
+Crew updates itself from this branch, `main`: the version and what is new in
 it are in [`crew/VERSION.json`](crew/VERSION.json). Every change is checked
 automatically before it is published — the full test suite (simulated teams,
 and the app itself in a real browser) and the code checks
