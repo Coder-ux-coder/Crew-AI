@@ -7,19 +7,24 @@ builders work in parallel, every piece is checked with fresh eyes, a CEO model
 approves, and you get the finished result. You never see code or technical
 screens unless you ask.
 
-- **Three tiers, each model doing what it is best at:**
+- **Configurable agents and autonomous coordination:**
 
-  | Tier | Model | Does | Share of tokens (target) |
-  |---|---|---|---|
-  | Workhorse | Claude Sonnet 5.5 | Routine, fully specified work — research, text and styling changes, small design tweaks, repetitive edits. Most tasks by count. | the rest (about 25–35%) |
-  | Manager | Claude Opus 5.5 | Plans, checks every workhorse task, builds what needs high intelligence — security, design plans, shared foundations, hard problems. | 60–70% |
-  | CEO | GPT-6 Astra | Used sparingly: reviews the plan (each task's tier and effort) and gives the final approval. Checks rather than builds. | about 5% |
+  | Role | Default model | Work |
+  |---|---|---|
+  | Workhorse | Sonnet 5.5 and GPT-6.1 Sol | Clear, well specified tasks |
+  | Manager | Opus 5.5 | Planning, difficult work and independent review |
+  | CEO | GPT-6 Astra | Coordination, task and agent controls, decisions and quality review |
 
-  Each project shows how its tokens were actually shared against these targets.
-  The workhorse and the managers both run on your Claude subscriptions; the
-  ChatGPT subscription runs the CEO. Without a ChatGPT subscription Claude
-  Fable 5.1 stands in as CEO. Haiku, GPT-6 Sol, GPT-6 Luna and Terra are never
-  used.
+  Choose each agent's model, CLI subscription and role in Settings → Models & effort.
+  Both Claude Code and Codex can build and manage. Usage follows task needs;
+  there are no fixed token percentages. User bans and provider access still apply.
+  See [Autonomous coordination](AUTONOMY.md) for controls, context and verification.
+- **Retained context:** every team turn includes the current board, decisions,
+  handoffs and the agent's previous private conversation. The CEO retains its
+  earlier questions and answers. Agents can search older project records and
+  save durable facts. Completed projects accept follow-ups on their existing board.
+- **Flexible chats:** switch Claude Code/Codex models in the composer while
+  retaining the conversation; delete a chat using the visible sidebar button.
 - **Effort chosen for you:** the CEO sets each task's effort at plan review
   and learns, project by project, which effort suits which work; for small
   jobs the manager decides, so the CEO is kept for checking.
@@ -41,7 +46,7 @@ screens unless you ask.
   (sub-agent) is reached through the agent that runs it. **Ask now** makes a
   busy agent stop its current step and answer at once. If what you say changes
   anyone else's work, the agent must pass it on to the lead and to them.
-- **A prompt writer:** before the team reads your words — typed or spoken — a
+- **An optional prompt writer (off by default):** before the team reads your words — typed or spoken — a
   writer turns them into a clear, precise instruction; your own words stay
   attached so nothing is lost. In chats, the ✦ button does the same for one
   message (you see the result before sending), or switch it on for every

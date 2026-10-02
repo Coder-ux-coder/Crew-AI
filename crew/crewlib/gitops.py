@@ -105,6 +105,11 @@ def out(cwd: Path, *args: str) -> str:
 def ensure_repo(path: Path) -> Path:
     """Make `path` a git repository with at least one commit; return its top level."""
     path.mkdir(parents=True, exist_ok=True)
+    # A selected project folder owns its repository. Discovering an ancestor
+    # would silently checkpoint unrelated files outside the owner's selection.
+    # Existing worktrees use a .git file and remain intact.
+    if not (path / ".git").exists():
+        git(path, "init", "-q")
     probe = git(path, "rev-parse", "--show-toplevel", check=False)
     if probe.returncode != 0:
         git(path, "init", "-q")
@@ -308,7 +313,8 @@ class CheckResult:
 CHECK_OUTPUT_LIMIT = 8_000_000  # bytes of a check's output kept for the log (the end matters most)
 
 
-def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float, env: dict | None = None) -> CheckResult:
+def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float, env: dict | None = None,
+               cancel_event=None) -> CheckResult:
     """Run the project's verification commands; full output to a file, a short tail back."""
     if not commands:
         return CheckResult(True, "no checks configured", None, ran=False)
@@ -317,7 +323,8 @@ def run_checks(cwd: Path, commands: list[str], log_path: Path, timeout_s: float,
     ok = True
     bash = check_shell()
     for cmd in commands:
-        output, code = _run_check(cmd, cwd, timeout_s, env, bash)
+        output, code = (_run_check(cmd, cwd, timeout_s, env, bash, cancel_event) if cancel_event is not None else
+                        _run_check(cmd, cwd, timeout_s, env, bash))
         if no_tests_yet(output, code):
             chunks.append(f"$ {cmd}\n{output}\n[exit {code}: no tests yet, which is not a failure]\n")
             continue
@@ -366,10 +373,13 @@ def no_tests_yet(output: str, code: int) -> bool:
     return code == 5 and bool(lines) and "no tests ran" in lines[-1].lower()
 
 
-def _run_check(cmd: str, cwd: Path, timeout_s: float, env: dict | None, bash: str | None) -> tuple[str, int]:
+def _run_check(cmd: str, cwd: Path, timeout_s: float, env: dict | None, bash: str | None,
+               cancel_event=None) -> tuple[str, int]:
     """One check command, in its own process group, its output going to a file rather than a pipe. A check that
     leaves something running (a dev server, a file watcher) would otherwise keep the pipe open, and Crew would
     wait for it for ever — even after the time limit, on Windows. Whatever the command started ends with it."""
+    if cancel_event is not None and cancel_event.is_set():
+        return "[project stopped]", 130
     kwargs: dict = {}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
@@ -381,9 +391,24 @@ def _run_check(cmd: str, cwd: Path, timeout_s: float, env: dict | None, bash: st
                                     stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env, **kwargs)
         except OSError as exc:
             return f"The check could not start: {exc}", 127
-        timed_out = False
+        timed_out, cancelled = False, False
         try:
-            code = proc.wait(timeout=timeout_s)
+            if cancel_event is None:
+                code = proc.wait(timeout=timeout_s)
+            else:
+                deadline = time.monotonic() + timeout_s
+                while True:
+                    if cancel_event.is_set():
+                        cancelled, code = True, 130
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(proc.args, timeout_s)
+                    try:
+                        code = proc.wait(timeout=min(.25, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
         except subprocess.TimeoutExpired:
             timed_out, code = True, 124
         _end_group(proc)
@@ -394,6 +419,8 @@ def _run_check(cmd: str, cwd: Path, timeout_s: float, env: dict | None, bash: st
         output = f"[{size - CHECK_OUTPUT_LIMIT} bytes of earlier output left out]\n" + output
     if timed_out:
         output += f"\n[timed out after {int(timeout_s)}s]"
+    if cancelled:
+        output += "\n[project stopped]"
     return output, code
 
 
@@ -402,11 +429,14 @@ def _end_group(proc: subprocess.Popen) -> None:
     try:
         if os.name == "nt":
             if proc.poll() is None:  # Windows finds a process's children only while it is alive
-                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=60)
+                killed = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=5)
+                if killed.returncode and proc.poll() is None:
+                    proc.kill()
         else:
             os.killpg(proc.pid, signal.SIGKILL)  # the group outlives its leader: leftovers go too
     except (OSError, subprocess.SubprocessError):
-        pass
+        if proc.poll() is None:
+            proc.kill()
     try:
         proc.wait(timeout=30)
     except subprocess.TimeoutExpired:

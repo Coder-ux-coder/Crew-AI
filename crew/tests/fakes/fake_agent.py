@@ -191,7 +191,7 @@ class Brain:
             return "BRIEF"
         if "senior reviewer with fresh eyes" in text:
             return self.review(text)
-        if "CEO-level reviewer: the most capable model" in text:
+        if "CEO-level coordinator. Review the lead's plan" in text:
             want = SCEN.get("plan_changes") and once("ceo-plan-changes")
             if want:
                 if self.json_only():

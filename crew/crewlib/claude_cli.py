@@ -52,8 +52,11 @@ def _candidates() -> list[str]:
                   "/usr/local/bin/claude", "/opt/homebrew/bin/claude"]
     out: list[str] = []
     for path in found:
-        if path and Path(path).is_file() and path not in out:
-            out.append(path)
+        try:
+            if path and Path(path).is_file() and path not in out:
+                out.append(path)
+        except OSError:
+            continue  # an inaccessible optional installation must not hide usable copies
     return out
 
 

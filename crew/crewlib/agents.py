@@ -158,7 +158,10 @@ def _kill_tree(proc: subprocess.Popen, grace: float = 5.0) -> None:
         return
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=60)
+            killed = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True,
+                                    timeout=max(1.0, grace))
+            if killed.returncode and proc.poll() is None:
+                proc.kill()  # taskkill can fail without raising in a restricted Windows session
         else:
             os.killpg(proc.pid, signal.SIGTERM)
             try:
@@ -213,6 +216,7 @@ class ClaudeSetup:
     permission_mode: str
     run_dir: Path
     extra_env: dict[str, str]
+    cancel_event: threading.Event | None = None
 
 
 def _claude_common_args(setup: ClaudeSetup, seat: str, role: str, system_file: Path | None,
@@ -519,6 +523,7 @@ class CodexSetup:
     run_dir: Path
     extra_env: dict[str, str]
     bypass_sandbox: bool = False
+    cancel_event: threading.Event | None = None
 
 
 def _toml_str(value: str) -> str:
@@ -563,6 +568,44 @@ def _codex_config_args(setup: CodexSetup, seat: str, role: str, task_id: int | N
                  "-c", "sandbox_workspace_write.network_access=true"]
     if setup.model:
         args += ["-m", setup.model]
+    args += codex_connections_args(setup.extra_env)
+    app_env = {k: os.environ[k] for k in ("CREW_APP_URL", "CREW_APP_TOKEN") if os.environ.get(k)}
+    if len(app_env) == 2:
+        app_env.update(PYTHONPATH=str(CREW_ROOT), **UTF8_ENV)
+        args += ["-c", f"mcp_servers.crew_devices.command={_toml_str(sys.executable)}",
+                 "-c", 'mcp_servers.crew_devices.args=["-m", "crewapp.devices_mcp"]',
+                 "-c", "mcp_servers.crew_devices.env=" + _toml_value(app_env)]
+    return args
+
+
+def _toml_value(value) -> str:
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{_toml_str(k)} = {_toml_value(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    return json.dumps(value)
+
+
+def codex_connections_args(extra_env: dict[str, str]) -> list[str]:
+    """Share enabled owner connections with Codex; header secrets travel in the environment."""
+    from .connections import mcp_servers
+    args = []
+    for name, server in mcp_servers().items():
+        if name in ("crew_team", "crew_devices"):
+            continue
+        prefix = f"mcp_servers.{_toml_str(name)}"
+        if server.get("type") == "sse":
+            continue  # Codex supports stdio and streamable HTTP, not legacy SSE
+        config = {k: server[k] for k in ("command", "args", "env", "url") if k in server}
+        headers = {}
+        for i, (key, value) in enumerate((server.get("headers") or {}).items()):
+            env_name = "CREW_MCP_" + name.upper().replace("-", "_") + f"_{i}"
+            extra_env[env_name] = value
+            headers[key] = env_name
+        if headers:
+            config["env_http_headers"] = headers
+        for key, value in config.items():
+            args += ["-c", f"{prefix}.{key}={_toml_value(value)}"]
     return args
 
 
@@ -697,10 +740,13 @@ class CodexSeat:
 
 
 def _drive_codex(cmd: list[str], prompt: str, cwd: Path, env: dict, log_path: Path, redact: Redactor,
-                 on_event=None, timeout: float | None = None) -> RunResult:
+                 on_event=None, timeout: float | None = None, cancel_event: threading.Event | None = None) -> RunResult:
     res = RunResult()
+    if cancel_event and cancel_event.is_set():
+        return RunResult(is_error=True, text="Project stopped.")
     start = now()
     proc = _popen(cmd, cwd, env)
+    _watch_cancel(proc, cancel_event)
     try:
         assert proc.stdin
         proc.stdin.write(prompt)
@@ -816,12 +862,27 @@ def read_codex_rate(account: Account, thread_id: str) -> dict | None:
 # ===================================================================== one-shot
 
 
+def _watch_cancel(proc, cancel_event: threading.Event | None) -> None:
+    if cancel_event is None:
+        return
+
+    def watch():
+        while proc.poll() is None:
+            if cancel_event.wait(0.25):
+                _kill_tree(proc)
+                return
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, workdir: Path, setup: ClaudeSetup,
                     redact: Redactor, task_id: int | None = None, json_schema: dict | None = None,
                     read_only: bool = False, timeout: float = 1800, with_team_tools: bool = True) -> RunResult:
     """A fresh, single-purpose Claude Code session (refiner, reviewer, CEO): no shared history by design."""
     exe = which("claude")
     res = RunResult()
+    if setup.cancel_event and setup.cancel_event.is_set():
+        return RunResult(is_error=True, text="Project stopped.")
     if not exe:
         res.is_error, res.text = True, "Claude Code is not installed"
         return res
@@ -843,6 +904,7 @@ def run_once_claude(prompt: str, *, seat: str, role: str, account: Account, work
     log_path.parent.mkdir(parents=True, exist_ok=True)
     start = now()
     proc = _popen(cmd, workdir, child_env(env))
+    _watch_cancel(proc, setup.cancel_event)
     try:
         assert proc.stdin
         proc.stdin.write(prompt)
@@ -921,7 +983,8 @@ def run_once_codex(prompt: str, *, seat: str, role: str, account: Account, workd
     if prof is not None:
         prof.mkdir(parents=True, exist_ok=True)
         env["CODEX_HOME"] = str(prof)
-    res = _drive_codex(cmd, prompt, workdir, child_env(env), log_path, redact, timeout=timeout)
+    res = _drive_codex(cmd, prompt, workdir, child_env(env), log_path, redact, timeout=timeout,
+                       cancel_event=setup.cancel_event)
     if json_schema is not None and not res.is_error and res.text:
         res.structured = _extract_json(res.text)
     usage_log.record_tokens(account.name, {"input_tokens": res.tokens})

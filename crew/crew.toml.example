@@ -6,22 +6,23 @@ mode = "auto"            # "auto": one builder + reviewers for small jobs, the f
 max_hours = 0            # 0 = no time limit; or a number of hours to stop after
 stall_minutes = 8        # an agent silent this long is nudged, then restarted
 ledger_minutes = 12      # no task moving for this long -> the lead must replan
-chat_budget = 8          # chat messages per agent per task (blockers are always allowed)
+chat_budget = 0          # adaptive communication; a positive value sets an optional per-task cap
 review = "cross"         # the manager model checks every piece, on another account than its author's; "off" = no review
 ceo_reviews = true       # the CEO model reviews the plan and the final result
 deliver = "merge"        # "merge" into your project, "branch" (leave it separate), or "push" to GitHub
 permission_mode = "bypassPermissions"   # agents act without asking (default). Safer: "auto"
 web_port = 8765
-workhorse_seats = 2      # Sonnet 5.5 seats in a team, spread over your Claude subscriptions (most tasks by count)
+workhorse_seats = 2      # worker seats spread over compatible Claude Code and Codex subscriptions
 
-# Three tiers. Token targets: manager 60-70%, CEO about 5%, workhorse the rest.
+# Configurable roles. Usage follows task needs, without token quotas.
 [models]
 work = "claude-opus-5-5"         # the manager: plans, reviews every workhorse task, builds what needs high intelligence
-workhorse = "claude-sonnet-5-5"  # the workhorse: routine, fully specified work (runs on your Claude plans)
-ceo = "gpt-6-astra"              # the CEO, used sparingly: plan review, rulings, final approval
+workhorse = "claude-sonnet-5-5"  # primary worker model
+workhorse_models = ["claude-sonnet-5-5", "gpt-6.1-sol"]
+ceo = "gpt-6-astra"              # coordination, task controls, decisions and quality review
 ceo_backup = "claude-fable-5-1"  # the CEO when ChatGPT cannot run it (no subscription, a limit, an error)
 allowed = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]
-banned = ["haiku", "terra", "luna", "gpt-6-sol"]
+banned = ["haiku", "terra", "luna"]
 effort_work = "auto"             # auto (the CEO decides per task) | low | medium | high | xhigh | max
 effort_light = "auto"            # small jobs such as refining your request
 effort_ceo = "max"               # the CEO always thinks hardest (GPT-6 also offers "ultra")
@@ -47,8 +48,8 @@ vendor = "codex"
 profile = "default"
 
 # Seats (the agents) default to one manager seat per Claude account (the first is the lead)
-# and `workhorse_seats` Sonnet 5.5 seats spread over the Claude accounts. ChatGPT accounts
-# run the CEO and ChatGPT chats; they get no seats.
+# and `workhorse_seats` workers alternating through the model pool on compatible subscriptions.
+# Codex accounts can run workers or managers as well as the CEO and chats.
 # To choose yourself, add blocks like:
 # [[seat]]
 # name = "ada"
@@ -56,3 +57,4 @@ profile = "default"
 # account = "claude-1"
 # role = "lead"
 # tier = "manager"        # or "workhorse" (runs the workhorse model)
+# model = "claude-opus-5-5"  # optional per-agent choice, compatible with its subscription

@@ -23,6 +23,7 @@ from . import tools as team_tools
 from .agents import (ClaudeSeat, ClaudeSetup, CodexSeat, CodexSetup, Event, RunResult, copy_claude_session,
                      run_once_claude, run_once_codex)
 from .config import Account, Config, SeatSpec
+from .context import project_context
 from .store import Store, StoreError
 from .tiers import TIERS, model_label, seat_tier, vendor_of
 from .tools import _fmt_msg, _mentions, owner_words
@@ -63,6 +64,7 @@ class SeatRT:
     cooldown_until: float = 0.0
     want_effort: str = ""  # the effort the CEO set for the seat's current task
     owner_interrupt: float = 0.0  # when the owner interrupted this seat's turn to ask it something
+    paused: bool = False
 
     @property
     def name(self) -> str:
@@ -77,6 +79,7 @@ class Orchestrator:
         self.events: "queue.Queue[Event]" = queue.Queue()
         self.seats: dict[str, SeatRT] = {}
         self.jobs: dict[str, threading.Thread] = {}
+        self.cancel_jobs = threading.Event()
         self.job_results: "queue.Queue[tuple[str, object]]" = queue.Queue()
         self.prefix = f"crew/{run_id}"
         self.integration = f"{self.prefix}/main"
@@ -169,7 +172,7 @@ class Orchestrator:
             st.set("integration", self.integration)
             st.set("started_at", self.started)
             st.set("project_name", self.repo.name)
-            st.set("settings", {"chat_budget": self.cfg.team.chat_budget, "max_escalations": 4})
+            st.set("settings", {"chat_budget": self.cfg.team.chat_budget, "max_escalations": self.cfg.team.max_escalations})
             gitops.add_worktree(self.repo, self.main_wt, self.integration, base_commit)
         else:
             self.started = st.get("started_at", now())
@@ -177,12 +180,17 @@ class Orchestrator:
             self.prefix = self.integration.rsplit("/", 1)[0]
             gitops.add_worktree(self.repo, self.main_wt, self.integration, st.get("base_commit"))
         st.set("prompt_writer", bool(self.cfg.team.prompt_writer))  # the current setting, on a resume too
+        st.set("model_policy", {k: getattr(self.cfg.models, k) for k in self.cfg.models.__dataclass_fields__})
+        st.set("settings", {**(st.get("settings", {}) or {}), "chat_budget": self.cfg.team.chat_budget,
+                            "max_escalations": self.cfg.team.max_escalations})
         for acc in self.cfg.accounts:
             st.upsert_account(acc.name, vendor=acc.vendor, profile=str(acc.profile_dir() or "default"))
         for spec in self.cfg.seats:
             wt = self.run_dir / "worktrees" / spec.name
             if not wt.exists():
                 gitops.git(self.repo, "worktree", "add", "-f", "--detach", str(wt), self.integration)
+            if st.get(f"model_override:{spec.name}"):
+                spec.model = self.cfg.models.check(st.get(f"model_override:{spec.name}"))
             model = self.seat_model(spec)
             prev = st.seat(spec.name) or {}
             if self.resume and prev.get("role"):
@@ -195,7 +203,8 @@ class Orchestrator:
             if last and last not in known:  # that subscription was removed since: its conversation went with it
                 st.update_seat(spec.name, session_id=None)
                 self.log(f"{spec.name}: {last} is no longer one of the subscriptions; continuing on {account.name}")
-            self.seats[spec.name] = SeatRT(spec=spec, account=account, worktree=wt)
+            self.seats[spec.name] = SeatRT(spec=spec, account=account, worktree=wt,
+                                          paused=bool(st.get(f"paused:{spec.name}")))
         self.chat_seen = st.last_message_id() if self.resume else 0
         for t in st.tasks():
             self.task_snapshot[t["id"]] = t["status"]
@@ -208,15 +217,15 @@ class Orchestrator:
 
     def seat_model(self, spec) -> str:
         """The model a seat runs: its tier's model (Sonnet 5.5 for the workhorse, Opus 5.5 for a manager)."""
-        return self.cfg.models.workhorse if spec.tier == "workhorse" else self.cfg.models.work
+        return spec.model or (self.cfg.models.workhorse if spec.tier == "workhorse" else self.cfg.models.work)
 
     def _claude_setup(self, effort: str | None = None, model: str | None = None) -> ClaudeSetup:
         model = model or self.cfg.models.work
         # A workhorse seat's helpers (research, tests) run on its own economical model; everything else on the manager's.
-        work_model = model if model == self.cfg.models.workhorse else self.cfg.models.work
+        work_model = model  # helpers stay on a model this CLI can actually run
         return ClaudeSetup(model=model, effort=effort or self.cfg.models.effort_work,
                            work_model=work_model, permission_mode=self.cfg.team.permission_mode,
-                           run_dir=self.run_dir, extra_env=self._secret_env())
+                           run_dir=self.run_dir, extra_env=self._secret_env(), cancel_event=self.cancel_jobs)
 
     def task_effort(self, task: dict | None) -> str:
         """How hard the builder of a task should think: the owner's fixed choice, else the CEO's call per task
@@ -245,7 +254,7 @@ class Orchestrator:
     def _codex_setup(self, effort: str | None = None, model: str | None = None) -> CodexSetup:
         return CodexSetup(model=model or self.cfg.models.ceo, effort=effort or self.cfg.models.effort_work,
                           run_dir=self.run_dir, extra_env=self._secret_env(),
-                          bypass_sandbox=self.cfg.team.permission_mode == "bypassPermissions")
+                          bypass_sandbox=self.cfg.team.permission_mode == "bypassPermissions", cancel_event=self.cancel_jobs)
 
     def _secret_env(self) -> dict[str, str]:
         env = {k: v for k, v in self.secrets.items() if k != "ANTHROPIC_API_KEY"}
@@ -281,7 +290,10 @@ class Orchestrator:
 
     def start_seat(self, rt: SeatRT, first: str | None, resume_session: str | None = None,
                    effort: str | None = None) -> None:
-        system = self._system_prompt(rt)
+        if rt.paused:
+            self.store.update_seat(rt.name, status="paused")
+            return
+        system = self._system_prompt(rt) + "\n\n" + project_context(self.store, rt.name, 18_000)
         index = list(self.seats).index(rt.name)
         port_env = {"CREW_PORT_BASE": str(4100 + 100 * index)}  # separate server ports per agent
         effort = effort or rt.want_effort or None
@@ -291,7 +303,7 @@ class Orchestrator:
             rt.runner = ClaudeSeat(rt.name, rt.spec.role, rt.account, rt.worktree, setup, system,
                                    self.events, self.redact)
         else:
-            setup = self._codex_setup(effort=effort)
+            setup = self._codex_setup(effort=effort, model=self.seat_model(rt.spec))
             setup.extra_env = {**setup.extra_env, **port_env}
             rt.runner = CodexSeat(rt.name, rt.spec.role, rt.account, rt.worktree, setup, system,
                                   self.events, self.redact)
@@ -371,14 +383,19 @@ class Orchestrator:
         self.set_phase("refine")
         self.say("Received the owner's request. Refining it into a precise brief…")
         lead = self.seats[self.lead_name]
-        self.store.event("oneoff", seat="refiner", state="start", role="refiner", vendor="claude",
-                         account=lead.account.name, model=self.cfg.models.work, effort=self.cfg.models.effort_light)
-        res = run_once_claude(
+        model = self.seat_model(lead.spec)
+        self.store.event("oneoff", seat="refiner", state="start", role="refiner", vendor=lead.account.vendor,
+                         account=lead.account.name, model=model, effort=self.cfg.models.effort_light)
+        run = run_once_codex if lead.account.vendor == "codex" else run_once_claude
+        setup = (self._codex_setup if lead.account.vendor == "codex" else self._claude_setup)(
+            effort=self.cfg.models.effort_light, model=model)
+        options = {} if lead.account.vendor == "codex" else {"with_team_tools": False}
+        res = run(
             prompts.refiner_prompt(self.request, self.repo_overview(), lessons.render_for_ceo(self.tier_models())),
             seat="refiner",
             role="member", account=lead.account, workdir=self.main_wt,
-            setup=self._claude_setup(effort=self.cfg.models.effort_light), redact=self.redact,
-            json_schema=prompts.REFINER_SCHEMA, read_only=True, timeout=600, with_team_tools=False)
+            setup=setup, redact=self.redact,
+            json_schema=prompts.REFINER_SCHEMA, read_only=True, timeout=600, **options)
         self._account_usage(lead.account.name, res)
         self.store.event("oneoff", seat="refiner", state="error" if res.is_error else "done", tokens=res.tokens,
                          seconds=round(res.duration_s or 0))
@@ -432,7 +449,7 @@ class Orchestrator:
         """Workhorse seats that can take work now (not down, not benched, account not at its limit)."""
         modes = modes if modes is not None else self.modes()
         return [rt for rt in self.seats.values() if rt.spec.tier == "workhorse" and not rt.down and not rt.benched
-                and self.seat_mode(rt, modes) != "parked"]
+                and not rt.paused and self.seat_mode(rt, modes) != "parked"]
 
     def kickoff_solo(self) -> None:
         """One builder, others check: single-agent speed with independent review kept. Routine jobs are built by
@@ -548,6 +565,9 @@ class Orchestrator:
         solo = self.store.get("mode") == "solo"
         builder = self.store.get("solo_builder") or self.lead_name
         for rt in self.seats.values():
+            if rt.paused:
+                self.store.update_seat(rt.name, status="paused")
+                continue
             if solo and rt.name not in (builder, self.lead_name, self.store.get("solo_rival")):
                 rt.benched = True
                 continue
@@ -575,11 +595,12 @@ class Orchestrator:
                     self.handle_event(self.events.get_nowait())
             except queue.Empty:
                 pass
-            self.drain_jobs()
+            self.process_controls()
             if self.store.get("stop_requested"):
                 self.say("Stop requested by the owner. Saving everyone's work.")
                 self.stop_run()
                 break
+            self.drain_jobs()
             if max_seconds > 0 and now() - self.started > max_seconds:
                 self.say(f"The timer you set ({hours:g} h) is up. Stopping and saving the work.")
                 self.stop_run()
@@ -587,8 +608,122 @@ class Orchestrator:
             self.tick()
 
     def stop_run(self) -> None:
+        self.cancel_jobs.set()
         self.store.set("phase_before_stop", self.phase())
         self.set_phase("stopped")
+
+    def process_controls(self) -> None:
+        """Apply management requests on the coordination thread, between git operations."""
+        pending = self.store.controls(pending=True)
+        # Stop must remain responsive even when an earlier request waits for review.
+        pending.sort(key=lambda item: item["action"] != "stop")
+        for item in pending:
+            op = item["payload"]
+            tid = op.get("task_id")
+            # A merge or final check owns worktrees until it returns. Reviews also carry
+            # snapshots: finish them before revising or reassigning their task.
+            if op["action"] != "stop" and ("final" in self.jobs or self.merging or
+                    (tid and any(f"{prefix}-{tid}" in self.jobs for prefix in ("review", "contest", "merge")))):
+                break  # preserve the order of the owner's batch
+            try:
+                result = self.apply_control(op)
+            except (ValueError, StoreError, gitops.GitError) as exc:
+                self.store.finish_control(item["id"], str(exc), failed=True)
+            else:
+                if op["action"] == "stop":
+                    with self.store.tx() as db:
+                        db.execute("UPDATE controls SET status='running',result=? WHERE id=?", (result, item["id"]))
+                else:
+                    self.store.finish_control(item["id"], result)
+                self.store.event("control", seat=item["requested_by"], action=op["action"], result=result)
+            if self.store.get("stop_requested"):
+                break
+
+    def save_agent(self, rt: SeatRT, reason: str) -> None:
+        """Stop the writer before saving its branch; stale process events are ignored."""
+        if rt.runner is not None:
+            rt.stopping = True
+            rt.runner.stop()
+            rt.runner = None
+        rt.busy = False
+        rt.pending.clear()
+        gitops.commit_all(rt.worktree, f"crew: checkpoint ({reason})")
+        row = self.store.seat(rt.name) or {}
+        if row.get("current_task"):
+            self.store.append_note(row["current_task"], "crew", f"Work saved: {reason}")
+        self.store.update_seat(rt.name, current_task=None, status="paused" if rt.paused else "idle")
+
+    def apply_control(self, op: dict) -> str:
+        action = op["action"]
+        reason = op.get("reason") or action.replace("_", " ")
+        if action == "stop":
+            self.store.set("stop_requested", True)
+            return "Stopping the project and saving all branches."
+        if action in ("pause_agent", "resume_agent", "set_model"):
+            rt = self.seats.get(op.get("seat"))
+            if rt is None:
+                raise ValueError("That agent is not part of this run.")
+            if action == "resume_agent":
+                rt.paused = False
+                rt.down = False
+                rt.stopping = False
+                self.store.set(f"paused:{rt.name}", False)
+                self.store.update_seat(rt.name, status="idle")
+                return f"{rt.name} will resume with the current project context."
+            model = op.get("model")
+            if action == "set_model":
+                self.cfg.models.check(model)
+                if vendor_of(model) != rt.spec.vendor:
+                    raise ValueError("Choose a model supported by this agent's CLI product.")
+            row = self.store.seat(rt.name) or {}
+            task = self.store.task(row["current_task"]) if row.get("current_task") else None
+            if task and any(f"{p}-{task['id']}" in self.jobs for p in ("review", "contest", "merge")):
+                raise ValueError("This agent's task is being reviewed; retry after that check finishes.")
+            if action == "pause_agent":
+                rt.paused = True
+            self.save_agent(rt, reason)
+            if task and task["status"] not in ("merged", "cancelled"):
+                self.store.update_task(task["id"], status="todo", owner=None, suggested_owner=None)
+            if action == "set_model":
+                rt.spec.model = model
+                self.store.set(f"model_override:{rt.name}", model)
+                self.store.update_seat(rt.name, model=model, session_id=None)
+            self.store.set(f"paused:{rt.name}", rt.paused)
+            rt.stopping = False
+            return f"{rt.name}: work saved; " + (f"model is now {model}." if action == "set_model" else "paused.")
+        task = self.store.task(int(op["task_id"]))
+        if task is None or task["status"] == "merged":
+            raise ValueError("A merged task cannot be rewritten. Create a follow-up task.")
+        if task.get("twin"):
+            raise ValueError("This is a head-to-head task. Finish the comparison before changing it.")
+        if action == "reassign_task":
+            target = self.seats.get(op.get("seat"))
+            if target is None or target.paused or target.down:
+                raise ValueError("Choose an available agent.")
+            if task.get("tier") == "manager" and target.spec.tier != "manager":
+                raise ValueError("Update the task's tier before assigning it to a workhorse.")
+        owner = self.seats.get(task.get("owner") or "")
+        if owner and (self.store.seat(owner.name) or {}).get("current_task") == task["id"]:
+            self.save_agent(owner, reason)
+            owner.stopping = False
+        fields = {"owner": None, "suggested_owner": None, "block_reason": None,
+                  "finished_at": None, "submitted_at": None}
+        if action == "cancel_task":
+            fields.update(status="cancelled", finished_at=now())
+        elif action == "edit_task":
+            fields.update(op["fields"], status="todo")
+        elif action in ("retry_task", "reassign_task"):
+            fields.update(status="todo")
+            if action == "reassign_task":
+                fields["suggested_owner"] = op["seat"]
+        else:
+            raise ValueError(f"Unknown control: {action}")
+        self.store.update_task(task["id"], **fields)
+        for key in ("review", "review_sha", "review_wait", "review_wait_said"):
+            self.store.set(f"{key}:{task['id']}", None)
+        self.store.append_note(task["id"], "crew", reason)
+        self.say(f"Task #{task['id']}: {action.replace('_', ' ')}. {reason} @{self.lead_name}", urgent=True)
+        return f"Task #{task['id']}: {fields['status']}. Its existing branch and notes are preserved."
 
     def interrupt_for_owner(self) -> None:
         for rt in self.seats.values():
@@ -799,7 +934,7 @@ class Orchestrator:
     def promote_lead(self, old: SeatRT, reason: str) -> bool:
         """The lead cannot continue: hand leadership to the healthiest manager seat, with a fresh briefing."""
         accounts = {a["name"]: a for a in self.accounts()}
-        candidates = [r for r in self.seats.values() if r is not old and not r.down and r.spec.vendor == "claude"
+        candidates = [r for r in self.seats.values() if r is not old and not r.down and not r.paused
                       and r.spec.tier == "manager"]
         if not candidates:
             return False
@@ -866,7 +1001,7 @@ class Orchestrator:
                 self.say(f"Every {which} is at its limit. The team pauses and resumes at {hhmm(earliest)}. "
                          "Nothing is lost.")
             return
-        managers = [a for a in self.accounts() if a["vendor"] == "claude"]
+        managers = [a for a in self.accounts() if a["vendor"] == vendor_of(self.cfg.models.work)]
         manager_modes = self.modes(self.cfg.models.work)
         if managers and all(manager_modes.get(a["name"]) == "parked" for a in managers) and self.workhorse_seats(modes) \
                 and now() - self.all_parked_notice > 1800 and self.phase() in ("plan", "build"):
@@ -933,7 +1068,7 @@ class Orchestrator:
 
     def wake_waiting(self, modes: dict[str, str]) -> None:
         for rt in self.seats.values():
-            if rt.runner is None and not rt.down and not rt.benched and self.seat_mode(rt, modes) != "parked" \
+            if rt.runner is None and not rt.down and not rt.paused and not rt.benched and self.seat_mode(rt, modes) != "parked" \
                     and rt.cooldown_until <= now() and self.phase() in ("plan", "build", "deliver"):
                 session = (self.store.seat(rt.name) or {}).get("session_id")
                 self.start_seat(rt, None, resume_session=session)
@@ -964,6 +1099,8 @@ class Orchestrator:
                 if f"draft-{m['id']}" not in self.jobs:
                     self.start_job(f"draft-{m['id']}", self._draft_job, m)
             elif not self.store.get(f"ceo_answered:{m['id']}") and f"owner-ceo-{m['id']}" not in self.jobs:
+                if any(key.startswith("owner-ceo-") for key in self.jobs):
+                    break  # preserve order and include the previous answer in the next question's context
                 self.start_job(f"owner-ceo-{m['id']}", self._owner_ceo_job, m["id"], owner_words(m))
 
     def _writer_context(self, to: str | None) -> str:
@@ -1000,15 +1137,19 @@ class Orchestrator:
         name = f"writer-{m['id']}"
         try:
             modes = self.modes(self.cfg.models.work)
-            row = scheduler.pick_account([a for a in self.accounts() if a["vendor"] == "claude"], modes)
+            row = scheduler.pick_account([a for a in self.accounts() if a["vendor"] == vendor_of(self.cfg.models.work)], modes)
             if row is not None:
                 account = self.cfg.account(row["name"])
-                self.store.event("oneoff", seat=name, state="start", role="writer", vendor="claude",
+                self.store.event("oneoff", seat=name, state="start", role="writer", vendor=account.vendor,
                                  account=account.name, model=self.cfg.models.work, effort="low")
-                res = run_once_claude(prompts.writer_prompt(raw, self._writer_context(to)), seat=name, role="member",
-                                      account=account, workdir=self.main_wt, setup=self._claude_setup(effort="low"),
+                run = run_once_codex if account.vendor == "codex" else run_once_claude
+                setup = (self._codex_setup if account.vendor == "codex" else self._claude_setup)(
+                    effort="low", model=self.cfg.models.work)
+                options = {} if account.vendor == "codex" else {"with_team_tools": False}
+                res = run(prompts.writer_prompt(raw, self._writer_context(to)), seat=name, role="member",
+                                      account=account, workdir=self.main_wt, setup=setup,
                                       redact=self.redact, json_schema=prompts.WRITER_SCHEMA, read_only=True,
-                                      timeout=240, with_team_tools=False)
+                                      timeout=240, **options)
                 self._account_usage(account.name, res)
                 self.store.event("oneoff", seat=name, state="error" if res.is_error else "done", tokens=res.tokens,
                                  seconds=round(res.duration_s or 0))
@@ -1041,6 +1182,8 @@ class Orchestrator:
         """Send idle seats their instructions plus the chat they missed (only when there is a reason)."""
         modes = self.modes()
         for rt in self.seats.values():
+            if rt.paused:
+                continue
             if rt.runner is None and not rt.down and rt.cooldown_until <= now() and \
                     self.seat_mode(rt, modes) != "parked" and self.phase() not in ("done", "stopped", "failed"):
                 direct, _ = self._owner_directs(self.store.unread(rt.name), rt.name)
@@ -1058,6 +1201,7 @@ class Orchestrator:
             parts = []
             if direct:
                 self.store.set(f"owner_q:{rt.name}", direct[-1]["id"])
+                parts.append(project_context(self.store, rt.name, 18_000))
                 parts.append(prompts.owner_direct(direct))
             parts += list(rt.pending)
             rt.pending.clear()
@@ -1141,7 +1285,7 @@ class Orchestrator:
         # Board-level stall (Magentic-One style progress ledger)
         if self.phase() != "build":
             return
-        managers = [a for a in self.accounts() if a["vendor"] == "claude"]
+        managers = [a for a in self.accounts() if a["vendor"] == vendor_of(self.cfg.models.work)]
         if managers and all(scheduler.mode_for(a, self.cfg.models.work) == "parked" for a in managers):
             self.last_progress = now()  # waiting for the managers' usage to come back is a pause, not a stall
             return
@@ -1265,7 +1409,7 @@ class Orchestrator:
         if not ready:
             return
         idle = [rt for rt in self.seats.values()
-                if not rt.down and not rt.busy and rt.runner is not None and not rt.pending
+                if not rt.down and not rt.paused and not rt.busy and rt.runner is not None and not rt.pending
                 and not (self.store.seat(rt.name) or {}).get("current_task")]
         if not idle:
             return
@@ -1312,17 +1456,15 @@ class Orchestrator:
                 idle_names.discard(rt.name)
 
     def manager_may_help(self, ready: list[dict]) -> set[int]:
-        """Workhorse tasks an idle manager seat may take: waiting 10+ minutes for a workhorse seat while the
-        managers are below their share of the tokens (the owner's target is 60-70%)."""
+        """Let idle managers help when a workhorse task has waited briefly."""
         t = now()
         for task in ready:
             self.ready_since.setdefault(task["id"], t)
         waiting = {task["id"] for task in ready
-                   if task.get("tier") == "workhorse" and t - self.ready_since[task["id"]] >= 600}
+                   if task.get("tier") == "workhorse" and t - self.ready_since[task["id"]] >= 30}
         if not waiting:
             return set()
-        share = tiers.share_of(self.store, "manager")
-        return waiting if share is not None and share < tiers.TARGETS["manager"][0] else set()
+        return waiting  # token shares are observations, never a quota for useful work
 
     def _free_branch(self, branch: str, keep: SeatRT | None = None) -> None:
         for other in self.seats.values():
@@ -1419,7 +1561,7 @@ class Orchestrator:
         try:
             checks = self.store.get("checks", []) or []
             result = gitops.run_checks(wt, checks, self.run_dir / "logs" / f"checks-task-{task_id}.log",
-                                       self.cfg.team.checks_timeout_minutes * 60, env=None)
+                                       self.cfg.team.checks_timeout_minutes * 60, env=None, cancel_event=self.cancel_jobs)
             if result.ran and not result.ok:
                 return ("changes", "The checks fail on your branch:\n" + result.summary, "checks")
             # Crew's own scan of what the change adds: a leaked secret goes straight back; risky lines go to the
@@ -1456,18 +1598,18 @@ class Orchestrator:
         (the subscription's own limit, or that model's own). Ten minutes when none is known."""
         model = self.cfg.models.work
         times = [max(int(a.get("parked_until") or 0), scheduler.model_parked_until(a, model))
-                 for a in self.accounts() if a["vendor"] == "claude"]
+                 for a in self.accounts() if a["vendor"] == vendor_of(model)]
         return min(times) if times and min(times) > now() else int(now() + 600)
 
     def manager_usable(self) -> bool:
         return any(scheduler.mode_for(a, self.cfg.models.work) != "parked" for a in self.accounts()
-                   if a["vendor"] == "claude")
+                   if a["vendor"] == vendor_of(self.cfg.models.work))
 
     def run_reviewer(self, task: dict, check_log: str, scan_notes: str = "") -> RunResult:
         """A fresh manager (Opus 5.5) checks the task, on another subscription than its author's when possible."""
         modes = self.modes(self.cfg.models.work)
         owner_acc = self.seats[task["owner"]].account.name if task["owner"] in self.seats else None
-        managers = [a for a in self.accounts() if a["vendor"] == "claude"]
+        managers = [a for a in self.accounts() if a["vendor"] == vendor_of(self.cfg.models.work)]
         acc_row = scheduler.pick_account(managers, modes, avoid=owner_acc)
         if acc_row is None:
             return RunResult(is_error=True, limit_hit=True,
@@ -1479,7 +1621,7 @@ class Orchestrator:
                                          author_tier=author_tier, scan_notes=scan_notes)
         wt = self.run_dir / "worktrees" / f"_review-{task['id']}"
         name = f"reviewer-{task['id']}"
-        model = self.cfg.models.work if account.vendor == "claude" else self.cfg.models.ceo
+        model = self.cfg.models.work
         effort = self.review_effort(task)
         self.say(f"Reviewing task #{task['id']} with fresh eyes ({model_label(model)}, {account.name}).",
                  task_id=task["id"])
@@ -1487,11 +1629,11 @@ class Orchestrator:
                          account=account.name, effort=effort, model=model)
         if account.vendor == "codex":
             res = run_once_codex(prompt, seat=name, role="reviewer", account=account, workdir=wt,
-                                 setup=self._codex_setup(effort=effort), redact=self.redact,
+                                 setup=self._codex_setup(effort=effort, model=model), redact=self.redact,
                                  task_id=task["id"], read_only=True)
         else:
             res = run_once_claude(prompt, seat=name, role="reviewer", account=account, workdir=wt,
-                                  setup=self._claude_setup(effort=effort), redact=self.redact,
+                                  setup=self._claude_setup(effort=effort, model=model), redact=self.redact,
                                   task_id=task["id"], read_only=True)
         self._account_usage(account.name, res)
         if res.limit_hit:
@@ -1575,7 +1717,7 @@ class Orchestrator:
             checks = self.store.get("checks", []) or []
             results = {letter: gitops.run_checks(folders[letter], checks,
                                                  self.run_dir / "logs" / f"checks-contest-{orig_id}-{letter}.log",
-                                                 self.cfg.team.checks_timeout_minutes * 60) for letter in "ab"}
+                                                 self.cfg.team.checks_timeout_minutes * 60, cancel_event=self.cancel_jobs) for letter in "ab"}
             prompt = prompts.contest_prompt(orig, self.integration, checks,
                                             {k: r.summary if r.ran else "" for k, r in results.items()})
             res = self.run_judge(orig, twin, prompt, root)
@@ -1604,7 +1746,7 @@ class Orchestrator:
         """A fresh manager (Opus 5.5) judges the two versions blind, on another subscription than their authors'."""
         modes = self.modes(self.cfg.models.work)
         authors = {self.seats[t["owner"]].account.name for t in (orig, twin) if t.get("owner") in self.seats}
-        managers = [a for a in self.accounts() if a["vendor"] == "claude"]
+        managers = [a for a in self.accounts() if a["vendor"] == vendor_of(self.cfg.models.work)]
         avoid = next((a for a in authors if any(m["name"] == a for m in managers)), None)
         acc_row = scheduler.pick_account(managers, modes, avoid=avoid)
         if acc_row is None:
@@ -1614,10 +1756,13 @@ class Orchestrator:
         effort = self.review_effort(orig)
         self.say(f"Judging the head-to-head on task #{orig['id']}: {model_label(self.cfg.models.work)} compares both "
                  "versions without knowing which model built which.", task_id=orig["id"])
-        self.store.event("oneoff", seat=name, task_id=orig["id"], state="start", role="reviewer", vendor="claude",
+        self.store.event("oneoff", seat=name, task_id=orig["id"], state="start", role="reviewer", vendor=account.vendor,
                          account=account.name, effort=effort, model=self.cfg.models.work)
-        res = run_once_claude(prompt, seat=name, role="reviewer", account=account, workdir=workdir,
-                              setup=self._claude_setup(effort=effort), redact=self.redact, task_id=orig["id"],
+        run = run_once_codex if account.vendor == "codex" else run_once_claude
+        setup = (self._codex_setup if account.vendor == "codex" else self._claude_setup)(
+            effort=effort, model=self.cfg.models.work)
+        res = run(prompt, seat=name, role="reviewer", account=account, workdir=workdir,
+                              setup=setup, redact=self.redact, task_id=orig["id"],
                               read_only=True, json_schema=prompts.CONTEST_SCHEMA, timeout=2400)
         self._account_usage(account.name, res)
         self.store.event("oneoff", seat=name, task_id=orig["id"], state="error" if res.is_error else "done",
@@ -1774,7 +1919,7 @@ class Orchestrator:
             return ("conflict", ", ".join(res.conflicts)) if res.is_conflict else ("error", res.message)
         checks = self.store.get("checks", []) or []
         result = gitops.run_checks(self.main_wt, checks, self.run_dir / "logs" / f"checks-merge-{task_id}.log",
-                                   self.cfg.team.checks_timeout_minutes * 60)
+                                   self.cfg.team.checks_timeout_minutes * 60, cancel_event=self.cancel_jobs)
         if result.ran and not result.ok:
             gitops.clean_worktree(self.main_wt)
             gitops.revert_last_merge(self.main_wt, f"task #{task_id} broke the checks")
@@ -1835,6 +1980,10 @@ class Orchestrator:
     # ------------------------------------------------------------ completion
 
     def check_completion(self) -> None:
+        if any(m["kind"] == "draft" or not self.store.get(f"ceo_answered:{m['id']}")
+               for m in self.store.owner_pending()) or self.store.controls(pending=True) or any(
+                key.startswith("owner-ceo-") for key in self.jobs):
+            return
         tasks = self.store.tasks()
         if not tasks or any(t["status"] not in ("merged", "cancelled") for t in tasks):
             return
@@ -1898,7 +2047,7 @@ class Orchestrator:
         checks = self.store.get("checks", []) or []
         gitops.clean_worktree(self.main_wt)
         result = gitops.run_checks(self.main_wt, checks, self.run_dir / "logs" / "checks-final.log",
-                                   self.cfg.team.checks_timeout_minutes * 60)
+                                   self.cfg.team.checks_timeout_minutes * 60, cancel_event=self.cancel_jobs)
         gitops.clean_worktree(self.main_wt)
         if result.ran and not result.ok:
             return "red:" + result.summary
@@ -1922,6 +2071,8 @@ class Orchestrator:
         return "ok"
 
     def on_final_done(self, outcome: str) -> None:
+        if self.store.get("stop_requested") or self.cancel_jobs.is_set():
+            return
         if outcome.startswith("red:") or outcome.startswith("changes:"):
             kind, _, detail = outcome.partition(":")
             what = "The final checks fail" if kind == "red" else "The CEO's final review requires changes"
@@ -1945,6 +2096,8 @@ class Orchestrator:
         self.deliver()
 
     def deliver(self) -> None:
+        if self.store.get("stop_requested") or self.cancel_jobs.is_set():
+            return
         mode = self.cfg.team.deliver
         base = self.store.get("base_branch")
         where = f"the branch `{self.integration}`"
@@ -1999,6 +2152,8 @@ class Orchestrator:
         effort = effort or (self.cfg.models.effort_ceo if self.cfg.models.effort_ceo != "auto" else "max")
         res = RunResult(is_error=True, text="no subscription available for the CEO")
         for model in self.ceo_chain():
+            if self.cancel_jobs.is_set():
+                return RunResult(is_error=True, text="Project stopped.")
             vendor = vendor_of(model)
             modes = self.modes(model)
             acc_row = scheduler.pick_account([a for a in self.accounts() if a["vendor"] == vendor], modes)
@@ -2038,15 +2193,12 @@ class Orchestrator:
 
     def _owner_ceo_job(self, msg_id: int, question: str) -> None:
         self.store.set(f"ceo_answered:{msg_id}", True)
-        context = (self.brief_text() + "\n\nBoard:\n" + self._board_text() + "\n\nRecent team chat:\n" + "\n".join(
-            _fmt_msg(m, 300) for m in self.store.recent_messages(25, public_only=True)))
-        # A question is not a review: a lighter effort answers it well and keeps the CEO near its token share.
-        res = self.run_ceo(f"ceo-question-{msg_id}", prompts.ceo_owner_prompt(question, context), timeout=1800,
-                           effort="high")
+        context = project_context(self.store, "ceo")
+        res = self.run_ceo(f"ceo-question-{msg_id}", prompts.ceo_owner_prompt(question, context), timeout=1800)
         text = (res.text or "").strip()
         if res.is_error or not text:
             text = "I could not answer just now (no CEO model was available). Please ask again later."
-        self.store.post("ceo", "direct", self.redact(clip(text, 4000)), recipient="you")
+        self.store.post("ceo", "direct", self.redact(text), recipient="you", ref=msg_id)
 
     def _ruling_job(self, event_id: int, prompt: str) -> RunResult:
         name = f"ceo-ruling-{event_id}"
@@ -2097,7 +2249,8 @@ class Orchestrator:
                     self.store.update_task(tid, status="changes", review_notes=f"Merge failed: {result}")
                 elif key.startswith("review-"):
                     tid = int(key.split("-")[1])
-                    self.store.update_task(tid, status="changes", review_notes=f"Review failed to run: {result}")
+                    if (self.store.task(tid) or {}).get("status") == "review":
+                        self.store.update_task(tid, status="changes", review_notes=f"Review failed to run: {result}")
                 elif key.startswith("contest-"):
                     self.on_contest_done(int(key.split("-")[1]), ("fallback", str(result)))
                 elif key == "final":
@@ -2169,10 +2322,8 @@ class Orchestrator:
             names = {"workhorse": model_label(self.cfg.models.workhorse), "manager": model_label(self.cfg.models.work),
                      "ceo": model_label(self.cfg.models.ceo)}
             for t in share["tiers"]:
-                low, high = t["target"]
-                target = f"about {high}%" if not low else f"{low}-{high}%"
                 lines.append(f"- {t['name']} ({names[t['tier']]}): {t['pct']:g}% of {share['total']:,} tokens "
-                             f"(target {target})")
+                             "(work assigned by task needs)")
         lines += ["", "## Subscriptions used"]
         for acc in self.store.accounts():
             util = "" if acc["util_5h"] is None else f", {acc['util_5h'] * 100:.0f}% of the 5-hour allowance"
@@ -2220,19 +2371,30 @@ class Orchestrator:
     # =============================================================== shutdown
 
     def shutdown(self) -> None:
+        self.cancel_jobs.set()
+        save_errors = []
         for rt in self.seats.values():
             if rt.runner is not None:
                 rt.stopping = True
                 try:
                     rt.runner.stop()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    save_errors.append(f"{rt.name} could not stop: {exc}")
             try:
                 if gitops.is_dirty(rt.worktree):
                     gitops.commit_all(rt.worktree, "crew: work saved at shutdown")
-            except Exception:
-                pass
+            except Exception as exc:
+                save_errors.append(f"{rt.name} could not save: {exc}")
             self.store.update_seat(rt.name, status="stopped")
+        deadline = time.monotonic() + 10
+        for key, thread in list(self.jobs.items()):
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+            if thread.is_alive():
+                save_errors.append(f"Background job {key} did not stop in time")
+        for item in self.store.controls(pending=True):
+            if item["action"] == "stop":
+                self.store.finish_control(item["id"], "; ".join(save_errors) if save_errors else
+                                          "Project stopped. All agent branches are saved.", failed=bool(save_errors))
         if self.phase() in ("stopped", "failed") and not (self.run_dir / "REPORT.md").exists():
             self.store.set("done_report", "The run stopped before the work was finished. Everything done so far is "
                            "saved; `crew resume` continues from here.")

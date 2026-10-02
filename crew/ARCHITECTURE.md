@@ -164,17 +164,18 @@ Either way the chat records it and the project does not stop.
 
 ## 6. Models (quality first)
 
-Only the models on the allow-list run. Defaults: **Claude Opus 5.5** does the
-work (lead, members, reviews, refiner, and every sub-agent, forced via
-`CLAUDE_CODE_SUBAGENT_MODEL_FORCE`); **Claude Fable 5.1** is the "CEO":
-plan review, rulings, final review — high-leverage and rare, because it has
-its own tighter limit. Since 2.3.1 the team's routine work goes to the
-workhorse, **Claude Sonnet 5.5** (Claude seats with `tier = "workhorse"`; their
-sub-agents run Sonnet too), and GPT-6 Astra is the CEO on ChatGPT with Fable 5.1
-as its backup. Haiku and GPT-6 Sol are banned; Claude Code's background
-"small fast model" is redirected to the seat's model (`ANTHROPIC_DEFAULT_HAIKU_MODEL`).
-Cost is saved by effort level, caching and less chatter — never by a weaker
-model.
+Models are selected per agent and must match its CLI subscription. Both Claude Code
+and Codex can run workers or managers; GPT-6 Astra is the default CEO. Automatic workers
+alternate through the compatible Sonnet/GPT-6.1 Sol model pool. User bans and the
+Claude allow-list still apply. An excluded optional CEO backup is disabled without
+resetting settings. Usage follows tasks without token quotas. Claude Code's background
+small model is redirected to its seat's model (`ANTHROPIC_DEFAULT_HAIKU_MODEL`).
+
+Controls are durable requests in SQLite. The coordinator stops and checkpoints the
+writer before changing an active task or model, defers edits during review/merge,
+and records results. Context combines bounded current state with the seat's private
+history; older records remain searchable. [AUTONOMY.md](AUTONOMY.md) describes the
+owner-facing behavior and the limits of simulated verification.
 
 ---
 

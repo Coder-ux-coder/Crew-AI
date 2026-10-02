@@ -1,27 +1,20 @@
-"""The team's three tiers, as the owner set them.
-
-  workhorse  Sonnet 5.5 (Claude seats): routine, fully specified work — most tasks by count.
-  manager    Opus 5.5 (Claude seats): plans, reviews every workhorse task, builds what needs high intelligence.
-  ceo        GPT-6 Astra (ChatGPT): reviews the plan and gives the final approval; checks rather than builds.
-
-Token targets (share of all tokens a project uses): manager 60–70%, CEO about 5%, workhorse the rest.
-"""
+"""Configurable workhorse, manager and CEO roles. Usage describes work; it never imposes a quota."""
 
 from __future__ import annotations
 
 TIERS = ("workhorse", "manager")
-TARGETS = {"workhorse": (25, 35), "manager": (60, 70), "ceo": (0, 5)}  # percent of a project's tokens
+TARGETS = {"workhorse": (0, 100), "manager": (0, 100), "ceo": (0, 100)}  # usage is descriptive, never a quota
 TIER_NAMES = {"workhorse": "Workhorse", "manager": "Manager", "ceo": "CEO"}
 
 MODEL_LABELS = {
-    "gpt-6-astra": "GPT-6 Astra", "gpt-6-sol": "GPT-6 Sol", "gpt-6-luna": "GPT-6 Luna",  # Sol: older records
+    "gpt-6-astra": "GPT-6 Astra", "gpt-6.1-sol": "GPT-6.1 Sol", "gpt-6-sol": "GPT-6 Sol", "gpt-6-luna": "GPT-6 Luna",
     "claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5", "claude-fable-5-1": "Fable 5.1",
     "claude-opus-5": "Opus 5",
 }
 
 
 # Models the owner took out of Crew, and the model that takes each one's place where it was chosen before.
-RETIRED = {"gpt-6-sol": "gpt-6-astra"}  # 2.3.1: Sonnet 5.5 replaced GPT-6 Sol as the workhorse
+RETIRED = {}  # model choices belong to the owner; migrations must not silently replace them
 
 
 def vendor_of(model: str) -> str:

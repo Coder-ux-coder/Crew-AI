@@ -6,6 +6,7 @@ on:
     branches:
       - Crew-AI
       - "claude/**"
+      - "codex/**"
   pull_request:
     branches:
       - Crew-AI
@@ -42,7 +43,7 @@ jobs:
       - name: Install test tools
         run: |
           python -m pip install ruff -r crew/requirements-app.txt
-          npm install --prefix .github/checks --no-save --package-lock=false eslint@10 globals
+          npm install --prefix .github/checks --no-save --package-lock=false eslint@10 globals playwright
           python -m playwright install --with-deps chromium
           python -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print('CREW_CHROMIUM=' + p.chromium.executable_path); p.stop()" >> "$GITHUB_ENV"
           git config --global user.name "Crew tests"
@@ -53,6 +54,9 @@ jobs:
       - name: Python syntax
         if: ${{ !cancelled() }}
         run: python -W error -m compileall -q crew/crewlib crew/crewapp crew/tests
+      - name: Desktop and mobile autonomy flows
+        if: ${{ !cancelled() }}
+        run: node .github/checks/autonomy-browser.mjs
       - name: Python lint
         if: ${{ !cancelled() }}
         run: ruff check --config .github/checks/ruff.toml crew/crewlib crew/crewapp

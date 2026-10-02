@@ -3,8 +3,8 @@
 Everything has a default, so a run works with no settings file at all: one
 Claude account (your normal login) and one seat.
 
-The team has three tiers (see tiers.py): Sonnet 5.5 is the workhorse and Opus 5.5 the manager (both on Claude
-seats; the lead is a manager), GPT-6 Astra the CEO (on ChatGPT, with a Claude model as its backup).
+Roles and models are configurable across Claude Code and Codex. The lead is a manager; worker models
+may use either provider. Model selection and usage follow task needs.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from .util import crew_home
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 ALLOWED = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1")  # the Claude models Crew may run
-BANNED = ("haiku", "terra", "luna", "gpt-6-sol")  # the owner's choice: GPT-6 Sol was replaced by Sonnet 5.5
+BANNED = ("haiku", "terra", "luna")
 EFFORT_CHOICES = ("auto",) + EFFORTS  # auto: the model decides (assistant), or the CEO decides per task (team)
 CEO_EFFORT_CHOICES = EFFORT_CHOICES + ("ultra",)  # GPT-6's deepest level; a Claude CEO runs it as max
 VENDORS = ("claude", "codex")
@@ -39,6 +39,7 @@ class ModelPolicy:
     ceo: str = "gpt-6-astra"             # the CEO: plan review, final approval, rulings
     ceo_backup: str = "claude-fable-5-1"  # the CEO when its model cannot run (no ChatGPT, a limit, an error)
     workhorse: str = "claude-sonnet-5-5"  # the workhorse: routine, fully specified work (Claude seats)
+    workhorse_models: list[str] = field(default_factory=lambda: ["claude-sonnet-5-5", "gpt-6.1-sol"])
     allowed: list[str] = field(default_factory=lambda: list(ALLOWED))
     banned: list[str] = field(default_factory=lambda: list(BANNED))
     effort_work: str = "auto"   # auto: the CEO sets each task's effort when it reviews the plan
@@ -69,19 +70,19 @@ class ModelPolicy:
         if self.effort_ceo not in CEO_EFFORT_CHOICES:
             raise ConfigError(f"models.effort_ceo must be one of: {', '.join(CEO_EFFORT_CHOICES)}")
         self.check(self.work)
-        if vendor_of(self.work) != "claude":
-            raise ConfigError("models.work (the manager, who leads the team) must be a Claude model")
         if not self.workhorse:
             raise ConfigError("models.workhorse must name a model, such as claude-sonnet-5-5")
         self.check(self.workhorse)
-        if vendor_of(self.workhorse) != "claude":
-            raise ConfigError("models.workhorse must be a Claude model, such as claude-sonnet-5-5 (the workhorse "
-                              "seats run on your Claude subscriptions)")
-        for name in ("ceo", "ceo_backup"):
-            if getattr(self, name):
-                self.check(getattr(self, name))
-        if self.ceo_backup and vendor_of(self.ceo_backup) != "claude":
-            raise ConfigError("models.ceo_backup must be a Claude model (it runs when ChatGPT cannot)")
+        for model in self.workhorse_models:
+            self.check(model)
+        if self.ceo:
+            self.check(self.ceo)
+        # The fallback is optional. Older Crew wrote a default Fable fallback even
+        # when its own allow list excluded it; that must not invalidate all settings.
+        if self.ceo_backup and vendor_of(self.ceo_backup) == "claude" and self.allowed and self.ceo_backup not in self.allowed:
+            self.ceo_backup = ""
+        elif self.ceo_backup:
+            self.check(self.ceo_backup)
 
 
 @dataclass
@@ -110,6 +111,7 @@ class SeatSpec:
     account: str
     role: str = "member"  # lead | member
     tier: str = ""  # manager | workhorse ("" in an older file: the lead and other seats are managers)
+    model: str = ""  # optional override; its provider must match the seat's account
 
 
 @dataclass
@@ -119,7 +121,8 @@ class TeamSettings:
     max_cost_usd: float = 0.0  # 0 = no dollar cap (subscriptions are flat-rate)
     stall_minutes: float = 8.0
     ledger_minutes: float = 12.0
-    chat_budget: int = 8
+    chat_budget: int = 0  # 0 = adaptive, no fixed message cap; duplicate chatter is still suppressed
+    max_escalations: int = 0  # 0 = evidence-driven rulings without a fixed run quota
     review: str = "cross"  # cross | same | off
     ceo_reviews: bool = True
     deliver: str = "merge"  # merge | branch | push
@@ -130,7 +133,7 @@ class TeamSettings:
     workhorse_seats: int = 2  # Sonnet 5.5 seats in a team, spread over the Claude subscriptions (most tasks by count)
     head_to_head: str = "off"  # off | some | all: parts built by both tiers' models, judged blind (feeds the scorecard)
     head_to_head_style: str = "combine"  # combine: keep the better version and fold in what the other did better
-    prompt_writer: bool = True  # the owner's messages to a team are written up clearly before the agents read them
+    prompt_writer: bool = False  # direct delivery by default; optional rewriting adds a model call
 
 
 @dataclass
@@ -148,16 +151,15 @@ class Config:
         missing = sorted(set(names) - {a.name for a in keep})
         if missing:
             raise ConfigError(f"unknown subscription(s): {', '.join(missing)}")
-        if not any(a.vendor == "claude" for a in keep):
-            raise ConfigError("choose at least one Claude subscription: the team's lead runs on Claude")
+        if not any(a.vendor == vendor_of(self.models.work) for a in keep) and not self.explicit_seats:
+            raise ConfigError("choose a subscription that can run your manager model")
         chosen = {a.name for a in keep}
         seats = [s for s in self.seats if s.account in chosen] if self.explicit_seats else \
-            _default_seats(keep, None, int(self.team.workhorse_seats))
+            _default_seats(keep, None, int(self.team.workhorse_seats), self.models)
         if not any(s.role == "lead" for s in seats):
-            lead = next((s for s in seats if s.vendor == "claude" and s.tier == "manager"), None)
+            lead = next((s for s in seats if s.tier == "manager"), None)
             if lead is None:
-                raise ConfigError("none of your seats on the chosen subscriptions can lead (a manager seat on "
-                                  "Claude): choose another subscription too")
+                raise ConfigError("choose a subscription with a manager seat that can lead")
             lead.role = "lead"
         self.accounts, self.seats = keep, seats
         return self
@@ -194,6 +196,8 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
 
     team = TeamSettings(**_known(TeamSettings, data.get("team", {})))
     models = ModelPolicy(**_known(ModelPolicy, _current_models(data.get("models", {}))))
+    if data.get("models", {}).get("workhorse") and "workhorse_models" not in data["models"]:
+        models.workhorse_models = [models.workhorse]  # preserve an owner's explicit primary model
     models.validate()
     if team.mode not in ("auto", "team", "solo"):
         raise ConfigError('team.mode must be "auto", "team" or "solo"')
@@ -214,7 +218,10 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
     for name in ("max_hours", "max_cost_usd"):
         if getattr(team, name) < 0:
             raise ConfigError(f"team.{name} cannot be below 0 (0 means no limit)")
-    for name in ("chat_budget", "max_review_rounds"):
+    for name in ("chat_budget", "max_escalations"):
+        if getattr(team, name) < 0:
+            raise ConfigError(f"team.{name} cannot be below 0 (0 means adaptive)")
+    for name in ("max_review_rounds",):
         if getattr(team, name) < 1:
             raise ConfigError(f"team.{name} must be 1 or more")
     if not 0 <= team.web_port <= 65535:
@@ -234,42 +241,63 @@ def load(explicit: str | None = None, seats: int | None = None) -> Config:
 
     # Seats written by hand. ChatGPT seats were the workhorse before Sonnet 5.5 took that place; ChatGPT now only
     # reviews (the CEO), so such a seat is left out rather than stopping every project.
-    seat_specs = [SeatSpec(**_known(SeatSpec, s)) for s in data.get("seat", [])
-                  if not (isinstance(s, dict) and s.get("vendor") == "codex")]
+    seat_specs = [SeatSpec(**_known(SeatSpec, s)) for s in data.get("seat", [])]
     if not seat_specs:
-        seat_specs = _default_seats(accounts, seats or data.get("team", {}).get("seats"), int(team.workhorse_seats))
+        seat_specs = _default_seats(accounts, seats or data.get("team", {}).get("seats"), int(team.workhorse_seats), models)
     for spec in seat_specs:
-        spec.tier = spec.tier or "manager"
+        spec.tier = spec.tier or ("workhorse" if spec.vendor == "codex" and spec.role != "lead" else "manager")
         if spec.tier not in ("manager", "workhorse"):
             raise ConfigError(f"seat {spec.name}: tier must be \"manager\" or \"workhorse\"")
     if sum(1 for s in seat_specs if s.role == "lead") != 1:
         raise ConfigError("exactly one seat must have role = \"lead\"")
     lead = next(s for s in seat_specs if s.role == "lead")
-    if lead.vendor != "claude" or lead.tier != "manager":
-        raise ConfigError("the lead seat must be a manager seat on Claude")
+    if lead.tier != "manager":
+        raise ConfigError("the lead seat must be a manager")
+    if len({s.name.lower() for s in seat_specs}) != len(seat_specs):
+        raise ConfigError("seat names must be unique")
     for spec in seat_specs:
         acc = next((a for a in accounts if a.name == spec.account), None)
         if acc is None or acc.vendor != spec.vendor:
             raise ConfigError(f"seat {spec.name}: account '{spec.account}' missing or wrong vendor")
+        if spec.role not in ("lead", "member"):
+            raise ConfigError(f"seat {spec.name}: role must be lead or member")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", spec.name) or spec.name.lower() in ("ceo", "you", "crew", "lead", "all"):
+            raise ConfigError(f"seat {spec.name}: choose a unique agent name using letters, digits, _ and -")
+        model = spec.model or (models.workhorse if spec.tier == "workhorse" else models.work)
+        if not spec.model and vendor_of(model) != spec.vendor:
+            model = next((m for m in models.workhorse_models if vendor_of(m) == spec.vendor), "")
+            if not model and spec.vendor == "codex":
+                model = "gpt-6.1-sol"
+            spec.model = model
+        models.check(model)
+        if not model or vendor_of(model) != spec.vendor:
+            raise ConfigError(f"seat {spec.name}: model must run on its {spec.vendor} subscription")
 
     return Config(team=team, models=models, accounts=accounts, seats=seat_specs, source=path,
                   explicit_seats=bool(data.get("seat")))
 
 
-def _default_seats(accounts: list[Account], count: int | None, workhorse_seats: int = 2) -> list[SeatSpec]:
-    """One manager seat per Claude account (the first leads), then `workhorse_seats` workhorse seats spread over
-    the Claude accounts, starting after the lead's so its account is not the busiest. With an explicit seat count,
-    the first seats are managers (one per Claude account) and the rest workhorses. ChatGPT accounts get no seats:
-    they run the CEO."""
-    claude = [a for a in accounts if a.vendor == "claude"]
-    if not claude:
-        raise ConfigError("at least one Claude account is needed (the lead runs on Claude)")
-    total = max(int(count), 1) if count else len(claude) + max(1, int(workhorse_seats or 1))
-    managers = min(total, len(claude))
-    plan = [(acc, "manager") for acc in claude[:managers]]
-    plan += [(claude[(1 + i) % len(claude)], "workhorse") for i in range(total - managers)]
+def _default_seats(accounts: list[Account], count: int | None, workhorse_seats: int = 2,
+                   models: ModelPolicy | None = None) -> list[SeatSpec]:
+    """Managers use compatible subscriptions; workers alternate through the configured model pool.
+    Both providers can build. Explicit seats override this automatic distribution."""
+    models = models or ModelPolicy()
+    managers = [a for a in accounts if a.vendor == vendor_of(models.work)]
+    if not managers:
+        raise ConfigError("add a subscription that can run the manager model, or choose another manager model")
+    total = max(int(count), 1) if count else len(managers) + max(1, int(workhorse_seats or 1))
+    plan = [(acc, "manager", models.work) for acc in managers[:total]]
+    pool = models.workhorse_models or [models.workhorse]
+    available = [(m, [a for a in accounts if a.vendor == vendor_of(m)]) for m in pool]
+    available = [(m, accs) for m, accs in available if accs]
+    if total > len(plan) and not available:
+        raise ConfigError("add a subscription for a workhorse model, or choose a workhorse model your accounts can run")
+    for i in range(total - len(plan)):
+        model, accs = available[i % len(available)]
+        plan.append((accs[(1 + i // len(available)) % len(accs)], "workhorse", model))
     return [SeatSpec(name=_seat_name(i, acc.vendor), vendor=acc.vendor, account=acc.name,
-                     role="lead" if i == 0 else "member", tier=tier) for i, (acc, tier) in enumerate(plan)]
+                     role="lead" if i == 0 else "member", tier=tier, model=model)
+            for i, (acc, tier, model) in enumerate(plan)]
 
 
 def _current_models(values: dict) -> dict:
@@ -277,7 +305,10 @@ def _current_models(values: dict) -> dict:
     ChatGPT workhorse as `codex`; that model no longer has a place in the team, so the setting is left out."""
     if not isinstance(values, dict):
         raise ConfigError("the models settings must be a group of named values")
-    return {k: v for k, v in values.items() if k != "codex"}
+    current = {k: v for k, v in values.items() if k != "codex"}
+    if values.get("codex") and "workhorse_models" not in current:
+        current["workhorse_models"] = [current.get("workhorse", "claude-sonnet-5-5"), values["codex"]]
+    return current
 
 
 _NAMES = ["ada", "boole", "curie", "dijkstra", "euler", "fermi", "gauss", "hopper", "ibn-sina", "jabir"]

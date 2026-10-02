@@ -134,7 +134,8 @@ def tier_allows(seat: dict, task: dict, workhorse_usable: bool, manager_may_help
         return tier == "workhorse" and task.get("kind") != "foundation"
     if task.get("twin"):
         return tier == "manager"  # a head-to-head needs the two tiers' own models: no stand-ins
-    return tier == "manager" or task.get("kind") == "foundation" or not workhorse_usable or manager_may_help
+    return (tier == "manager" or task.get("kind") == "foundation" or not workhorse_usable or manager_may_help
+            or task.get("suggested_owner") == seat.get("name"))
 
 
 def can_take(seat: dict, task: dict, acc: dict, mode: str, cost_model: dict, model: str, workhorse_usable: bool,

@@ -169,7 +169,13 @@ def claude_desktop_config() -> Path | None:
         candidates = [home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"]
     else:
         candidates = [home / ".config" / "Claude" / "claude_desktop_config.json"]
-    return next((p for p in candidates if p.is_file()), None)
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue  # an inaccessible optional desktop config does not break Connections
+    return None
 
 
 def import_claude_desktop() -> list[str]:

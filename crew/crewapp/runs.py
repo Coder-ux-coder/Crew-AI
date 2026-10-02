@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from crewlib import config as cfgmod, tiers
@@ -55,6 +56,8 @@ class RunManager:
         self.procs: dict[str, subprocess.Popen] = {}
         self._stores: dict[str, Store] = {}
         self._lock = threading.Lock()
+        self._resume_lock = threading.Lock()
+        self._followups: set[str] = set()
 
     # ------------------------------------------------------------ processes
 
@@ -120,9 +123,10 @@ class RunManager:
         orchestrators on one project."""
         if _run_dir(run_id) is None or self.store(run_id) is None:
             raise ValueError("That project could not be found.")
-        if self.alive(run_id):
-            return False
-        self._spawn(run_id, ["resume", run_id, "--headless"])
+        with self._resume_lock:
+            if self.alive(run_id):
+                return False
+            self._spawn(run_id, ["resume", run_id, "--headless"])
         return True
 
     @staticmethod
@@ -201,8 +205,38 @@ class RunManager:
         to = (to or "").strip().lower()
         if to and to != "ceo" and st.seat(to) is None:
             raise ValueError(f"There is no agent called {to} in this project.")
-        st.owner_message(text.strip()[:4000], to or None)  # through the prompt writer when the project uses it
+        st.owner_message(text.strip(), to or None)
+        if st.get("phase") == "done":
+            st.set("followup_requested", now())
+            if not self._resume_followup(run_id, st):
+                with self._resume_lock:
+                    if run_id not in self._followups:
+                        self._followups.add(run_id)
+                        threading.Thread(target=self._wait_followup, args=(run_id, st), daemon=True).start()
         return True
+
+    def _resume_followup(self, run_id: str, st: Store) -> bool:
+        with self._resume_lock:
+            if not st.get("followup_requested") or st.get("phase") != "done":
+                return True
+            if self.alive(run_id, st):
+                return False
+            for key in ("delivered", "done_requested_at", "completion_asked", "completion_task_count"):
+                st.set(key, None)
+            st.set("phase_before_stop", "build")
+            st.set("mode", "team")
+            st.set("phase", "stopped")
+            self._spawn(run_id, ["resume", run_id, "--headless"])
+            st.set("followup_requested", None)
+            return True
+
+    def _wait_followup(self, run_id: str, st: Store) -> None:
+        try:
+            while not self._resume_followup(run_id, st):
+                time.sleep(.25)
+        finally:
+            with self._resume_lock:
+                self._followups.discard(run_id)
 
     def interrupt(self, run_id: str, seat: str) -> bool:
         """The owner's "Ask now": the agent stops its current step and answers."""
@@ -235,6 +269,8 @@ class RunManager:
             return {"id": run_id, "starting": True, "messages": [], "problem": str(exc)}
         if st is None:
             return None
+        if st.get("followup_requested"):
+            self._resume_followup(run_id, st)
         data = run_state(st, runs_dir() / run_id, after)
         phase = st.get("phase", "refine")
         running = self.alive(run_id, st)
@@ -242,7 +278,8 @@ class RunManager:
         data.update(id=run_id, running=running, raw_phase=phase, mode=st.get("mode") or "", preview=self.preview(run_id),
                     folder=str(self.project_dir(run_id) or ""), started=st.get("started_at"),
                     request=st.get("goal", ""), timer=float(st.get("max_hours") or 0),
-                    agents=agents_view(st), estimate=estimate(st, tasks, running), shares=tiers.shares(st),
+                      agents=agents_view(st), estimate=estimate(st, tasks, running), shares=tiers.shares(st),
+                      controls=st.controls(),
                     contests=[{"task": e["task_id"], "winner": tiers.model_label(e["data"].get("winner") or ""),
                                "loser": tiers.model_label(e["data"].get("loser") or ""),
                                "both_passed": bool(e["data"].get("winner_passed") and e["data"].get("loser_passed")),
@@ -287,6 +324,8 @@ class RunManager:
 
     def _summary(self, run_dir: Path) -> dict:
         st = self.store(run_dir.name)
+        if st.get("followup_requested"):
+            self._resume_followup(run_dir.name, st)
         brief = st.get("brief", {}) or {}
         tasks = st.tasks()
         phase = st.get("phase", "refine")
@@ -413,4 +452,3 @@ def estimate(st: Store, tasks: list[dict], running: bool) -> dict:
     out["minutes_left"] = max(5, round(weight_left * minutes_per / parallel + 5))
     out["tokens_left"] = round(weight_left * tokens_per) if tokens_per else None
     return out
-

@@ -111,6 +111,40 @@ export function settingsPage(view, params) {
 
 const card = (title, intro, ...kids) => h('section', { class: 'card set-card' }, h('h2', null, title), intro ? h('p', { class: 'muted' }, intro) : null, ...kids);
 
+function agentEditor(s) {
+  const list = h('div');
+  let seats = [...s.seats];
+  const draw = () => clear(list, ...seats.map((a, i) => row(a.name,
+    `${a.role} · ${a.tier} · ${a.account} · ${a.model || (a.tier === 'workhorse' ? s.models.workhorse : s.models.work)}`,
+    h('div', { class: 'row' }, btn('Edit', () => edit(i), { cls: 'sm' }),
+      btn('Remove', async () => {
+        try { const next = await save({ seats: seats.filter((_, n) => n !== i) }); seats = next.seats; draw(); } catch (e) { /* validation shown */ }
+      }, { cls: 'sm ghost', ic: 'trash' })))));
+  async function edit(i = -1) {
+    const a = seats[i] || { name: `worker-${seats.length + 1}`, account: s.accounts[0]?.name, tier: 'workhorse', role: 'member', model: s.models.workhorse };
+    const v = await ask(i < 0 ? 'Add an agent' : 'Edit an agent', [
+      { name: 'name', label: 'Name', value: a.name, required: true },
+      { name: 'account', label: 'Subscription', type: 'select', value: a.account, options: s.accounts.map((x) => ({ value: x.name, label: `${x.name} (${x.vendor === 'codex' ? 'Codex' : 'Claude Code'})` })) },
+      { name: 'model', label: 'Model ID', value: a.model || (a.tier === 'workhorse' ? s.models.workhorse : s.models.work), required: true },
+      { name: 'tier', label: 'Work', type: 'select', value: a.tier, options: [{ value: 'workhorse', label: 'Workhorse' }, { value: 'manager', label: 'Manager' }] },
+      { name: 'role', label: 'Role', type: 'select', value: a.role, options: [{ value: 'member', label: 'Engineer' }, { value: 'lead', label: 'Team lead (manager)' }] },
+    ], { ok: 'Save agent', intro: 'Choose a model supported by the subscription’s CLI. The lead must be a manager. Changes apply to new projects; the CEO can change an active agent’s model.' });
+    if (!v) return;
+    const account = s.accounts.find((x) => x.name === v.account);
+    const next = seats.map((x) => v.role === 'lead' ? { ...x, role: 'member' } : { ...x });
+    const seat = { ...v, vendor: account.vendor };
+    if (i < 0) next.push(seat); else next[i] = seat;
+    const allowed = [...new Set([...s.models.allowed, v.model])];
+    try { const saved = await save({ seats: next, models: { allowed } }); seats = saved.seats; s.models.allowed = saved.models.allowed; draw(); } catch (e) { /* shown */ }
+  }
+  draw();
+  return card('Agents', 'Choose each agent’s subscription, CLI, model and role. Combine Sonnet and GPT-6.1 Sol workers.', list,
+    h('div', { class: 'row wrap' }, btn('Add an agent', () => edit(), { ic: 'plus' }),
+      btn('Distribute automatically', async () => {
+        try { const saved = await save({ seats: [] }); seats = saved.seats; draw(); } catch (e) { /* shown */ }
+      }, { cls: 'ghost' })));
+}
+
 const RENDER = {
   general(s) {
     const app = s.app;
@@ -130,7 +164,11 @@ const RENDER = {
       recent ? card('Your settings file', '',
         h('p', { class: 'muted', style: { margin: 0 } }, `On ${new Date(p.at * 1000).toLocaleString()} Crew could not read its settings file (${p.error}). `
           + `So that Crew still opens, it is using ${p.restored}; the file as it was is kept as ${p.kept} in Crew’s folder, `
-          + 'where you can compare the two. Settings you change here are saved as usual.')) : null,
+            + 'where you can compare the two. Settings you change here are saved as usual.'),
+          btn('Restore preserved settings', async () => {
+            if (!(await confirmBox('Restore the preserved settings?', 'Current settings will be saved as crew.toml.bak. The preserved file is kept.'))) return;
+            try { await api('/api/settings/recover', { method: 'POST', body: {} }); location.reload(); } catch (e) { fail(e); }
+          }, { ic: 'history' })) : null,
       card('You', '', row('Your name', 'Used to greet you', name)),
       card('Look', '',
         row('Theme', 'Light, dark, or follow Windows', seg([['system', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']], app.theme || 'system',
@@ -166,7 +204,6 @@ const RENDER = {
           btn('', async () => {
             if (!(await confirmBox(`Remove ${a.name}?`, 'Crew stops using this subscription. Its sign-in stays on this computer.', { ok: 'Remove', danger: true }))) return;
             const rest = s.accounts.filter((x) => x.name !== a.name);
-            if (!rest.some((x) => x.vendor === 'claude')) { toast('At least one Claude subscription is needed: the team lead runs on Claude.', { bad: true }); return; }
             try { const n = await save({ accounts: rest }); s.accounts = n.accounts; load(); } catch (e) { /* shown */ }
           }, { cls: 'sm icon ghost', ic: 'trash', title: 'Remove' }))));
       } catch (e) { fail(e); }
@@ -212,7 +249,7 @@ const RENDER = {
         },
       }, '×'))), h('button', {
         class: 'btn sm ghost', type: 'button', onclick: async () => {
-          const v = await ask(key === 'allowed' ? 'Allow a model' : 'Ban a word', [{ name: 'v', label: key === 'allowed' ? 'Model name' : 'Word in the model name', required: true, placeholder: key === 'allowed' ? 'claude-…' : 'e.g. haiku' }], { ok: 'Add' });
+          const v = await ask(key === 'banned' ? 'Ban a word' : 'Add a model', [{ name: 'v', label: key === 'banned' ? 'Word in the model name' : 'Model name', required: true, placeholder: key === 'banned' ? 'e.g. haiku' : 'gpt-6.1-sol' }], { ok: 'Add' });
           if (!v || list.includes(v.v)) return;
           list.push(v.v); draw();
           try { await save({ models: { [key]: list } }); } catch (e) { list.pop(); draw(); }
@@ -222,6 +259,7 @@ const RENDER = {
       return box;
     };
     const codexModels = modelOptions('codex').map((o) => [o.value, o.label]);
+    const allModels = [...claudeModels, ...codexModels];
     const withCurrent = (opts, v) => (v && !opts.some(([x]) => x === v) ? [...opts, [v, v]] : opts);
     const isGpt = (id) => /^(gpt|o\d|codex)/i.test(id || '');
     const ceoEfforts = efforts(isGpt(m.ceo) ? 'codex' : 'claude').filter((e) => e !== 'auto')
@@ -238,23 +276,25 @@ const RENDER = {
       card('ChatGPT', 'The defaults for new chats with ChatGPT (through Codex).',
         row('Model', '', select(withCurrent(codexModels, app.codex_model), app.codex_model || '', (v) => save({ app: { codex_model: v } }))),
         row('Effort', 'OpenAI’s own levels. auto lets ChatGPT decide.', select(effortOpts('codex'), app.codex_effort || 'auto', (v) => save({ app: { codex_effort: v } })))),
-      card('The team’s three tiers', 'Routine work goes to the workhorse, anything that needs high intelligence to the manager, and the CEO checks rather than builds. Your targets for a project’s tokens: manager 60–70%, CEO about 5%, workhorse the rest. Each project shows how close it came.',
+      card('Models for the team', 'Choose models by capability and task. Claude Code and Codex can both build and manage. Usage follows the work, with no fixed token percentages.',
         h('div', { class: 'tier-card' },
-          tierRow('workhorse', 'W', 'Workhorse', 'Most tasks by count: research, text and styling changes, small design tweaks, repetitive edits, docs. Runs on your Claude subscriptions, alongside the managers.',
-            select(withCurrent(claudeModels, m.workhorse), m.workhorse, (v) => save({ models: { workhorse: v } }))),
+          tierRow('workhorse', 'W', 'Workhorse', 'Most tasks by count: research, text and styling changes, small design tweaks, repetitive edits, docs. Runs in Claude Code or Codex on compatible subscriptions.',
+            select(withCurrent(allModels, m.workhorse), m.workhorse, (v) => save({ models: { workhorse: v } }))),
           tierRow('manager', 'M', 'Manager', 'Plans the work, checks every workhorse task, and builds what needs high intelligence: security, design plans, shared foundations, hard problems.',
-            select(claudeModels, m.work, (v) => save({ models: { work: v } }))),
-          tierRow('ceo', 'C', 'CEO', 'Used sparingly: reviews the plan (each task’s tier and effort) and gives the final approval. If its model cannot run, the backup below takes over.',
+            select(withCurrent(allModels, m.work), m.work, (v) => save({ models: { work: v } }))),
+          tierRow('ceo', 'C', 'CEO', 'Coordinates tasks, priorities, agents and models; reviews the plan and final result. If its model cannot run, the backup below takes over.',
             select([{ group: 'ChatGPT (OpenAI)', options: codexModels }, { group: 'Claude (Anthropic)', options: claudeModels },
               ...(m.ceo && ![...codexModels, ...claudeModels].some(([x]) => x === m.ceo) ? [[m.ceo, m.ceo]] : [])], m.ceo, (v) => save({ models: { ceo: v } })))),
         advanced(
-          row('CEO backup', 'Runs when the CEO’s model cannot (no ChatGPT subscription, a usage limit, an error)', select(claudeModels, m.ceo_backup, (v) => save({ models: { ceo_backup: v } }))),
-          row('Workhorse agents in a team', 'How many work at the same time, spread over your Claude subscriptions', select([['1', '1'], ['2', '2 (recommended)'], ['3', '3'], ['4', '4']], String(s.team.workhorse_seats || 2), (v) => save({ team: { workhorse_seats: Number(v) } }))),
+          row('CEO backup', 'Optional; excluded backup models are disabled without resetting your settings', select([['', 'Use the manager'], ...allModels], m.ceo_backup, (v) => save({ models: { ceo_backup: v } }))),
+          row('Worker model pool', 'Automatic seats alternate between these models on the subscriptions available', chips([...(m.workhorse_models || [])], 'workhorse_models')),
+          row('Workhorse agents in a team', 'How many workers run across compatible subscriptions', select([['1', '1'], ['2', '2 (recommended)'], ['3', '3'], ['4', '4']], String(s.team.workhorse_seats || 2), (v) => save({ team: { workhorse_seats: Number(v) } }))),
           row('CEO’s effort', 'Recommended: max', select(withCurrent(ceoEfforts, m.effort_ceo), m.effort_ceo, (v) => save({ models: { effort_ceo: v } }))),
           row('Effort for building', 'auto (recommended): the CEO decides for each task of a team project; the manager decides for small jobs', select(effortOpts('claude'), m.effort_work, (v) => save({ models: { effort_work: v } }))),
           row('Effort for light jobs', 'Checking, notes, research. auto: decided per job', select(effortOpts('claude'), m.effort_light, (v) => save({ models: { effort_light: v } }))),
           row('Allowed Claude models', 'Only these may run', chips([...m.allowed], 'allowed')),
-          row('Banned', 'Any model whose name contains one of these is refused everywhere', chips([...m.banned], 'banned', (x) => confirmBox(`Lift the ban on “${x}”?`, 'Your rule was to never use it. Lift the ban anyway?', { ok: 'Lift the ban', danger: true }))))),
+          row('Banned', 'Any model whose name contains one of these is refused everywhere', chips([...m.banned], 'banned', (x) => confirmBox(`Lift the ban on "${x}"?`, 'Your rule was to never use it. Lift the ban anyway?', { ok: 'Lift the ban', danger: true }))))),
+      agentEditor(s),
     ];
   },
 
@@ -280,7 +320,7 @@ const RENDER = {
           row('Spending limit (US$)', '0 = no limit (subscriptions are flat-rate)', number(t.max_cost_usd, { min: 0, max: 10000, step: 1 }, (v) => save({ team: { max_cost_usd: v } }))),
           row('Nudge a quiet member after (minutes)', '', number(t.stall_minutes, { min: 2, max: 60 }, (v) => save({ team: { stall_minutes: v } }))),
           row('Progress review every (minutes)', 'The lead re-plans when progress stalls', number(t.ledger_minutes, { min: 3, max: 120 }, (v) => save({ team: { ledger_minutes: v } }))),
-          row('Team-chat messages per member per step', '', number(t.chat_budget, { min: 2, max: 50 }, (v) => save({ team: { chat_budget: Math.round(v) } }))),
+          row('Team-chat messages per member per step', '0 = adaptive, without a fixed cap', number(t.chat_budget, { min: 0, max: 50 }, (v) => save({ team: { chat_budget: Math.round(v) } }))),
           row('Rounds of corrections before the lead decides', '', number(t.max_review_rounds, { min: 1, max: 10 }, (v) => save({ team: { max_review_rounds: Math.round(v) } }))),
           row('Time allowed for automatic tests (minutes)', '', number(t.checks_timeout_minutes, { min: 1, max: 120 }, (v) => save({ team: { checks_timeout_minutes: v } }))))),
     ];

@@ -319,7 +319,7 @@ class AppTests(unittest.TestCase):
         self.assertTrue(s.api("POST", f"/api/runs/{rid}/say", {"text": "Anything to improve?", "to": "CEO"})["ok"])
         mine = [m for m in s.api("GET", f"/api/runs/{rid}?after={later['messages'][-1]['id']}")["messages"]
                 if m["who"] == "you"]
-        self.assertEqual([(m["to"], m["kind"]) for m in mine], [(lead, "draft"), ("ceo", "draft")])  # the writer's turn
+        self.assertEqual([(m["to"], m["kind"]) for m in mine], [(lead, "direct"), ("ceo", "direct")])
         self.assertTrue(s.api("POST", f"/api/runs/{rid}/interrupt", {"seat": lead})["ok"])
         self.assertFalse(s.api("POST", f"/api/runs/{rid}/interrupt", {"seat": "nobody"})["ok"])
 

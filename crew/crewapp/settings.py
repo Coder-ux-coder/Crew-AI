@@ -30,6 +30,8 @@ KNOWN_MODELS = [
     {"id": "claude-opus-5", "label": "Opus 5", "note": "Previous Opus", "engine": "claude"},
     {"id": "gpt-6-astra", "label": "GPT-6 Astra", "note": "Frontier intelligence for the most demanding work",
      "engine": "codex"},
+    {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol", "note": "Codex worker or manager",
+     "engine": "codex"},
 ]
 EFFORTS = list(cfgmod.EFFORT_CHOICES)
 CODEX_EFFORTS = ["auto", "low", "medium", "high", "xhigh", "max", "ultra"]  # GPT-6's own names (no "minimal")
@@ -53,7 +55,7 @@ APP_DEFAULTS = {
     "phone_enabled": False,
     "auto_update": True,
     "improve_prompts": False,
-    "settings_version": 4,
+    "settings_version": 5,
 }
 
 
@@ -72,7 +74,19 @@ def _raw() -> dict:
     return tomllib.loads(p.read_text(encoding="utf-8-sig"))  # -sig: a hand edit in Notepad starts with a byte-order mark
 
 
-SETTINGS_VERSION = 4
+SETTINGS_VERSION = 5
+
+
+def _autonomous_team(raw: dict) -> None:
+    models = raw.setdefault("models", {})
+    models["banned"] = [m for m in models.get("banned", []) if m != "gpt-6-sol"]
+    # Stop shipping a fixed division of work. Existing custom pools and seats are kept.
+    models.setdefault("workhorse_models", [models.get("workhorse", "claude-sonnet-5-5"), "gpt-6.1-sol"])
+    team = raw.setdefault("team", {})
+    if team.get("chat_budget") == 8:
+        team["chat_budget"] = 0
+    if team.get("prompt_writer") is True:
+        team["prompt_writer"] = False
 
 
 def _sonnet_workhorse(raw: dict) -> None:
@@ -106,6 +120,7 @@ MIGRATIONS = {
     3: [("models", "ceo", "claude-fable-5-1", "gpt-6-astra"), ("models", "codex", "", "gpt-6-sol"),
         ("app", "codex_model", "", "gpt-6-sol"), ("app", "codex_effort", "minimal", "low")],
     4: [_sonnet_workhorse],
+    5: [_autonomous_team],
 }
 
 
@@ -161,9 +176,19 @@ def _set_aside(error: Exception) -> bool:
             return True  # likewise
         except DAMAGE:
             pass
-        kept = p.with_name(f"crew.toml.damaged-{time.strftime('%Y%m%d-%H%M%S')}")
+        base = f"crew.toml.damaged-{time.strftime('%Y%m%d-%H%M%S')}"
         try:
-            os.replace(p, kept)
+            for i in range(1000):
+                kept = p.with_name(base + (f"-{i}" if i else ""))
+                try:
+                    with kept.open("xb") as target:
+                        target.write(p.read_bytes())
+                    break
+                except FileExistsError:
+                    continue
+            else:
+                return False
+            p.unlink()
         except OSError:
             return False
         backup = p.with_suffix(".toml.bak")
@@ -188,12 +213,13 @@ def _set_aside(error: Exception) -> bool:
 def load() -> dict:
     """Everything the Settings screen shows, with defaults filled in. A settings file that cannot be read never
     stops Crew: it is set aside (see _set_aside) and the last good settings are used."""
-    try:
+    with _save_lock:
+        try:
+            return _load()
+        except DAMAGE as exc:
+            if not _set_aside(exc):
+                raise
         return _load()
-    except DAMAGE as exc:
-        if not _set_aside(exc):
-            raise
-    return _load()
 
 
 def _load() -> dict:
@@ -215,12 +241,30 @@ def _load() -> dict:
     models = {k: getattr(cfg.models, k) for k in cfg.models.__dataclass_fields__}
     app = {**APP_DEFAULTS, **(raw.get("app") or {})}
     accounts = [{"name": a.name, "vendor": a.vendor, "profile": a.profile} for a in cfg.accounts]
-    seats = [{"name": s.name, "vendor": s.vendor, "account": s.account, "role": s.role, "tier": s.tier}
+    seats = [{"name": s.name, "vendor": s.vendor, "account": s.account, "role": s.role, "tier": s.tier, "model": s.model}
              for s in cfg.seats]
     explicit_seats = bool(raw.get("seat"))
     return {"team": team, "models": models, "app": app, "accounts": accounts, "seats": seats,
             "explicit_seats": explicit_seats, "known_models": KNOWN_MODELS, "efforts": EFFORTS,
             "codex_efforts": CODEX_EFFORTS}
+
+
+def recover() -> dict:
+    """Restore the preserved settings on an explicit request; keep newer settings as .bak."""
+    with _save_lock:
+        info = problem() or {}
+        name = info.get("kept", "")
+        if not isinstance(name, str) or not re.fullmatch(r"crew\.toml\.damaged-[0-9-]+", name):
+            raise ValueError("No preserved settings file is available.")
+        kept = crew_home() / name
+        raw = _migrate(tomllib.loads(kept.read_text(encoding="utf-8-sig")))
+        text = dump(raw)
+        _check_readable(text)
+        if path().is_file():
+            shutil.copyfile(path(), path().with_suffix(".toml.bak"))
+        atomic_write(path(), text)
+        problem_path().unlink(missing_ok=True)
+        return load()
 
 
 ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}")
@@ -244,6 +288,9 @@ def _check_update(update, current: dict) -> None:
     """Refuse, in plain words, an update that is not shaped like settings (before anything is written)."""
     if not isinstance(update, dict):
         raise ValueError("Send the settings as a group of named values.")
+    if "seats" in update and (not isinstance(update["seats"], list) or
+                              not all(isinstance(s, dict) for s in update["seats"])):
+        raise ValueError("Agents must be a list with a name, subscription, model and role for each.")
     for section in ("team", "models", "app"):
         value = update.get(section)
         if value is not None and not isinstance(value, dict):
@@ -285,7 +332,7 @@ def _check_readable(text: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-_save_lock = threading.Lock()
+_save_lock = threading.RLock()
 
 
 def save(update: dict) -> dict:
@@ -304,8 +351,14 @@ def _save(update: dict) -> dict:
         "app": {**current["app"], **(update.get("app") or {})},
         "account": update.get("accounts", current["accounts"]),
     }
-    if current["explicit_seats"] and "accounts" not in update:
+    if "seats" in update:
+        data["seat"] = update["seats"]
+    elif current["explicit_seats"]:
         data["seat"] = current["seats"]
+    if "workhorse" in (update.get("models") or {}) and "workhorse_models" not in update["models"]:
+        pool = data["models"]["workhorse_models"]
+        data["models"]["workhorse_models"] = list(dict.fromkeys(
+            data["models"]["workhorse"] if m == current["models"]["workhorse"] else m for m in pool))
     text = dump(data)
     _check_readable(text)  # the engine must be able to load what we save
     if path().is_file():
@@ -318,7 +371,7 @@ def _save(update: dict) -> dict:
 
 _HEADERS = {
     "team": "How the team works",
-    "models": "Which models run: Opus 5.5 manages, Sonnet 5.5 is the workhorse, GPT-6 Astra is the CEO",
+    "models": "Models and roles (Claude Code and Codex)",
     "app": "The app: voice, look, phone",
 }
 
@@ -352,7 +405,7 @@ def dump(data: dict) -> str:
         out.append("")
     for seat in data.get("seat") or []:
         out.append("[[seat]]")
-        for k in ("name", "vendor", "account", "role", "tier"):
+        for k in ("name", "vendor", "account", "role", "tier", "model"):
             if seat.get(k) not in (None, ""):
                 out.append(f"{k} = {_val(seat[k])}")
         out.append("")

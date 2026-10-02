@@ -166,7 +166,7 @@ def _require_task(ctx: Ctx, task_id, owner_only: bool = True) -> dict:
     task = ctx.store.task(int(task_id))
     if not task:
         raise ToolError(f"There is no task #{task_id}. Call team_tasks to see the board.")
-    if owner_only and task["owner"] != ctx.seat and ctx.role != "lead":
+    if owner_only and task["owner"] != ctx.seat and ctx.role not in ("lead", "ceo"):
         raise ToolError(f"Task #{task_id} belongs to {task['owner'] or 'nobody'}, not you.")
     return task
 
@@ -176,7 +176,7 @@ def _phase(ctx: Ctx) -> str:
 
 
 def _budget(ctx: Ctx) -> int:
-    base = int(ctx.settings.get("chat_budget", 8))
+    base = int(ctx.settings.get("chat_budget", 0))
     return base * 3 if ctx.role == "lead" else base
 
 
@@ -205,16 +205,9 @@ def chat_post(ctx: Ctx, a: dict) -> str:
     warn = (f" Note: there is no {', '.join('@' + n for n in unknown)} on this team, so nobody was notified for that "
             f"name. The team: {_roster(ctx)}." if unknown else "")
     seat = ctx.store.seat(ctx.seat) or {}
-    if kind == "concern":
-        if _phase(ctx) != "plan":
-            raise ToolError("Concerns are for the planning round. During the build use 'question' or 'blocker'.")
-        since = int(ctx.store.get("plan_msg_id", 0) or 0)
-        mine = [m for m in ctx.store.messages_after(since) if m["sender"] == ctx.seat and m["kind"] == "concern"]
-        if mine:
-            raise ToolError("You already raised your concern for this plan. The lead decides; get on with your work.")
     if kind != "blocker":
         used = int(seat.get("chat_used") or 0)
-        if used >= _budget(ctx):
+        if _budget(ctx) > 0 and used >= _budget(ctx):
             raise ToolError(
                 "Chat budget used up for your current task. Only 'blocker' messages are allowed now. "
                 "Record progress with team_task_note, settle disagreements with a test or team_escalate, and keep working."
@@ -268,14 +261,9 @@ def _check_owner_tier(ctx: Ctx, owner: str | None, tier: str | None) -> None:
     seat = ctx.store.seat(owner) or {}
     if not seat:
         return
-    workhorses = [s["name"] for s in ctx.store.seats() if seat_tier(s) == "workhorse"]
     if tier == "manager" and seat_tier(seat) == "workhorse":
         raise ToolError(f"{owner} is a workhorse seat ({model_label(seat.get('model') or '')}); manager tasks need a "
                         "manager seat. Suggest a manager seat, or make the task tier=workhorse if it is routine.")
-    if tier == "workhorse" and seat_tier(seat) != "workhorse" and workhorses:
-        raise ToolError(f"{owner} is a manager seat. Workhorse tasks go to the workhorse seats "
-                        f"({', '.join(workhorses)}); leave "
-                        "suggested_owner empty or pick one of them, or make the task tier=manager if it needs judgement.")
 
 
 def tasks_view(ctx: Ctx, a: dict) -> str:
@@ -375,6 +363,18 @@ def task_create(ctx: Ctx, a: dict) -> str:
 
 def task_edit(ctx: Ctx, a: dict) -> str:
     t = _require_task(ctx, a["task_id"], owner_only=False)
+    if t["status"] in ("in_progress", "review", "approved", "blocked", "changes"):
+        fields = {k: a[k] for k in ("spec", "acceptance", "scope", "size", "tier", "suggested_owner") if k in a}
+        if not fields:
+            raise ToolError("Nothing to change.")
+        from .store import normalize_glob
+        if "scope" in fields:
+            fields["scope"] = [normalize_glob(p) for p in fields["scope"]]
+        if fields.get("size", t["size"]) not in SIZES or fields.get("tier", t["tier"]) not in TIERS:
+            raise ToolError("Choose a valid task size and tier.")
+        _check_owner_tier(ctx, fields.get("suggested_owner"), fields.get("tier", t["tier"]))
+        ids = ctx.store.queue_controls(ctx.seat, [{"action": "edit_task", "task_id": t["id"], "fields": fields}])
+        return f"Change queued as control #{ids[0]}. The coordinator saves active work and applies it."
     if t["status"] not in ("todo", "blocked", "changes"):
         raise ToolError(f"Task #{t['id']} is {t['status']}; only to-do, blocked or returned tasks can be edited.")
     fields = {k: a[k] for k in ("spec", "acceptance", "size", "suggested_owner", "tier") if a.get(k)}
@@ -398,16 +398,18 @@ def task_cancel(ctx: Ctx, a: dict) -> str:
     t = _require_task(ctx, a["task_id"], owner_only=False)
     if t["status"] in ("merged", "cancelled"):
         raise ToolError(f"Task #{t['id']} is already {t['status']}.")
-    if t["status"] in ("in_progress", "review", "approved"):
-        raise ToolError(f"Task #{t['id']} is {t['status']} with {t['owner']}; ask them to release it first.")
+    if t["status"] in ("in_progress", "review", "approved", "blocked", "changes"):
+        ids = ctx.store.queue_controls(ctx.seat, [{"action": "cancel_task", "task_id": t["id"],
+                                                  "reason": a.get("reason", "")}])
+        return f"Cancellation queued as control #{ids[0]}; existing work will be saved."
     ctx.store.update_task(t["id"], status="cancelled", finished_at=now())
     ctx.store.post(ctx.seat, "update", f"Cancelled task #{t['id']}: {a.get('reason', '').strip()}", task_id=t["id"])
     return f"Task #{t['id']} cancelled."
 
 
 def set_checks(ctx: Ctx, a: dict) -> str:
-    if ctx.role != "lead" and ctx.store.get("solo_builder") != ctx.seat:
-        raise ToolError("Only the lead (or the builder of a one-builder job) sets the checks.")
+    if ctx.role not in ("lead", "ceo") and ctx.store.get("solo_builder") != ctx.seat:
+        raise ToolError("Only the CEO, lead, or builder of a one-builder job sets the checks.")
     cmds = [c.strip() for c in (a.get("commands") or []) if c.strip()]
     if not cmds:
         raise ToolError("Give at least one shell command (for example: 'python -m pytest -q').")
@@ -673,8 +675,8 @@ def escalate(ctx: Ctx, a: dict) -> str:
     if len(question) < 20:
         raise ToolError("State the question, the options, and the evidence for each.")
     used = len(ctx.store.events("escalation"))
-    cap = int(ctx.settings.get("max_escalations", 4))
-    if used >= cap:
+    cap = int(ctx.settings.get("max_escalations", 0))
+    if cap > 0 and used >= cap:
         raise ToolError("The CEO's ruling budget for this run is used up. The lead decides (team_decide).")
     ctx.store.event("escalation", seat=ctx.seat, task_id=a.get("task_id"), question=question)
     ctx.store.post(ctx.seat, "question", f"Escalated to the CEO: {clip(question, 600)}", task_id=a.get("task_id"))
@@ -701,13 +703,88 @@ def lessons_view(ctx: Ctx, a: dict) -> str:
 
 # ------------------------------------------------------------------ registry
 
+def context_view(ctx: Ctx, a: dict) -> str:
+    from .context import project_context
+    return project_context(ctx.store, "ceo" if ctx.role == "ceo" else ctx.seat)
+
+
+def history_view(ctx: Ctx, a: dict) -> str:
+    seat = "ceo" if ctx.role == "ceo" else ctx.seat
+    return "\n".join(_fmt_msg(m, 4000) for m in ctx.store.history(
+        seat, str(a.get("query") or ""), int(a.get("before") or 0), int(a.get("max") or 40))) or "No matching messages."
+
+
+def memory_save(ctx: Ctx, a: dict) -> str:
+    key, value = (a.get("key") or "").strip(), (a.get("value") or "").strip()
+    if not key or not value or len(key) > 120 or len(value) > 4000:
+        raise ToolError("Give a short key (up to 120 characters) and a fact or decision (up to 4000 characters).")
+    # One SQLite transaction prevents simultaneous agents from overwriting each other's facts.
+    from .util import dumps, loads
+    with ctx.store.tx() as db:
+        row = db.execute("SELECT value FROM meta WHERE key='project_memory'").fetchone()
+        memory = loads(row["value"], {}) if row else {}
+        memory[key] = value
+        db.execute("INSERT INTO meta(key,value) VALUES('project_memory',?) ON CONFLICT(key) "
+                   "DO UPDATE SET value=excluded.value", (dumps(memory),))
+    ctx.store.post(ctx.seat, "update", f"Saved project memory: {key}: {value}", urgent=True)
+    return "Saved. Future turns and resumed agents receive this fact."
+
+
+CONTROL_ACTIONS = ("stop", "pause_agent", "resume_agent", "cancel_task", "retry_task", "reassign_task", "set_model")
+
+
+def control(ctx: Ctx, a: dict) -> str:
+    ops = a.get("operations")
+    if not isinstance(ops, list) or not 1 <= len(ops) <= 50:
+        raise ToolError("Give 1 to 50 operations.")
+    validated = []
+    for op in ops:
+        if not isinstance(op, dict) or op.get("action") not in CONTROL_ACTIONS:
+            raise ToolError(f"action must be one of {CONTROL_ACTIONS}")
+        item = {k: op[k] for k in ("action", "task_id", "seat", "model", "reason") if k in op}
+        if item["action"] in ("pause_agent", "resume_agent", "set_model", "reassign_task"):
+            if ctx.store.seat(item.get("seat") or "") is None:
+                raise ToolError("Choose an existing agent by name.")
+        if item["action"] in ("cancel_task", "retry_task", "reassign_task"):
+            _require_task(ctx, item.get("task_id"), owner_only=False)
+        if item["action"] == "set_model":
+            from .config import ModelPolicy
+            from .tiers import vendor_of
+            row = ctx.store.seat(item["seat"])
+            model = item.get("model") or ""
+            policy = ctx.store.get("model_policy", {}) or {}
+            ModelPolicy(**policy).check(model)
+            if not model or vendor_of(model) != row["vendor"]:
+                raise ToolError("Choose a model that runs on this agent's subscription; add a seat for another provider.")
+        validated.append(item)
+    ids = ctx.store.queue_controls(ctx.seat, validated)
+    return f"Queued controls {ids}. Use team_controls to check results; do not report completion before they finish."
+
+
+def controls_view(ctx: Ctx, a: dict) -> str:
+    return "\n".join(f"#{x['id']} {x['action']}: {x['status']} {x['result']}"
+                     for x in reversed(ctx.store.controls())) or "No controls requested."
+
 TOOLS: list[Tool] = [
+    Tool("team_context", "Refresh full project context: goals, decisions, roster, handoffs and your owner conversation.",
+         _obj({}), context_view, footer=False),
+    Tool("team_history", "Search retained public history and your private conversation. before paginates older messages.",
+         _obj({"query": S, "before": I, "max": I}), history_view, footer=False),
+    Tool("team_memory_save", "Save an important project fact or decision for future turns and restarts.",
+         _obj({"key": S, "value": S}, ["key", "value"]), memory_save, roles=("lead", "member", "ceo")),
+    Tool("team_control", "CEO or LEAD: stop the project, pause/resume an agent, cancel/retry/reassign active tasks, "
+         "or change a seat's model. Submit several operations together. Work is saved by the coordinator.",
+         _obj({"operations": {"type": "array", "items": _obj({
+             "action": {"type": "string", "enum": list(CONTROL_ACTIONS)}, "task_id": I, "seat": S,
+             "model": S, "reason": S}, ["action"])}}, ["operations"]), control, roles=("lead", "ceo")),
+    Tool("team_controls", "Read queued control requests and their completion or failure results.",
+         _obj({}), controls_view),
     Tool("team_chat_post",
          "Post to the team chat (the whole team and the owner see it). Start with @name for the person you need "
          "(@lead for the lead, @all only when everyone must act): only named agents are woken. Short and "
          "self-contained: what, where (file, function, command), why, what you need. No acknowledgements — silence "
-         "means agreement. Kinds: update, question, answer, blocker (always allowed), concern (planning round only, "
-         "once). Messages are budgeted: work first, talk second.",
+         "means agreement. Kinds: update, question, answer, blocker (always allowed), concern (new evidence in any "
+         "phase). Communication is adaptive unless the owner set an explicit message limit.",
          _obj({"text": S, "kind": {"type": "string", "enum": list(CHAT_KINDS)}, "task_id": I}, ["text"]),
          chat_post),
     Tool("team_chat_read", "Read unread group-chat messages (marks them read).",
@@ -719,7 +796,7 @@ TOOLS: list[Tool] = [
     Tool("team_status", "Team overview: phase, seats, account usage modes, checks, recent decisions.",
          _obj({}), status_view),
     Tool("team_task_create",
-         "LEAD ONLY. Create a task. Give a precise spec, acceptance criteria, the file scope it may edit "
+         "CEO or LEAD. Create a task. Give a precise spec, acceptance criteria, the file scope it may edit "
          "(paths/globs; tasks with overlapping scopes never run at the same time), dependencies, size "
          "(S ≈ <15 min, M ≈ <45 min, L = split it if you can), the tier (workhorse = routine, fully specified work "
          "for the workhorse seats; manager = work that needs high intelligence, for the manager seats) and "
@@ -728,32 +805,32 @@ TOOLS: list[Tool] = [
                "size": {"type": "string", "enum": list(SIZES)}, "kind": {"type": "string", "enum": list(KINDS)},
                "tier": {"type": "string", "enum": list(TIERS)}, "suggested_owner": S},
               ["title", "spec", "acceptance", "scope"]),
-         task_create, roles=("lead",)),
-    Tool("team_task_edit", "LEAD ONLY. Change a to-do/blocked/returned task (spec, acceptance, scope, size, tier, owner, "
+         task_create, roles=("lead", "ceo")),
+    Tool("team_task_edit", "CEO or LEAD. Change a task, saving active work before applying changes (spec, acceptance, scope, size, tier, owner, "
          "unblock).",
          _obj({"task_id": I, "spec": S, "acceptance": S, "scope": LIST_S,
                "size": {"type": "string", "enum": list(SIZES)}, "tier": {"type": "string", "enum": list(TIERS)},
                "suggested_owner": S, "unblock": {"type": "boolean"}},
               ["task_id"]),
-         task_edit, roles=("lead",)),
-    Tool("team_task_cancel", "LEAD ONLY. Cancel a task that is no longer needed.",
-         _obj({"task_id": I, "reason": S}, ["task_id", "reason"]), task_cancel, roles=("lead",)),
+         task_edit, roles=("lead", "ceo")),
+    Tool("team_task_cancel", "CEO or LEAD. Cancel a task that is no longer needed; active work is saved first.",
+         _obj({"task_id": I, "reason": S}, ["task_id", "reason"]), task_cancel, roles=("lead", "ceo")),
     Tool("team_set_checks",
-         "LEAD (or the builder of a one-builder job) ONLY. Set the shell commands that prove the project works "
+         "CEO, LEAD, or the builder of a one-builder job. Set the shell commands that prove the project works "
          "(tests, build, lint). The orchestrator runs them before each review and after each merge.",
-         _obj({"commands": LIST_S}, ["commands"]), set_checks, roles=("lead", "member")),
-    Tool("team_plan_ready", "LEAD ONLY. Declare the plan complete (after creating the tasks) with a short summary.",
-         _obj({"summary": S}, ["summary"]), plan_ready, roles=("lead",)),
+         _obj({"commands": LIST_S}, ["commands"]), set_checks, roles=("lead", "member", "ceo")),
+    Tool("team_plan_ready", "CEO or LEAD. Declare the plan complete (after creating the tasks) with a short summary.",
+         _obj({"summary": S}, ["summary"]), plan_ready, roles=("lead", "ceo")),
     Tool("team_decide", "LEAD or CEO ONLY. Record a binding decision and send it to everyone.",
          _obj({"text": S, "task_id": I}, ["text"]), decide, roles=("lead", "ceo")),
     Tool("team_project_done",
-         "LEAD ONLY. When every task is merged: declare the project finished with a plain-language report for the "
+         "CEO or LEAD. When every task is merged: declare the project finished with a plain-language report for the "
          "user (what was built, how to use it, what was verified, known limits). No code in the report.",
-         _obj({"report": S}, ["report"]), project_done, roles=("lead",)),
+         _obj({"report": S}, ["report"]), project_done, roles=("lead", "ceo")),
     Tool("team_task_note",
          "Record progress on your task: decisions made, what is done, what is next. This is the handover if "
          "someone else must continue, so keep it concrete.",
-         _obj({"task_id": I, "note": S}, ["task_id", "note"]), task_note, roles=("lead", "member")),
+         _obj({"task_id": I, "note": S}, ["task_id", "note"]), task_note, roles=("lead", "member", "ceo")),
     Tool("team_task_submit",
          "Hand in your finished task with a summary and EVIDENCE (commands run and their results). "
          "Do not submit untested work.",
