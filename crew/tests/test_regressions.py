@@ -187,6 +187,7 @@ class OrchestratorTests(unittest.TestCase):
             phases: list[str] = []
             fake = types.SimpleNamespace(
                 cfg=types.SimpleNamespace(team=types.SimpleNamespace(deliver="branch")), store=st,
+                cancel_jobs=threading.Event(),
                 integration="crew/demo/main", repo=home, write_report=lambda where: None, say=lambda *a, **k: None,
                 retrospective=mock.Mock(side_effect=sqlite3.OperationalError("database is locked")),
                 log=logged.append, set_phase=phases.append)
@@ -258,6 +259,7 @@ class OrchestratorTests(unittest.TestCase):
             said, phases = [], []
             lead = types.SimpleNamespace(pending=[])
             fake = types.SimpleNamespace(store=st, say=lambda text, **k: said.append(text), lead_name="ada",
+                                         cancel_jobs=threading.Event(),
                                          seats={"ada": lead}, set_phase=phases.append, log=lambda *a: None)
             for _ in range(2):
                 orchestrator.Orchestrator.on_final_done(fake, "red:test_app.py failed")
@@ -298,7 +300,8 @@ class OrchestratorTests(unittest.TestCase):
                                account=account, model="claude-opus-5-5", status="idle")
             tid = st.create_task("Checkout page", "Build the checkout page.", "it works", ["checkout.py"], [],
                                  size="M", kind="build", suggested_owner="boole", created_by="ada", tier="manager")
-            seats = {name: types.SimpleNamespace(name=name, down=False, busy=name == "ada", runner=object(),
+            seats = {name: types.SimpleNamespace(name=name, down=False, paused=False,
+                                                 busy=name == "ada", runner=object(),
                                                  pending=[], account=types.SimpleNamespace(name=account),
                                                  spec=types.SimpleNamespace(vendor="claude", tier="manager"))
                      for name, account in places.items()}
@@ -2028,16 +2031,19 @@ class AppRegressionTests(unittest.TestCase):
             db.x("DELETE FROM chats WHERE id LIKE 'bulk-%'")
             s.api("DELETE", f"/api/chats/{cid}")
 
-    def test_a18_a_model_of_the_other_product_is_refused(self):
+    def test_a18_a_model_of_the_other_product_switches_the_conversation(self):
         s = self.s
         cid, _ = self.new_chat()
-        err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": "gpt-6-astra"}, expect=400)
-        self.assertIn("ChatGPT model", err["error"])
-        self.assertEqual(s.api("GET", f"/api/chats/{cid}")["messages"], [])  # nothing recorded
         self.with_chatgpt()
-        cid2, _ = self.new_chat(engine="codex")
-        err = s.api("POST", f"/api/chats/{cid2}/send", {"text": "hi", "model": "claude-opus-5-5"}, expect=400)
-        self.assertIn("Claude model", err["error"])
+        s.api("POST", f"/api/chats/{cid}/send", {"text": "The code word is emerald."})
+        until(lambda: not s.api("GET", f"/api/chats/{cid}")["busy"])
+        for model, engine in (("gpt-6-astra", "codex"), ("claude-opus-5-5", "claude")):
+            self.assertTrue(s.api("POST", f"/api/chats/{cid}/send",
+                                  {"text": "What is the code word?", "model": model})["ok"])
+            chat = until(lambda: (lambda c: c if not c["busy"] else None)(s.api("GET", f"/api/chats/{cid}")))
+            self.assertEqual((chat["engine"], chat["model"]), (engine, model))
+            self.assertIn("emerald", chat["messages"][-1]["text"].lower())
+        self.assertEqual(len(chat["messages"]), 6)
 
     def test_a16_a_claude_answer_that_cannot_be_finished_still_ends(self):
         s = self.s

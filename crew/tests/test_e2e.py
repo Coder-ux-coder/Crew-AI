@@ -116,7 +116,7 @@ class E2E(unittest.TestCase):
         cfg, run_dir, repo, rid = make_run({"tasks": 3}, [("claude-1", "claude"), ("claude-2", "claude"), ("codex-1", "codex")])
         self.assertEqual([(s.vendor, s.role, s.tier) for s in cfg.seats],
                          [("claude", "lead", "manager"), ("claude", "member", "manager"),
-                          ("claude", "member", "workhorse"), ("claude", "member", "workhorse")])
+                          ("claude", "member", "workhorse"), ("codex", "member", "workhorse")])
         orch = run_orch(cfg, run_dir, repo, rid)
         self.assert_finished(orch, repo, 3)
         st = orch.store
@@ -127,7 +127,7 @@ class E2E(unittest.TestCase):
         chat = dump_chat(st)
         self.assertIn("Plan review: APPROVE", chat)
         self.assertIn("Final review: APPROVE", chat)
-        # The three tiers: Sonnet 5.5 builds the workhorse tasks, Opus 5.5 the manager tasks and every review,
+        # Sonnet 5.5 and GPT-6.1 Sol build workhorse tasks; Opus 5.5 manages and reviews.
         # GPT-6 Astra is the CEO (answering in JSON, recorded by the orchestrator).
         seats = {s["name"]: s for s in st.seats()}
         tasks = st.tasks()
@@ -136,9 +136,11 @@ class E2E(unittest.TestCase):
                           "Feature 3": "workhorse"})
         for t in tasks:
             owner = seats[t["owner"]]
+            spec = next(s for s in cfg.seats if s.name == t["owner"])
             self.assertEqual((owner["tier"], owner["vendor"], owner["model"]),
-                             (t["tier"], "claude",
-                              "claude-sonnet-5-5" if t["tier"] == "workhorse" else "claude-opus-5-5"), t)
+                             (t["tier"], spec.vendor, spec.model), t)
+        self.assertEqual({seats[t["owner"]]["vendor"] for t in tasks if t["tier"] == "workhorse"},
+                         {"claude", "codex"})
         runs = self.oneoffs(st)
         reviewers = [r for r in runs if r["role"] == "reviewer"]
         self.assertTrue(reviewers and all(r["vendor"] == "claude" and r["model"] == "claude-opus-5-5"
@@ -148,7 +150,9 @@ class E2E(unittest.TestCase):
         self.assertEqual(sorted(r["seat"] for r in ceo), ["ceo-final", "ceo-plan"])
         calls = self.codex_calls()
         self.assertTrue(all(c["model"] == "gpt-6-astra" and c["schema"] for c in calls if c["role"] == "ceo"), calls)
-        self.assertEqual([c for c in calls if c["role"] != "ceo"], [])  # ChatGPT only runs the CEO now
+        workers = [c for c in calls if c["role"] != "ceo"]
+        self.assertTrue(workers and all(c["role"] == "member" and c["model"] == "gpt-6.1-sol"
+                                       for c in workers), calls)
         from crewlib import tiers
         share = {t["tier"]: t["tokens"] for t in tiers.shares(st)["tiers"]}
         self.assertTrue(all(share.values()), share)  # all three tiers did work
@@ -262,7 +266,7 @@ class E2E(unittest.TestCase):
         self.assertIn("The workhorse carries on", chat)
 
     def test_head_to_head_keeps_the_better_version(self):
-        """Both features are built twice (Sonnet 5.5 and Opus 5.5); the judge compares each pair blind and the better
+        """Both features are built by a workhorse and a manager; the judge compares each pair blind and the better
         version is merged under the original task's number. The scorecard records every result."""
         cfg, run_dir, repo, rid = make_run({"tasks": 2}, [("claude-1", "claude"), ("claude-2", "claude"),
                                                           ("codex-1", "codex")], team_extra='head_to_head = "all"')
@@ -272,16 +276,18 @@ class E2E(unittest.TestCase):
         tier = {s["name"]: s["tier"] for s in st.seats()}
         contests = st.events("contest")
         self.assertEqual(len(contests), 2, dump_chat(st))
-        self.assertTrue(all(e["data"]["winner"] == "claude-sonnet-5-5" for e in contests))  # the judge preferred Sonnet's
+        workhorses = {s.model for s in cfg.seats if s.tier == "workhorse"}
+        self.assertTrue(all(e["data"]["winner"] in workhorses for e in contests))
         merged = {t["title"]: t for t in st.tasks() if t["status"] == "merged"}
         self.assertEqual(sorted(merged), ["Feature 1", "Feature 2", "Foundation"])
         self.assertEqual(sum(1 for t in st.tasks() if t["status"] == "cancelled"), 2)  # the two losing versions
-        self.assertEqual(tier[merged["Feature 2"]["owner"]], "workhorse")  # a manager task, won by Sonnet's version
+        self.assertEqual(tier[merged["Feature 2"]["owner"]], "workhorse")  # a manager task, won by the workhorse
         judges = [r for r in self.oneoffs(st) if r["seat"].startswith("judge-")]
         self.assertTrue(judges and all(r["model"] == "claude-opus-5-5" for r in judges))
         from crewlib import scorecard
         models = scorecard.stats()["models"]
-        self.assertEqual((models["claude-sonnet-5-5"]["wins"], models["claude-opus-5-5"]["losses"]), (2, 2))
+        self.assertEqual((sum(models.get(m, {}).get("wins", 0) for m in workhorses),
+                          models["claude-opus-5-5"]["losses"]), (2, 2))
         self.assertIn("Head-to-head", (orch.run_dir / "REPORT.md").read_text())
 
     def test_head_to_head_combines_the_best_of_both(self):
@@ -323,7 +329,8 @@ class E2E(unittest.TestCase):
         """The owner writes privately to one agent and to the CEO. The prompt writer writes each message up first
         (the owner's words travel with it); the agent answers the owner alone and passes the instruction on to the
         lead; the CEO answers the question. Nobody else sees the private messages."""
-        cfg, run_dir, repo, rid = make_run({"tasks": 2}, [("claude-1", "claude"), ("claude-2", "claude")])
+        cfg, run_dir, repo, rid = make_run({"tasks": 2}, [("claude-1", "claude"), ("claude-2", "claude")],
+                                           team_extra="prompt_writer = true")
         asked: dict[str, int] = {}
 
         def owner(st: Store) -> None:
