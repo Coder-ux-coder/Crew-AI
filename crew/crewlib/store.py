@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS shared (
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_events_kind ON events(kind);
+CREATE TABLE IF NOT EXISTS controls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, requested_by TEXT NOT NULL,
+    action TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued',
+    result TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_controls_status ON controls(status);
 """
 
 OPEN_STATES = ("todo", "in_progress", "review", "approved", "changes", "blocked")
@@ -167,6 +173,38 @@ class Store:
         with self.tx() as db:
             db.execute("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                        (key, dumps(value)))
+
+    def queue_controls(self, requested_by: str, operations: list[dict]) -> list[int]:
+        """Persist a complete batch atomically. Only the coordinator touches live processes."""
+        ids = []
+        with self.tx() as db:
+            for op in operations:
+                cur = db.execute("INSERT INTO controls(ts,requested_by,action,payload) VALUES(?,?,?,?)",
+                                 (now(), requested_by, op["action"], dumps(op)))
+                ids.append(int(cur.lastrowid))
+        return ids
+
+    def controls(self, pending: bool = False, limit: int = 100) -> list[dict]:
+        where = "WHERE status IN ('queued','running') " if pending else ""
+        order = "ASC" if pending else "DESC"
+        rows = self._all(f"SELECT * FROM controls {where}ORDER BY id {order} LIMIT ?", (limit,))
+        for row in rows:
+            row["payload"] = loads(row["payload"], {})
+        return rows
+
+    def finish_control(self, control_id: int, result: str, failed: bool = False) -> None:
+        with self.tx() as db:
+            db.execute("UPDATE controls SET status=?,result=? WHERE id=?",
+                       ("failed" if failed else "done", result, control_id))
+
+    def history(self, seat: str, query: str = "", before: int = 0, limit: int = 40) -> list[dict]:
+        """Search all retained history without exposing another agent's private conversation."""
+        rows = self._all(
+            "SELECT * FROM messages WHERE kind NOT IN ('draft','drafted') "
+            "AND (recipient IS NULL OR (sender='you' AND recipient=?) OR (sender=? AND recipient='you')) "
+            "AND (?=0 OR id<?) AND instr(lower(text),lower(?))>0 ORDER BY id DESC LIMIT ?",
+            (seat, seat, before, before, query, min(max(int(limit), 1), 100)))
+        return list(reversed(rows))
 
     def orchestrator_alive(self, max_age: float = 60.0) -> bool | None:
         """Is this project's orchestrator running (its heartbeat is recent)? None for a project run by a Crew from

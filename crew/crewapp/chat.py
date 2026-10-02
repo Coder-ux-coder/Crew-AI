@@ -306,6 +306,7 @@ class Session:
         self.recap_why = ""  # set when the next message must bring the conversation from Crew's record: why
         self.context = {"used": chat.get("context_tokens") or 0, "window": chat.get("context_window") or 0}
         self._lock = threading.Lock()
+        self._connection_env: dict[str, str] = {}
 
     @property
     def topic(self) -> str:
@@ -335,7 +336,8 @@ class Session:
     # ------------------------------------------------------------ common helpers
 
     def _secret_env(self) -> dict:
-        return {k: v for k, v in load_env_file(settings_mod.secrets_path()).items() if k != "ANTHROPIC_API_KEY"}
+        return {**{k: v for k, v in load_env_file(settings_mod.secrets_path()).items() if k != "ANTHROPIC_API_KEY"},
+                **self._connection_env}
 
     def _system_text(self) -> str:
         text = instructions().rstrip() + "\n\n" + CREW_GUIDE
@@ -919,7 +921,10 @@ class CodexSession(Session):
 
     def _args(self) -> list[str]:
         import sys
+        from crewlib.agents import codex_connections_args
         args = ["-c", 'approval_policy="never"']
+        self._connection_env = {}
+        args += codex_connections_args(self._connection_env)
         effort = codex_effort(self.effort, self.model)
         if effort:
             args += ["-c", f"model_reasoning_effort={_toml_str(effort)}"]
@@ -1362,10 +1367,18 @@ class ChatManager:
         if not text:
             raise ValueError("Type or say something first.")
         engine = engine if engine in ENGINES else (chat.get("engine") or "claude")
-        if engine != (chat.get("engine") or "claude") and chat["messages"]:
-            raise ValueError("This conversation is with " + ENGINES[chat.get("engine") or "claude"] +
-                             ". Start a new conversation to use " + ENGINES[engine] + ".")
-        model = chat["model"] if model is None else model
+        old_engine = chat.get("engine") or "claude"
+        existing = self.sessions.get(cid)
+        if existing and existing.busy:
+            raise ValueError("Still answering the last message. Press stop first, or wait a moment.")
+        if model is None and engine != old_engine:
+            app = settings_mod.load()["app"]
+            model = app.get("codex_model" if engine == "codex" else "chat_model")
+        else:
+            model = chat["model"] if model is None else model
+        other = other_product(engine, model)
+        if other:
+            engine = other
         if engine == "claude" and not model:  # Claude always runs a named model: the chat's, else the default
             model = chat.get("model") or settings_mod.load()["app"].get("chat_model") or "claude-opus-5-5"
         effort = effort or chat.get("effort") or "auto"
@@ -1373,18 +1386,21 @@ class ChatManager:
         mode = mode if mode in MODES else (chat.get("mode") or "auto")
         if effort not in EFFORTS[engine]:
             raise ValueError(f"Unknown effort level for {ENGINES[engine]}: {effort}.")
-        other = other_product(engine, model)
-        if other:
-            raise ValueError(f"{model} is a {ENGINES[other]} model, and this conversation is with {ENGINES[engine]}. "
-                             f"Choose one of {ENGINES[engine]}'s models, or start a new chat with {ENGINES[other]}.")
         if engine == "claude" or model:
             cfg = cfgmod.load(str(settings_mod.path()) if settings_mod.path().is_file() else None)
             cfg.models.check(model)  # a banned or unknown model is refused before anything is recorded
         chat["engine"] = engine
+        switched_product = engine != old_engine
+        if switched_product:
+            chat.update(session_id=None, account="", context_tokens=0, context_window=0)
+            self.db.x("UPDATE chats SET session_id=NULL, account='', context_tokens=0, "
+                      "context_window=0 WHERE id=?", (cid,))
         if account is not None:
             chat["account"] = self._valid_account(engine, account)
             self.db.x("UPDATE chats SET account=? WHERE id=?", (chat["account"], cid))
         session = self.session(chat)
+        if switched_product:
+            session.holder = ""
         if session.busy:
             raise ValueError("Still answering the last message. Press stop first, or wait a moment.")
         session.chosen = chat.get("account") or ""
@@ -1396,6 +1412,8 @@ class ChatManager:
         self.db.x("UPDATE chats SET updated=?, title=?, model=?, effort=?, mode=?, engine=? WHERE id=?",
                   (now(), title, model, effort, mode, engine, cid))
         prompt = text
+        if switched_product:
+            prompt = session._recap("You are continuing this conversation on another CLI product.") + prompt
         if attachments:
             prompt += "\n\n(The owner attached: " + ", ".join(attachments) + " — in this folder. Open them to answer.)"
         try:

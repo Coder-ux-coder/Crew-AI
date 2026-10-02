@@ -85,11 +85,12 @@ class ProjectView {
     this.say.addEventListener('input', () => { this.say.style.height = 'auto'; this.say.style.height = Math.min(this.say.scrollHeight, 200) + 'px'; });
     const mic = h('button', { class: 'icon-btn sm mic', type: 'button', title: 'Speak', onclick: () => dictate(this.say, mic) }, icon('mic'));
     if (!canDictate) mic.classList.add('hidden');
-    const sendBtn = h('button', { class: 'send-btn', type: 'button', title: 'Send', onclick: () => this.send() }, icon('send2'));
+    const sendBtn = h('button', { class: 'send-btn', type: 'button', title: 'Send', 'aria-label': 'Send', onclick: () => this.send() }, icon('send2'));
     this.estimate = h('div', { class: 'estimate' });
     this.shares = h('div', { class: 'card pad-sm shares' });
     this.agents = h('div', { class: 'stack', style: { gap: '8px' } });
     this.tasks = h('div', { class: 'card pad-sm' });
+    this.controls = h('div', { class: 'card pad-sm hidden' });
     this.accounts = h('div', { class: 'card pad-sm stack' });
     this.body = h('div', { class: 'proj-body show-chat' },
       h('div', { class: 'col main' }, h('div', { class: 'team-chat' }, this.convBar, this.report, this.feed, this.convEmpty,
@@ -101,7 +102,7 @@ class ProjectView {
           h('small', { class: 'muted', title: 'Share of all tokens this project used, against the targets you set' }, 'share of tokens')),
         this.shares,
         h('div', { class: 'side-title' }, icon('bot'), h('span', { class: 'grow' }, 'Agents and helpers')), this.agents,
-        h('div', { class: 'side-title' }, icon('listcheck'), h('span', { class: 'grow' }, 'The plan')), this.tasks,
+        h('div', { class: 'side-title' }, icon('listcheck'), h('span', { class: 'grow' }, 'The plan')), this.tasks, this.controls,
         h('div', { class: 'side-title' }, icon('gauge'), h('span', { class: 'grow' }, 'Subscriptions')), this.accounts));
     this.tabs = h('div', { class: 'seg proj-tabs' }, [['chat', 'Team chat'], ['agents', 'Agents & plan']].map(([k, l]) => h('button', {
       type: 'button', class: k === 'chat' ? 'on' : '', dataset: { tab: k }, onclick: () => this.showTab(k),
@@ -208,10 +209,17 @@ class ProjectView {
         h('span', { class: 'sdot t-' + x.tier }),
         h('span', { class: 'grow' }, h('b', null, x.name), ' ', h('small', { class: 'muted' }, tierModel(x.tier))),
         h('b', { class: 'spct' }, total ? `${Math.round(x.pct)}%` : '—'),
-        h('small', { class: 'muted starget', title: 'Your target for this tier' }, x.target[0] ? `${x.target[0]}–${x.target[1]}%` : `~${x.target[1]}%`))),
+        h('small', { class: 'muted starget' }, 'task based'))),
       total ? null : h('div', { class: 'muted small' }, 'Fills in as the team works.'));
 
     // plan
+    const controls = s.controls || [];
+    this.controls.classList.toggle('hidden', !controls.length);
+    clear(this.controls, h('b', null, 'Team controls'), ...controls.slice(0, 10).map((x) =>
+      h('div', { class: 'task-line' }, h('span', { class: 'num' }, `#${x.id}`),
+        h('div', { class: 'grow' }, h('span', null, String(x.action).replaceAll('_', ' ')),
+          x.result ? h('small', null, x.result) : null),
+        h('span', { class: 'pill ' + (x.status === 'failed' ? 'bad' : x.status === 'done' ? 'ok' : 'live') }, x.status))));
     const tasks = s.tasks || [];
     clear(this.tasks, ...(tasks.length ? tasks.map((x) => h('div', { class: 'task-line' },
       h('span', { class: 'num' }, `#${x.id}`),
@@ -293,7 +301,6 @@ class ProjectView {
   // or the CEO.
   toMenu() {
     const s = this.last || {};
-    const done = s.raw_phase === 'done';
     const groups = new Map();
     for (const a of (s.agents || []).filter((x) => x.standing)) {
       const key = `${a.product || 'Claude'}${a.account ? ' · ' + a.account : ''}`;
@@ -306,16 +313,16 @@ class ProjectView {
       for (const a of list) {
         const name = a.title || cap(a.name);
         items.push({ label: `${name} · ${a.role}`, hint: [modelName(a.model), statusWord(a)].filter(Boolean).join(' · '),
-          ic: PRODUCT_KEY[a.product] === 'codex' ? 'gpt' : 'spark', checked: this.to === a.name, value: { to: a.name }, disabled: done });
+          ic: PRODUCT_KEY[a.product] === 'codex' ? 'gpt' : 'spark', checked: this.to === a.name, value: { to: a.name } });
         for (const x of (a.helpers || []).filter((y) => y.status === 'working')) {
           items.push({ label: `↳ ${name}’s helper: ${x.what}`, hint: `Helpers take instructions from ${name}, so your message goes to ${name}, who passes it on`,
-            ic: 'bot', value: { to: a.name, about: x.what }, disabled: done });
+            ic: 'bot', value: { to: a.name, about: x.what } });
         }
       }
     }
     items.push({ section: 'The CEO' });
-    items.push({ label: `The CEO · ${tierModel('ceo')}`, hint: 'Questions about the plan, priorities and progress; each is a short, separate review',
-      ic: 'brain', checked: this.to === 'ceo', value: { to: 'ceo' }, disabled: done });
+    items.push({ label: `The CEO · ${tierModel('ceo')}`, hint: 'Direct the team, change tasks and models, or stop work; previous messages are retained',
+      ic: 'brain', checked: this.to === 'ceo', value: { to: 'ceo' } });
     menu(this.toBtn, items, { above: true, minWidth: 300, onPick: (v) => this.talkTo(v.to, v.about ? `About your helper “${v.about}”: ` : '') });
   }
 
@@ -353,9 +360,9 @@ class ProjectView {
     const busy = a && (a.status === 'busy' || a.status === 'working');
     const Name = cap(name);
     let status = '';
-    if (phase === 'done') status = `This project is finished, so ${name} no longer runs and cannot answer.`;
+    if (phase === 'done') status = 'Send a follow-up to reopen this project with its history.';
     else if (!s.running) status = `The team is paused. ${Name} answers when you press Continue.`;
-    else if (to === 'ceo') status = 'Each question is a short, separate review; the answer comes back here, usually within a few minutes.';
+    else if (to === 'ceo') status = 'The CEO sees project context and your earlier messages and can coordinate the team.';
     else if (a && a.status === 'down') status = `${Name} is unavailable for this run and cannot answer.`;
     else if (a && a.status === 'waiting') status = `${Name} is waiting for ${a.account || 'its subscription'} to reset, and answers then.`;
     else if (busy) status = `Working${a.task ? ` on task #${a.task}` : ''}. ` + (a.product === 'ChatGPT'
@@ -363,7 +370,7 @@ class ProjectView {
       : 'Reads your message at its next step, usually within a minute.');
     else if (a) status = a.status === 'standby' ? 'Standing by — starts up to answer you.' : 'Ready — answers straight away.';
     const waiting = this.convLast[to] === 'you';
-    const sub = to === 'ceo' ? ['Checks the work; does not build', tierModel('ceo')] : a ? [a.role, modelName(a.model), a.account] : [];
+    const sub = to === 'ceo' ? ['Coordinates and controls the team', tierModel('ceo')] : a ? [a.role, modelName(a.model), a.account] : [];
     clear(this.convBar,
       to === 'ceo' ? h('span', { class: 'av', style: { background: 'var(--tier-ceo)' } }, icon('brain'))
         : h('span', { class: 'av', style: { background: colorFor(to) } }, to.replace(/[^a-z0-9]/gi, '').slice(0, 2)),
@@ -409,10 +416,6 @@ class ProjectView {
   async send() {
     const text = this.say.value.trim();
     if (!text) return;
-    if (this.to && this.last && this.last.raw_phase === 'done') {
-      toast(`This project is finished, so ${this.nameOf(this.to)} no longer runs and cannot answer.`);
-      return;
-    }
     this.say.value = '';
     this.say.style.height = 'auto';
     try {
@@ -480,7 +483,7 @@ function agentCard(a, phase, talk) {
   const workingHelpers = helpers.filter((x) => x.status === 'working').length;
   const name = a.title || cap(a.name);
   const to = a.role === 'CEO' ? 'ceo' : a.name;
-  const canTalk = talk && phase !== 'done' && (a.standing || a.role === 'CEO');
+  const canTalk = talk && (a.standing || a.role === 'CEO');
   const unread = canTalk ? talk.unread[to] || 0 : 0;
   return h('div', { class: 'agent' + (a.status === 'done' ? ' done' : '') },
     h('div', { class: 'a-top' },

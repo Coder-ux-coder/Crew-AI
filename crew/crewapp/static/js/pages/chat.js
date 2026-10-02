@@ -38,13 +38,13 @@ export function modelOptions(product = 'claude') {
   const ov = store.overview || {};
   if (product === 'codex') {
     const known = (ov.known_models || []).filter((m) => m.engine === 'codex').map((m) => ({ value: m.id, label: m.label, hint: m.note }));
-    const custom = ov.app && ov.app.codex_model;
-    const extra = custom && !known.some((m) => m.value === custom) ? [{ value: custom, label: custom, hint: 'Chosen in Settings' }] : [];
+    const custom = [ov.app && ov.app.codex_model, ...(ov.models?.allowed || []), ...(ov.models?.workhorse_models || [])].filter((id) => id && /^(gpt|codex|o[1-9])/i.test(id));
+    const extra = [...new Set(custom)].filter((id) => !known.some((m) => m.value === id)).map((id) => ({ value: id, label: id, hint: 'Chosen in Settings' }));
     return known.length ? [...known, ...extra] : [{ value: '', label: 'ChatGPT', hint: 'Its best model' }, ...extra];
   }
   const known = (ov.known_models || []).filter((m) => (m.engine || 'claude') === 'claude');
   const allowed = ov.models && ov.models.allowed && ov.models.allowed.length ? ov.models.allowed : known.map((m) => m.id);
-  return allowed.map((id) => { const k = known.find((m) => m.id === id); return { value: id, label: k ? k.label : id, hint: k ? k.note : '' }; });
+  return allowed.filter((id) => !/^(gpt|codex|o[1-9])/i.test(id)).map((id) => { const k = known.find((m) => m.id === id); return { value: id, label: k ? k.label : id, hint: k ? k.note : '' }; });
 }
 
 const modelLabel = (product, id) => (modelOptions(product).find((m) => m.value === (id || '')) || { label: id || 'ChatGPT' }).label;
@@ -814,7 +814,7 @@ class ChatView {
     const c = this.chat;
     const cm = this.composer;
     cm.product = c.engine || 'claude';
-    cm.fixed = c.messages.length > 0;
+    cm.fixed = false;
     cm.model = c.model ?? cm.model;
     cm.effort = c.effort || 'auto';
     cm.account = c.account || '';
@@ -964,7 +964,7 @@ class ChatView {
       this.chat.messages = this.chat.messages || [];
       this.chat.messages.push({ role: 'assistant', text: d.text, meta });
       if (meta.mode) this.chat.mode = meta.mode;
-      this.composer.fixed = true;
+      this.composer.fixed = false;
     }
     this.composer.setBusy(false);
     this.refreshPlans();

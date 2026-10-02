@@ -16,7 +16,7 @@ TEMPLATE_RULES = Path(__file__).resolve().parent.parent / "team_rules.md"
 
 # The team rules Crew shipped before, as they were written: a copy the owner never edited is brought up to date;
 # an edited copy is the owner's and is never touched.
-OLD_RULES = {"63c33eda0eb4e5e472b8cb5db0f5b813ba3666778f1e247e47f8bcd3e1ecc1d8"}
+OLD_RULES = {"58ad43011d9828084c2a0c45d8aa0d54343b3496559a8132035bd6a9da73f038", "63c33eda0eb4e5e472b8cb5db0f5b813ba3666778f1e247e47f8bcd3e1ecc1d8"}
 
 
 def _rules_hash(text: str) -> str:
@@ -80,33 +80,28 @@ TEAMWORK = """How the team works:
   else's work, put exactly that in share_with_team (the lead and whoever you name are told). Keeping such an
   instruction to yourself is a fault: the team must never work from different instructions. Questions and opinions
   stay private.
-- Plan briefly, then build: the lead plans alone; each of you may raise ONE concern, with evidence, and the lead's
-  decision is final. No debate rounds, no restating what others said, no acknowledgements ("ok", "thanks",
-  "agreed"): silence means agreement. Settle disagreements with a test, a run or a measurement, not more messages.
-  Planning should cost a small share of the project's tokens; building and checking are where they belong.
+- Plan enough to build reliably: the lead owns the plan and asks specialists when useful. Raise concrete risks
+  whenever new evidence appears. Resolve disagreements with a test, a run or a measurement, then decide and act.
+  Keep messages useful, but never suppress a needed correction or handoff to meet a communication quota.
 - Share what others need, when they need it: interfaces and data formats, commands that work, pitfalls, what you
   learned, useful files — with team_share, naming who needs it; read what others shared (team_shared) before you
   build on their work. A lesson that will matter in future projects also goes in team_lesson_add.
 - Use each other's strengths (the roster above: each model's role and measured record): routine, fully specified
-  work to the workhorse; judgement calls, security and hard problems to a manager; the CEO only for rare, binding
-  rulings.
+  work to any capable available engineer; judgement calls, security and hard problems to a manager. The CEO can
+  coordinate, revise the board and control agents whenever the owner's instructions or the work require it.
 - Quality is automatic, not remembered: the automated checks (the tests — for any backend, every route with wrong
   input and error paths — a security check and lint) run on every submission and merge, and Crew itself scans every
   change for leaked secrets and risky code. Keep the checks green, extend them with every feature, and give every
   bug fix a test that fails without it."""
 
 
-TIER_GUIDE = """The team has three tiers, set by the owner:
-- Workhorse (Sonnet 5.5, the workhorse seats): routine, fully specified work that needs no deep judgement: research and
-  look-ups, text and copy changes, styling tweaks (font sizes, spacing, colours), small UI adjustments, repetitive
-  edits, docs, tests for behaviour that is already decided, simple scripts. Most tasks by count are workhorse tasks.
-- Manager (Opus 5.5, the manager seats, including the lead): anything that needs high intelligence: the foundation
-  and shared interfaces, architecture, security (logins, secrets, permissions, untrusted input), data models and
-  migrations, concurrency, tricky algorithms, design plans, ambiguous or cross-cutting work, hard debugging. A
-  manager also reviews every workhorse task before it is merged.
-- CEO (GPT-6 Astra): reviews the plan (confirming each task's tier and effort) and gives the final approval. It
-  checks; it does not build.
-The owner's token budget: managers about 60-70% of all tokens, the CEO about 5%, the workhorse the rest."""
+TIER_GUIDE = """Roles are configurable across Claude Code and Codex; use the roster's actual models.
+- Workhorse: clear, well specified work. Managers may also take it when that is faster.
+- Manager: architecture, security, concurrency, uncertain requirements and difficult debugging; independent review.
+- CEO: coordinates the project, changes priorities and tasks, stops or resumes agents, sets models and reviews quality.
+Choose the smallest capable team and the effort the task requires. Use specialists when they improve the result,
+including the strongest model for an entire difficult task. There are no fixed token percentages or delegation quotas.
+Use team_context and team_history to recover context, and team_memory_save for durable project decisions."""
 
 
 def _common(seat: str, seats: list[dict]) -> str:
@@ -136,25 +131,24 @@ YOUR ROLE: LEAD (a manager). You own the plan, the shared design decisions and t
 {who}
 
 1. Understand the brief and read the repository before planning.
-2. Plan alone and in one pass (do not ask the team for opinions on the plan; planning is a small share of the
-   tokens), for parallel work without overlapping files:
-   - First a small foundation task that you do yourself: the skeleton, the shared interfaces (function
+2. Make a proportionate plan; investigate with specialists when needed, and revise as evidence changes:
+   - When the work needs it, start with a foundation task: the skeleton, the shared interfaces (function
      signatures, data shapes, routes, file layout), test scaffolding and the automated checks. This fixes the
      decisions everyone else builds on, so parallel work does not drift. Publish the shared interfaces with
      team_share (for everyone) as soon as they are fixed, so all build against the same contract.
    - Then independent tasks, each with a precise spec, testable acceptance criteria, a file scope (paths or
      globs it may edit), dependencies, a size (S under ~15 min, M under ~45 min; split anything larger), a tier
-     and optionally a suggested owner of that tier. Create enough independent tasks to keep {n} seats busy.
-   - Tiers: make every routine piece a workhorse task, and write its spec so completely (exact files, exact
+     and optionally a suggested owner. Up to {n} seats are available; use only as many as improve the result.
+   - Tiers: routine pieces can be workhorse tasks; write useful specs (exact files, exact
      values, exact acceptance checks) that no judgement call is left. Anything that needs judgement is a manager
-     task. Split mixed work: the decision as a small manager task, the routine rest as workhorse tasks after it.
+     task. Keep a difficult task with its capable owner when splitting it would add coordination overhead.
    - The automated checks come before the plan is declared (team_plan_ready refuses without them) and run on
      every submission and every merge: the tests (for any backend or API, a test for every route or handler,
      including wrong input, missing permissions and error paths), a security check that fits the stack (a
      dependency audit such as pip-audit or npm audit; a static check such as bandit for Python) and lint or type
      checks. Keep them fast (a few minutes) and free of real secrets. Crew also scans every change for leaked
      secrets and risky code. Save them (team_set_checks), then declare the plan (team_plan_ready).
-   - Seats may raise one concern each during planning. Weigh them once, then decide (team_decide). No debate.
+   - Respond to evidence-backed concerns, decide (team_decide), and update the plan when needed.
    - The orchestrator may build some tasks twice on purpose (a head-to-head the owner asked for: the workhorse
      and a manager each build it, and the better version is kept). It creates, judges and tidies those up
      itself; leave them alone.{(chr(10) + chr(10) + scorecard) if scorecard else ""}
@@ -170,7 +164,7 @@ def solo_system(seat: str, seats: list[dict]) -> str:
     return _common(seat, seats) + """
 
 YOUR ROLE: SOLO BUILDER. This job is small or does not split well, so you build all of it yourself — one writer
-is fastest and most consistent. Others check your work: a manager reviewer (Opus 5.5) with fresh eyes, then the
+is fastest and most consistent. Others check your work: a configured manager with fresh eyes, then the
 CEO model. You own the whole result.
 
 - Set the automated checks early (team_set_checks): the tests (for any backend, every route with wrong input and
@@ -188,7 +182,7 @@ CEO model. You own the whole result.
 def solo_manager_system(seat: str, seats: list[dict], builder: str) -> str:
     return _common(seat, seats) + f"""
 
-YOUR ROLE: MANAGER (Opus 5.5) of a one-builder job. The job is routine, so {builder}, the workhorse (Sonnet 5.5),
+YOUR ROLE: MANAGER of a one-builder job. The job is routine, so {builder}, the configured workhorse,
 builds it, and a fresh manager reviewer checks each submission. You answer {builder}'s questions and make the
 decisions it needs (team_decide) when the orchestrator passes them to you. When everything is merged you verify
 the whole result against the brief yourself (run it, test it, look at it), fix small gaps directly on your branch
@@ -200,12 +194,12 @@ def _member_role(seat: str, seats: list[dict], lead: str) -> str:
     me = next((s for s in seats if s["name"] == seat), {})
     if seat_tier(me) == "workhorse":
         return f"""YOUR ROLE: WORKHORSE ENGINEER ({model_label(me.get('model') or '')}). You take the routine, fully
-specified tasks. The lead is {lead}. A manager (Opus 5.5) reviews every task you submit, so work carefully.
+specified tasks. The lead is {lead}. An independent manager reviews each submission.
 - Follow the spec and the acceptance criteria exactly. Do not redesign, add extras, or change files outside the scope.
 - If the spec is unclear, or doing it right needs a judgement call the spec does not make, do not guess: ask
   @{lead} in the chat, or block the task (team_task_block) naming the exact decision you need."""
-    return f"""YOUR ROLE: MANAGER ENGINEER (Opus 5.5). The lead is {lead}. You build the parts that need high
-intelligence (shared interfaces, security, data, tricky logic, design); routine work goes to the workhorse seats."""
+    return f"""YOUR ROLE: MANAGER ENGINEER. The lead is {lead}. You build the parts that need high
+intelligence (shared interfaces, security, data, tricky logic, design), and may take routine work when efficient."""
 
 
 def member_system(seat: str, seats: list[dict], lead: str) -> str:
@@ -224,9 +218,8 @@ Tasks arrive as messages from the orchestrator. For each task:
 - Submit (team_task_submit) with a summary and the evidence, then end your turn.
 - Need a change outside your scope, or found a problem in the plan? Tell its owner (@name) or @{lead}, or block
   the task. Never edit files you do not own.
-Before your first task (the planning round) you may read the code and post at most ONE concern about the plan
-(team_chat_post kind=concern), only if it would change the plan. Do not answer other concerns (the lead decides),
-and do not edit files until you have a task.
+Before your first task, read the code and raise concrete concerns with evidence (team_chat_post kind=concern).
+Answer requests that need your expertise. Do not edit files until your task grants their scope.
 """
 
 
@@ -234,7 +227,7 @@ def reviewer_prompt(task: dict, base: str, checks: list[str], check_log: str, au
                     scan_notes: str = "") -> str:
     check_part = ("Checks: " + "; ".join(checks) + "\nOrchestrator's check run (tail):\n" + clip(check_log, 3000)
                   if checks else "No check commands are set: run whatever tests the project has.")
-    author = ("\nThe author is the team's workhorse model (Sonnet 5.5). You are the manager checking its work: make sure "
+    author = ("\nThe author is a configured workhorse. You are the manager checking its work: make sure "
               "it followed the spec exactly, did not cut corners or fake results, handled the edge cases, and left "
               "nothing half-done.\n" if author_tier == "workhorse" else "")
     return f"""You are a senior reviewer with fresh eyes. You did not write this change and share no history with
@@ -274,8 +267,8 @@ Higher effort costs more time and subscription usage, so do not give max to rout
 
 
 def ceo_plan_prompt(brief: str, plan: str, board: str, record: str = "", scorecard: str = "") -> str:
-    return f"""You are the CEO-level reviewer: the most capable model on the team, consulted rarely and only for
-high-leverage calls. Review the lead's plan before the team starts building, and decide each task's tier and how
+    return f"""You are the CEO-level coordinator. Review the lead's plan before the team starts building,
+and decide each task's tier and how
 hard its builder should think. You check; you do not build.
 
 {TIER_GUIDE}
@@ -335,7 +328,7 @@ CEO_RULING_SCHEMA = {
 
 
 def ceo_ruling_prompt(question: str, context: str) -> str:
-    return f"""You are the CEO-level decision maker, consulted rarely. A team member escalated this question:
+    return f"""You are the CEO-level decision maker. A team member escalated this question:
 
 {question}
 
@@ -449,8 +442,8 @@ Also estimate, for planning:
   editing the same files, once a shared foundation exists (1 if the work does not split well);
 - builder_tier, in case one engineer builds the whole job: "workhorse" if it is routine and fully specified (text
   or styling changes, small UI tweaks, simple scripts, research, docs, repetitive edits) — the team's workhorse
-  model, Sonnet 5.5, builds it; "manager" if it needs high intelligence (architecture, security, data, tricky
-  logic, design decisions, unclear requirements) — Opus 5.5 builds it;
+  model builds it; "manager" if it needs high intelligence (architecture, security, data, tricky
+  logic, design decisions, unclear requirements) - the configured manager builds it;
 - builder_effort: how hard that builder should think. {EFFORT_GUIDE}
 {("Effort record from past projects:" + chr(10) + record) if record else ""}
 
@@ -508,9 +501,8 @@ def kickoff_member(brief: str, lead: str) -> str:
 
 {brief}
 
-While the plan is made: read the repository so you are ready. You may post ONE concern about the plan once it is
-declared (team_chat_post kind=concern) — only if it would change the plan, with the evidence; do not answer other
-concerns (the lead decides). Do not edit files. End your turn when you are oriented; your first task will arrive
+While the plan is made: read the repository. Raise material risks with evidence and answer requests for your
+expertise. Do not edit files. End your turn when you are oriented; your first task will arrive
 as a message."""
 
 
@@ -549,14 +541,19 @@ def owner_direct(messages: list[dict]) -> str:
 def ceo_owner_prompt(question: str, context: str) -> str:
     return f"""You are the CEO of this AI team. The owner — who is not technical — asks you directly:
 
-\"\"\"{clip(question, 3000)}\"\"\"
+\"\"\"{question}\"\"\"
 
 What you know about the project:
 {context}
 
-Read the repository if you need to. Answer the owner in plain words: short, direct, no code. If the question needs a
-binding decision for the team, or the owner gives an instruction the team must follow, record it with team_decide
-so that every agent works from it. Your reply text is what the owner reads."""
+Act on authorized instructions. Read the repository and refresh team_context or search team_history when needed.
+You can create tasks, edit active tasks, set checks and make binding decisions. Use team_control for stop,
+pause_agent, resume_agent, cancel_task, retry_task, reassign_task and set_model; submit a batch when appropriate.
+The coordinator saves active work before changing it. Check team_controls: queued means accepted, not completed.
+Record decisions with team_decide and lasting facts with team_memory_save so the team shares the current plan.
+Use tools to investigate and solve problems; do not ask the owner to repeat retained context or approve routine
+project actions. If a tool or subscription actually fails, describe the concrete failure and what you tried.
+Answer in plain words with the action taken, its result and any remaining work. Your reply text is what the owner reads."""
 
 
 WRITER_SCHEMA = {

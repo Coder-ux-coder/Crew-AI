@@ -123,7 +123,8 @@ class ToolTests(unittest.TestCase):
         st.upsert_seat("curie", chat_used=0)
         c2 = self.ctx(st, "curie", "member")
         self.assertFalse(tools.call(c2, "team_chat_post", {"text": "concern: scope", "kind": "concern"})[1])
-        self.assertTrue(tools.call(c2, "team_chat_post", {"text": "another concern", "kind": "concern"})[1])
+        st.set("phase", "build")
+        self.assertFalse(tools.call(c2, "team_chat_post", {"text": "another concern", "kind": "concern"})[1])
 
     def test_digest_urgent_inline(self):
         st = new_store()
@@ -222,7 +223,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([a.name for a in cfg.accounts], ["claude-1", "claude-2", "claude-3", "codex-1"])
         self.assertEqual(cfg.seats[0].role, "lead")
         self.assertEqual([s.tier for s in cfg.seats], ["manager"] * 3 + ["workhorse"] * 2)
-        self.assertEqual({s.vendor for s in cfg.seats}, {"claude"})  # the ChatGPT subscription runs the CEO
+        self.assertEqual({s.vendor for s in cfg.seats}, {"claude", "codex"})
         self.assertEqual(cfg.models.workhorse, "claude-sonnet-5-5")
 
 
@@ -245,6 +246,20 @@ class UtilTests(unittest.TestCase):
 
 
 class GitTests(unittest.TestCase):
+    def test_new_project_does_not_expand_to_an_ancestor_repository(self):
+        parent = Path(tempfile.mkdtemp(prefix="crew-parent-"))
+        subprocess.run(["git", "init", "-q"], cwd=parent, check=True)
+        untouched = parent / "unrelated.txt"
+        untouched.write_text("Outside the selected project\n")
+        child = parent / "project"
+        repo = gitops.ensure_repo(child)
+        self.assertEqual(repo.resolve(), child.resolve())
+        (child / "selected.txt").write_text("Only project work\n")
+        gitops.commit_all(repo, "Project checkpoint")
+        self.assertEqual(gitops.out(repo, "ls-files"), "selected.txt")
+        self.assertFalse((parent / ".git" / "index").exists())
+        self.assertTrue(untouched.exists())
+
     def test_worktrees_merge_conflict_and_revert(self):
         repo = gitops.ensure_repo(Path(tempfile.mkdtemp(prefix="crew-repo-")))
         (repo / "a.txt").write_text("base\n")

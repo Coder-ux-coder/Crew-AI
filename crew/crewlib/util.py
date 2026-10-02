@@ -75,7 +75,7 @@ def atomic_write(path: Path, text: str, errors: str = "strict") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", errors=errors) as fh:
+        with os.fdopen(fd, "w", encoding="utf-8", errors=errors, newline="") as fh:
             fh.write(text)
         for attempt in range(6):
             try:

@@ -183,7 +183,7 @@ class Instructions(unittest.TestCase):
             self.assertIn("The workhorse seats are curie.", prompts.lead_system("ada", seats))
             self.assertIn("Record: 100% of 5 pieces passed the first check; strong at documents (S)", roster)
             system = prompts.member_system("curie", seats, "ada")
-            for duty in ("@name", "share_with_team", "team_share", "no acknowledgements", "fails without it"):
+            for duty in ("@name", "share_with_team", "team_share", "never suppress a needed correction", "fails without it"):
                 self.assertIn(duty, system)
             self.assertIn("team_plan_ready refuses without them", prompts.lead_system("ada", seats))
         finally:
@@ -196,7 +196,7 @@ class Instructions(unittest.TestCase):
             old = subprocess.run(["git", "show", "f0df57b:crew/team_rules.md"], cwd=ROOT, capture_output=True,
                                  text=True).stdout
             if old:
-                (home / "team_rules.md").write_text(old.replace("\n", "\r\n"), encoding="utf-8")
+                (home / "team_rules.md").write_text(old.replace("\n", "\r\n"), encoding="utf-8", newline="")
                 self.assertIn("Name the person", prompts.team_rules())  # an unedited 2.2 copy is refreshed
             (home / "team_rules.md").write_text("# My rules\n1. Always use tabs.\n", encoding="utf-8")
             self.assertEqual(prompts.team_rules(), "# My rules\n1. Always use tabs.\n")  # the owner's edit stays
@@ -357,7 +357,8 @@ class Launcher(unittest.TestCase):
         self.assertNotEqual(quick.server_address[1], other.getsockname()[1])
 
     def test_the_icons_are_only_touched_on_windows(self):
-        self.assertEqual(self.launcher.heal_shortcuts(), [] if os.name != "nt" else self.launcher.heal_shortcuts())
+        with mock.patch.object(self.launcher, "ROOT", Path(tempfile.gettempdir()) / "crew-test"):
+            self.assertEqual(self.launcher.heal_shortcuts(), [])
 
     def test_the_microphone_is_allowed_for_crew_only(self):
         """The owner asked that Crew's window use the microphone without the browser asking each time: Edge's and

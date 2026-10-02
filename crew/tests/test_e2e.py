@@ -352,7 +352,7 @@ class E2E(unittest.TestCase):
         writers = [r for r in self.oneoffs(st) if r["seat"].startswith("writer-")]
         self.assertEqual(len(writers), 2)
         questions = [r for r in self.oneoffs(st) if r["seat"].startswith("ceo-question-")]
-        self.assertTrue(questions and questions[0]["effort"] == "high")
+        self.assertTrue(questions and questions[0]["effort"] == cfg.models.effort_ceo)
 
     def test_an_unanswered_question_is_answered_from_the_turn(self):
         """An agent that does not use team_reply_owner still answers: its own words at the end of the turn."""

@@ -1,8 +1,11 @@
 {
-  "version": "2.3.2",
-  "date": "2026-09-30",
+  "version": "2.4.0",
+  "date": "2026-10-02",
   "notes": [
-    "A project no longer fails to start because another program was using git in its folder, or because git stopped part-way there earlier: Crew waits for the other program, clears the file git left behind, and otherwise says in plain words what to close",
-    "The microphone and pasting work in Crew's window without Edge or Chrome asking each time, for Crew's own address only; switch it off in Settings, under General"
+    "The CEO can coordinate, revise tasks, control agents and stop work; branches are saved before changes.",
+    "Agents and the CEO retain project context and private conversations, with searchable history and shared memory.",
+    "Choose Claude Code or Codex agents and custom models, including GPT-6.1 Sol workers; usage follows tasks without fixed ratios.",
+    "Switch chat providers without losing the conversation, delete chats from the sidebar, and continue finished projects.",
+    "An excluded optional backup no longer resets settings; archived settings can be recovered while retaining current choices."
   ]
 }

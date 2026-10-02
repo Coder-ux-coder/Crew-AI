@@ -10,6 +10,9 @@ Everything is in the [`crew`](crew) folder. Start with
 screen does, and its honest limits. [`crew/ARCHITECTURE.md`](crew/ARCHITECTURE.md)
 explains how it works inside.
 
+The [autonomy upgrade](crew/AUTONOMY.md) adds CEO task controls, retained project
+context, configurable Claude Code/Codex agents, and task-driven usage without token quotas.
+
 Crew updates itself from this branch, `Crew-AI`: the version and what is new in
 it are in [`crew/VERSION.json`](crew/VERSION.json). Every change is checked
 automatically before it is published — the full test suite (simulated teams,

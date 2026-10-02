@@ -953,6 +953,10 @@ class Handler(BaseHTTPRequestHandler):
     def api_settings_save(self):
         return self._json(settings.save(self._body()))
 
+    @route("POST", "/api/settings/recover")
+    def api_settings_recover(self):
+        return self._json(settings.recover())
+
     @route("PUT", "/api/rules")
     def api_rules_save(self):
         settings.save_rules(self._body().get("text", ""))

@@ -163,7 +163,7 @@ export function dialog({ title, body, actions = [{ label: 'Close', value: null }
       }, a.label)));
     const primary = actions.find((a) => a.primary);
     const form = h('form', {
-      class: 'box' + (wide ? ' wide' : ''), onsubmit: (e) => {
+      class: 'box' + (wide ? ' wide' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': title, onsubmit: (e) => {
         e.preventDefault();
         if (!primary) return;
         const v = typeof primary.value === 'function' ? primary.value() : primary.value;
@@ -198,7 +198,8 @@ export async function ask(title, fields, { ok = 'Save', intro = '' } = {}) {
       if (f.type === 'textarea') input = h('textarea', { rows: f.rows || 4, placeholder: f.placeholder || '', dir: 'auto' }, f.value || '');
       else if (f.type === 'select') input = h('select', null, f.options.map((o) => h('option', { value: o.value, selected: o.value === f.value }, o.label)));
       else input = h('input', { type: f.type || 'text', value: f.value || '', placeholder: f.placeholder || '', autocomplete: 'off' });
-      inputs[f.name] = input;
+        inputs[f.name] = input;
+        input.setAttribute('aria-label', f.label);
       return h('label', { class: 'field' }, h('span', null, f.label), input, f.hint ? h('small', null, f.hint) : null);
     }));
   return dialog({

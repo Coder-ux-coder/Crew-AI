@@ -1,7 +1,7 @@
 // Crew app: start-up, navigation, the sidebar, the side panel (browser, phone, computer and file previews
 // beside whatever you are doing, resizable like Claude's artifacts), app-wide notices and one-click updates.
 
-import { $, $$, h, icon, btn, api, stream, store, bus, fail, toast, markdown, download, esc, pct, isSmall, clear } from './js/ui.js';
+import { $, $$, h, icon, btn, api, stream, store, bus, fail, toast, markdown, download, esc, pct, isSmall, clear, confirmBox } from './js/ui.js';
 import { homePage, chatPage, chatsPage } from './js/pages/chat.js';
 import { projectsPage, projectPage } from './js/pages/projects.js';
 import { workflowsPage } from './js/pages/workflows.js';
@@ -85,7 +85,7 @@ async function refreshRecent() {
     store.overview = ov;
     const runs = ov.runs.map((r) => ({ href: '#/projects/' + r.id, title: r.title, t: r.started, ic: 'layers', live: r.running, pinned: false }));
     const chats = ov.chats.filter((c) => c.kind !== 'workflow').map((c) => ({
-      href: '#/chat/' + c.id, title: c.title, t: c.updated, ic: c.engine === 'codex' ? 'gpt' : 'chat', pinned: !!c.pinned,
+      href: '#/chat/' + c.id, chatId: c.id, title: c.title, t: c.updated, ic: c.engine === 'codex' ? 'gpt' : 'chat', pinned: !!c.pinned,
     }));
     recentItems = [...runs, ...chats].sort((a, b) => (b.pinned - a.pinned) || (b.t - a.t)).slice(0, 40);
     const live = ov.runs.filter((r) => r.running).length;
@@ -101,8 +101,16 @@ async function refreshRecent() {
 
 function drawRecent() {
   const box = $('#recents');
-  clear(box, ...(recentItems.length ? recentItems.map((it) => h('a', { href: it.href, title: it.title },
-    it.live ? h('span', { class: 'live', title: 'Working now' }) : icon(it.pinned ? 'pin' : it.ic), h('span', { class: 't', dir: 'auto' }, it.title)))
+  clear(box, ...(recentItems.length ? recentItems.map((it) => h('div', { class: 'recent-row' }, h('a', { href: it.href, title: it.title },
+    it.live ? h('span', { class: 'live', title: 'Working now' }) : icon(it.pinned ? 'pin' : it.ic), h('span', { class: 't', dir: 'auto' }, it.title)),
+    it.chatId ? h('button', { type: 'button', class: 'icon-btn sm recent-delete', title: 'Delete chat', 'aria-label': `Delete ${it.title}`, onclick: async () => {
+      if (!(await confirmBox('Delete this chat?', 'Its conversation and files will be removed.', { ok: 'Delete', danger: true }))) return;
+      try {
+        await api(`/api/chats/${it.chatId}`, { method: 'DELETE' });
+        if ('#' + currentPath() === it.href) location.hash = '#/new';
+        bus.emit('chats');
+      } catch (e) { fail(e); }
+    } }, icon('trash')) : null))
     : [h('div', { class: 'empty-note' }, 'Your chats and projects will appear here.')]));
   markRecent();
 }
@@ -185,6 +193,7 @@ export const panel = {
     if (this.files) tabs.push('files');
     clear($('#panelTabs'), ...tabs.map((t) => h('button', { type: 'button', class: t === this.tab ? 'on' : '', onclick: () => this.open(t) },
       icon(TABS[t][0]), TABS[t][1])));
+    requestAnimationFrame(() => $('#panelTabs .on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
   },
 
   show(tab) {

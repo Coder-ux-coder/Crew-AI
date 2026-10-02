@@ -245,7 +245,7 @@ class UpgradeTests(unittest.TestCase):
             s.api("POST", f"/api/chats/{cid}/send", {"text": "think hard", "effort": "ultra"})
             _, done = collect_turn(ev)
             self.assertEqual([json.loads(x) for x in calls.read_text().splitlines()][-1]["effort"], "ultra")
-            for banned in ("gpt-6-luna", "gpt-6-sol"):
+            for banned in ("gpt-6-luna",):
                 err = s.api("POST", f"/api/chats/{cid}/send", {"text": "hi", "model": banned}, expect=400)
                 self.assertIn("banned", err["error"])
         finally:
@@ -573,7 +573,7 @@ class SettingsMigrationTests(unittest.TestCase):
             self.assertEqual(st["app"]["theme"], "dark")  # the owner's own choices are kept
             self.assertEqual([a["name"] for a in st["accounts"]], ["claude-1"])
             again = settings_mod.load()
-            self.assertEqual(again["app"]["settings_version"], 4)
+            self.assertEqual(again["app"]["settings_version"], 5)
             # a choice made after the upgrade is not "migrated" again
             settings_mod.save({"models": {"effort_work": "high"}})
             self.assertEqual(settings_mod.load()["models"]["effort_work"], "high")
@@ -596,11 +596,11 @@ class SettingsMigrationTests(unittest.TestCase):
             self.assertEqual((m["workhorse"], m["work"], m["ceo"], m["ceo_backup"]),
                              ("claude-sonnet-5-5", "claude-opus-5-5", "gpt-6-astra", "claude-fable-5-1"))
             self.assertNotIn("codex", m)
-            self.assertEqual((st["app"]["codex_model"], st["app"]["codex_effort"]), ("gpt-6-astra", "low"))
+            self.assertEqual((st["app"]["codex_model"], st["app"]["codex_effort"]), ("gpt-6-sol", "low"))
             self.assertEqual(m["effort_work"], "high")  # chosen after 2.0: the 2.0 step does not run again
             self.assertEqual(st["team"]["max_hours"], 3.0)
             self.assertEqual(st["team"]["workhorse_seats"], 2)
-            self.assertEqual(st["app"]["settings_version"], 4)
+            self.assertEqual(st["app"]["settings_version"], 5)
             self.assertTrue((home / "crew.toml").read_text().count("gpt-6-astra"))
             settings_mod.save({"models": {"ceo": "claude-fable-5-1"}})  # the owner may still choose Fable
             self.assertEqual(settings_mod.load()["models"]["ceo"], "claude-fable-5-1")
@@ -610,7 +610,7 @@ class SettingsMigrationTests(unittest.TestCase):
 
     def test_version_3_moves_the_workhorse_to_sonnet_and_keeps_everything_else(self):
         """What Crew 2.3.0 wrote for the owner (three Claude subscriptions, one ChatGPT): after the update the
-        workhorse is Sonnet 5.5 on Claude, Sonnet is no longer banned, GPT-6 Sol is, and every other choice stays."""
+        workers can use Claude and Codex, legacy product choices are kept, and owner bans stay."""
         home = Path(tempfile.mkdtemp(prefix="crew-migrate-"))
         saved = os.environ.get("CREW_HOME")
         os.environ["CREW_HOME"] = str(home)
@@ -631,15 +631,15 @@ class SettingsMigrationTests(unittest.TestCase):
             m = st["models"]
             self.assertEqual(m["workhorse"], "claude-sonnet-5-5")
             self.assertEqual(m["allowed"], ["claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"])
-            self.assertEqual(m["banned"], ["haiku", "terra", "luna", "grok", "gpt-6-sol"])  # "grok": the owner's own
+            self.assertEqual(m["banned"], ["haiku", "terra", "luna", "grok"])  # "grok": the owner's own
             self.assertEqual((m["ceo"], m["effort_ceo"]), ("gpt-6-astra", "ultra"))
             self.assertEqual((st["app"]["codex_model"], st["app"]["codex_effort"], st["app"]["theme"]),
-                             ("gpt-6-astra", "high", "dark"))
+                             ("gpt-6-sol", "high", "dark"))
             self.assertEqual((st["team"]["mode"], st["team"]["max_hours"]), ("team", 2.0))
             self.assertEqual([(s["account"], s["tier"]) for s in st["seats"]],
                              [("claude-1", "manager"), ("ceo-office.example.pk", "manager"),
                               ("samlee36-gmail.com", "manager"), ("ceo-office.example.pk", "workhorse"),
-                              ("samlee36-gmail.com", "workhorse")])
+                              ("alexmorgan-gmail.com", "workhorse")])
             self.assertTrue((home / "crew.toml.bak").read_text(encoding="utf-8").count("gpt-6-sol"))  # as it was
             text = (home / "crew.toml").read_text(encoding="utf-8")
             self.assertNotIn("codex = ", text)
@@ -647,8 +647,8 @@ class SettingsMigrationTests(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:  # banning the workhorse's own model is refused plainly
                 settings_mod.save({"models": {"banned": ["haiku", "sonnet"]}})
             self.assertIn("banned", str(caught.exception))
-            self.assertEqual(settings_mod.load()["models"]["banned"], ["haiku", "terra", "luna", "grok", "gpt-6-sol"])
-            self.assertEqual(settings_mod.load()["app"]["settings_version"], 4)
+            self.assertEqual(settings_mod.load()["models"]["banned"], ["haiku", "terra", "luna", "grok"])
+            self.assertEqual(settings_mod.load()["app"]["settings_version"], 5)
         finally:
             os.environ["CREW_HOME"] = saved or ""
             shutil.rmtree(home, ignore_errors=True)

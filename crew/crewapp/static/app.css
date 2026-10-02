@@ -665,7 +665,7 @@ input[type=range] { width: 170px; accent-color: var(--accent); }
 .app.with-panel .panel { display: flex; }
 .panel-head { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border-bottom: 1px solid var(--line); min-height: 52px; }
 .panel-tabs { display: flex; gap: 2px; overflow-x: auto; min-width: 0; }
-.panel-tabs button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; padding: 6px 10px; border-radius: 8px; cursor: pointer;
+.panel-tabs button { display: inline-flex; flex-shrink: 0; align-items: center; gap: 6px; border: 0; background: transparent; padding: 6px 10px; border-radius: 8px; cursor: pointer;
                      font-weight: 600; font-size: 13.5px; color: var(--muted); white-space: nowrap; }
 .panel-tabs button .i { width: 16px; height: 16px; }
 .panel-tabs button:hover { background: var(--hover); color: var(--ink); }
@@ -997,3 +997,8 @@ input[type=range] { width: 170px; accent-color: var(--accent); }
 /* The project's title row: its buttons move below the title on a narrow screen instead of covering it. */
 .proj-title > .stack { flex: 1 1 240px; min-width: 0; }
 .proj-title > .row { flex: 0 0 auto; }
+/* A visible action beside each conversation, including on touch screens. */
+.recent-row { display: flex; align-items: center; min-width: 0; }
+.recent-row > a { flex: 1; min-width: 0; }
+.recent-delete { flex: 0 0 auto; opacity: .65; }
+.recent-delete:hover, .recent-delete:focus-visible { opacity: 1; color: var(--bad); }
